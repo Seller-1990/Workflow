@@ -17,6 +17,7 @@ a = Analysis(
     pathex=[str(src_path)],
     binaries=[],
     datas=[
+        ('图标.png', '.'), 
         # 如果有静态资源文件，在这里添加
         # ('src/resources', 'resources'),
     ],

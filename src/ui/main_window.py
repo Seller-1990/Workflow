@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Slot, QThread
 from PySide6.QtGui import QAction, QIcon
 
-from config import APP_NAME, APP_VERSION
+from config import APP_NAME, APP_VERSION, ICON_PATH
 from database import init_db, get_workflow_by_id
 from engine import WorkflowEngine
 from ui.workflow_list import WorkflowListPanel
@@ -62,6 +62,8 @@ class MainWindow(QMainWindow):
     def _setup_ui(self):
         """设置 UI"""
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
+        if ICON_PATH.exists():
+            self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.setMinimumSize(1200, 800)
         
         # 主布局使用 QSplitter

@@ -13,10 +13,11 @@ if str(src_dir) not in sys.path:
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 
 from ui import MainWindow
 from ui.theme import get_stylesheet
+from config import ICON_PATH
 
 
 def main(argv=None):
@@ -31,6 +32,10 @@ def main(argv=None):
     )
     
     app = QApplication([sys.argv[0], *qt_args])
+
+    # 设置应用图标
+    if ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(ICON_PATH)))
     
     # 设置应用信息
     app.setApplicationName("工作流管理")

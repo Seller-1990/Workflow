@@ -7,11 +7,16 @@ from pathlib import Path
 
 # 判断是否为打包后的 exe
 if getattr(sys, 'frozen', False):
-    # 打包后：使用用户目录存储数据
+    # 打包后：使用临时目录作为根目录（用于查找资源），用户目录存储数据
+    ROOT_DIR = Path(sys._MEIPASS)
     APP_DATA_DIR = Path(os.environ.get('LOCALAPPDATA', Path.home())) / "工作流管理"
 else:
-    # 开发时：使用项目目录
-    APP_DATA_DIR = Path(__file__).resolve().parents[1]
+    # 开发时：使用项目根目录
+    ROOT_DIR = Path(__file__).resolve().parents[1]
+    APP_DATA_DIR = ROOT_DIR
+
+# 图标路径
+ICON_PATH = ROOT_DIR / "图标.png"
 
 # 数据目录
 DATA_DIR = APP_DATA_DIR / "data"
