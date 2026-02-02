@@ -61,5 +61,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # 可以添加图标: icon='icon.ico'
+    icon='图标.ico',  # EXE 文件图标
 )
