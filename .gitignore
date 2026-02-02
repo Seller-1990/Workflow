@@ -60,5 +60,6 @@ venv.bak/
 # Custom
 .gemini/
 *.log
-
+data/
+logs/
 workflows_export.json
