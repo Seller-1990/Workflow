@@ -17,6 +17,7 @@ TEMPLATE_VARIABLES = {
     "{开始时间}": "start_time",
     "{结束时间}": "end_time",
     "{耗时}": "duration",
+    "{失败摘要}": "failure_summary",
 }
 
 # 状态显示映射
@@ -40,6 +41,7 @@ def format_message(
     start_time: Optional[datetime] = None,
     end_time: Optional[datetime] = None,
     duration_seconds: Optional[float] = None,
+    failure_summary: str = "",
 ) -> str:
     """格式化消息模板
     
@@ -81,6 +83,9 @@ def format_message(
         message = message.replace("{耗时}", duration_str)
     else:
         message = message.replace("{耗时}", "")
+    
+    # 失败摘要
+    message = message.replace("{失败摘要}", failure_summary or "")
     
     return message
 
@@ -152,6 +157,7 @@ def send_workflow_notification(
     start_time: Optional[datetime] = None,
     end_time: Optional[datetime] = None,
     duration_seconds: Optional[float] = None,
+    failure_summary: str = "",
 ) -> tuple[bool, str]:
     """发送工作流通知
     
@@ -168,6 +174,7 @@ def send_workflow_notification(
         start_time=start_time,
         end_time=end_time,
         duration_seconds=duration_seconds,
+        failure_summary=failure_summary,
     )
     
     return send_dingtalk_message(webhook_url, message, keyword)
@@ -175,4 +182,4 @@ def send_workflow_notification(
 
 def get_template_variables_help() -> str:
     """获取模板变量帮助文本"""
-    return "可用变量：{工作流名称} {状态} {运行编号} {日志目录} {原因} {开始时间} {耗时}"
+    return "可用变量：{工作流名称} {状态} {运行编号} {日志目录} {原因} {开始时间} {耗时} {失败摘要}"

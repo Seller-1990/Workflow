@@ -3,17 +3,20 @@
 
 import os
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QGroupBox, QMenu, QPushButton, QMessageBox
+    QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
+    QHeaderView, QMenu, QMessageBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
-from database import get_run_histories_by_workflow, clear_run_histories
+from database import get_run_histories_by_workflow, clear_run_histories, get_step_logs_by_run
+from ui.collapsible_section import CollapsibleSection
 
 
 class RunHistoryPanel(QWidget):
     """运行历史面板"""
+
+    open_failures_requested = Signal(int)  # run_history_id
     
     # 列定义
     COLUMNS = [
@@ -41,13 +44,9 @@ class RunHistoryPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
-        # 分组框
-        group = QGroupBox("运行历史")
-        group.setCheckable(True)
-        group.setChecked(True)
-        group_layout = QVBoxLayout(group)
-        group_layout.setContentsMargins(12, 18, 12, 12)
-        group_layout.setSpacing(10)
+        # 标题与折叠按钮同一行
+        self.section = CollapsibleSection("运行历史", collapsed=False, header_height=44, title_font_size=15, title_weight=700)
+        group_layout = self.section.body_layout
         
         # 表格
         self.table = QTableWidget()
@@ -57,7 +56,34 @@ class RunHistoryPanel(QWidget):
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
-        self.table.setMaximumHeight(200)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(False)
+
+        self.table.horizontalHeader().setFixedHeight(30)
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        # iOS Minimal：白色内嵌面板 + 表头浅底
+        self.table.setStyleSheet(
+            """
+            QTableWidget {
+                background: #FFFFFF;
+                border: none;
+                border-radius: 12px;
+            }
+            QHeaderView::section {
+                background: #FAFBFC;
+                border: none;
+                padding: 6px 8px;
+                color: #6B7280;
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: none;
+            }
+            QTableWidget::item { padding: 6px 8px; }
+            """
+        )
         
         # 设置列宽
         for i, (_, width) in enumerate(self.COLUMNS):
@@ -65,18 +91,7 @@ class RunHistoryPanel(QWidget):
         
         group_layout.addWidget(self.table)
         
-        # 清除按钮
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        self.btn_clear = QPushButton("清除历史")
-        self.btn_clear.setFixedWidth(80)
-        self.btn_clear.clicked.connect(self._on_clear_history)
-        btn_layout.addWidget(self.btn_clear)
-        group_layout.addLayout(btn_layout)
-        
-        layout.addWidget(group)
-
-        group.toggled.connect(self.table.setVisible)
+        layout.addWidget(self.section)
     
     def load_history(self, workflow_id: int):
         """加载运行历史"""
@@ -91,6 +106,7 @@ class RunHistoryPanel(QWidget):
             run_item = QTableWidgetItem(history.run_id)
             run_item.setData(Qt.UserRole, history.id)
             run_item.setData(Qt.UserRole + 1, history.log_dir)
+            run_item.setData(Qt.UserRole + 2, history.status)
             self.table.setItem(row, 0, run_item)
             
             # 状态
@@ -110,6 +126,19 @@ class RunHistoryPanel(QWidget):
                 status_item.setForeground(color)
             
             self.table.setItem(row, 1, status_item)
+
+            # 成功/失败/跳过统计（tooltip 提示，避免新增列挤压）
+            try:
+                logs = get_step_logs_by_run(history.id)
+                counts = {"success": 0, "failure": 0, "skipped": 0, "running": 0, "pending": 0}
+                for log in logs:
+                    if log.status in counts:
+                        counts[log.status] += 1
+                summary = f"成功:{counts['success']} 失败:{counts['failure']} 跳过:{counts['skipped']}"
+                run_item.setToolTip((run_item.toolTip() or "") + f"\n{summary}")
+                status_item.setToolTip(summary)
+            except Exception:
+                pass
             
             # 开始时间
             start_text = ""
@@ -147,13 +176,33 @@ class RunHistoryPanel(QWidget):
         if not run_item:
             return
         
+        history_id = run_item.data(Qt.UserRole)
         log_dir = run_item.data(Qt.UserRole + 1)
+        raw_status = run_item.data(Qt.UserRole + 2)
         
         menu = QMenu(self)
+
+        # 查看失败步骤（仅失败/有失败日志时可用）
+        action_failures = menu.addAction("查看失败步骤")
+        has_failures = False
+        try:
+            if history_id:
+                logs = get_step_logs_by_run(int(history_id))
+                has_failures = any(l.status == "failure" for l in logs)
+        except Exception:
+            has_failures = False
+        action_failures.setEnabled(bool(history_id) and has_failures)
+        if bool(history_id) and not has_failures:
+            action_failures.setToolTip("该次运行没有失败步骤。")
+        action_failures.triggered.connect(lambda: self.open_failures_requested.emit(int(history_id)))
         
         if log_dir and os.path.exists(log_dir):
             action_open = menu.addAction("打开日志目录")
             action_open.triggered.connect(lambda: self._open_log_dir(log_dir))
+
+        menu.addSeparator()
+        action_clear = menu.addAction("清除所有历史")
+        action_clear.triggered.connect(self._on_clear_history)
         
         menu.exec_(self.table.mapToGlobal(pos))
     

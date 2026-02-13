@@ -22,6 +22,7 @@ from PySide6.QtCore import Signal, Qt
 
 from database import get_workflow_by_id, update_workflow, list_webhooks
 from notifier import get_template_variables_help
+from ui.collapsible_section import CollapsibleSection
 
 
 class WorkflowConfigPanel(QWidget):
@@ -32,7 +33,7 @@ class WorkflowConfigPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._workflow_id = None
-        self._is_collapsed = False
+        self._is_collapsed = True  # 默认折叠
         self._edit_enabled = True
         self._setup_ui()
 
@@ -40,23 +41,10 @@ class WorkflowConfigPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.group = QGroupBox("基础配置")
-        group_layout = QVBoxLayout(self.group)
-        group_layout.setContentsMargins(12, 18, 12, 12)
-        group_layout.setSpacing(10)
-
-        header = QHBoxLayout()
-        header.addStretch()
-        self.btn_toggle = QPushButton("折叠")
-        self.btn_toggle.setFixedWidth(60)
-        self.btn_toggle.clicked.connect(self._toggle_collapse)
-        header.addWidget(self.btn_toggle)
-        group_layout.addLayout(header)
-
-        self.content_widget = QWidget()
-        content_layout = QVBoxLayout(self.content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(12)
+        # 标题与折叠按钮同一行，避免按钮单独占用一行
+        self.group = CollapsibleSection("基础配置", collapsed=self._is_collapsed, header_height=44, title_font_size=16, title_weight=700)
+        self.group.collapsed_changed.connect(lambda c: setattr(self, "_is_collapsed", c))
+        content_layout = self.group.body_layout
 
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
@@ -176,9 +164,6 @@ class WorkflowConfigPanel(QWidget):
         btn_layout.addWidget(self.btn_save)
         content_layout.addLayout(btn_layout)
 
-        group_layout.addWidget(self.content_widget)
-        self.content_widget.setVisible(True)
-
         layout.addWidget(self.group)
 
     def set_edit_enabled(self, enabled: bool):
@@ -187,13 +172,8 @@ class WorkflowConfigPanel(QWidget):
 
     def _apply_enabled_state(self):
         # 折叠按钮始终可用
-        self.content_widget.setEnabled(self._edit_enabled)
+        self.group.body.setEnabled(self._edit_enabled)
         self.btn_save.setEnabled(self._edit_enabled)
-
-    def _toggle_collapse(self):
-        self._is_collapsed = not self._is_collapsed
-        self.content_widget.setVisible(not self._is_collapsed)
-        self.btn_toggle.setText("展开" if self._is_collapsed else "折叠")
 
     def _load_webhook_list(self):
         """加载 Webhook 列表"""
@@ -328,4 +308,3 @@ class WorkflowConfigPanel(QWidget):
                 self.edit_watch_folders.setPlainText(current.rstrip('\n') + '\n' + dir_path)
             else:
                 self.edit_watch_folders.setPlainText(dir_path)
-

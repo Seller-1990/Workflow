@@ -3,9 +3,10 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QInputDialog, QMessageBox, QMenu, QGroupBox
+    QPushButton, QInputDialog, QMessageBox, QMenu, QLabel
 )
 from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtGui import QFont
 
 from database import (
     list_workflows, create_workflow, delete_workflow, 
@@ -28,42 +29,73 @@ class WorkflowListPanel(QWidget):
     def _setup_ui(self):
         """设置 UI"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 分组框
-        group = QGroupBox("工作流列表")
-        group_layout = QVBoxLayout(group)
-        group_layout.setContentsMargins(12, 18, 12, 12)
-        group_layout.setSpacing(10)
-        
-        # 列表
+        # 按 Pencil：Left Panel 宽 260，List 区域宽约 252（≈ 4px 内边距）
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setSpacing(8)
+
+        header = QLabel("工作流列表")
+        f = QFont(header.font())
+        f.setPointSize(15)
+        f.setWeight(QFont.Weight.Bold)
+        header.setFont(f)
+        layout.addWidget(header)
+
+        # 列表（行高 36，圆角 10，选中蓝底 + 蓝字）
         self.list_widget = QListWidget()
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self.list_widget.currentRowChanged.connect(self._on_selection_changed)
-        group_layout.addWidget(self.list_widget)
+        self.list_widget.setStyleSheet(
+            """
+            QListWidget {
+                background: transparent;
+                border: none;
+            }
+            QListWidget::item {
+                height: 36px;
+                padding: 0px 10px;
+                border-radius: 10px;
+                color: #1A1A1A;
+            }
+            QListWidget::item:selected {
+                background: #E8F0FE;
+                color: #007AFF;
+                font-weight: 600;
+            }
+            """
+        )
+        layout.addWidget(self.list_widget, stretch=1)
         
         # 按钮栏
         btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(8)
         
         self.btn_new = QPushButton("新建")
         self.btn_new.clicked.connect(self._on_new_clicked)
+        self.btn_new.setFixedHeight(32)
+        self.btn_new.setObjectName("wfPill")
         btn_layout.addWidget(self.btn_new)
         
         self.btn_copy = QPushButton("复制")
         self.btn_copy.clicked.connect(self._on_copy_clicked)
+        self.btn_copy.setFixedHeight(32)
+        self.btn_copy.setObjectName("wfPill")
         btn_layout.addWidget(self.btn_copy)
         
         self.btn_delete = QPushButton("删除")
         self.btn_delete.clicked.connect(self._on_delete_clicked)
+        self.btn_delete.setFixedHeight(32)
+        self.btn_delete.setObjectName("wfDangerPill")
         btn_layout.addWidget(self.btn_delete)
         
-        group_layout.addLayout(btn_layout)
-        
-        layout.addWidget(group)
+        layout.addLayout(btn_layout)
 
     def set_edit_enabled(self, enabled: bool):
         self._edit_enabled = enabled
+        self.btn_new.setEnabled(enabled)
+        self.btn_copy.setEnabled(enabled)
+        self.btn_delete.setEnabled(enabled)
         self.btn_new.setToolTip("" if enabled else "请先开启左侧“编辑”开关")
         self.btn_copy.setToolTip("" if enabled else "请先开启左侧“编辑”开关")
         self.btn_delete.setToolTip("" if enabled else "请先开启左侧“编辑”开关")

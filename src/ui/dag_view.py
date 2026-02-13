@@ -1,322 +1,323 @@
 # -*- coding: utf-8 -*-
-"""DAG 可视化面板 - Style B 详细卡片样式"""
+"""DAG 可视化面板（按用途阶段分列，iOS 极简定稿对齐）
 
-from typing import Dict, Optional
+Pencil SSOT: `designs/ios_minimal_focus.pen` 的 DAG Card（QNGnx）
+- 列 = 用途阶段（S1/S2…）
+- 卡片 = 紧凑节点（高度 52，圆角 12，左侧状态色条 4px）
+- 默认不画“依赖连线”（设计稿未展示），依赖信息放在 tooltip
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene,
-    QGraphicsRectItem, QGraphicsTextItem, QGraphicsLineItem,
-    QGroupBox, QPushButton, QHBoxLayout, QGraphicsItem
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QFrame,
+    QScrollArea,
+    QSizePolicy,
 )
-from PySide6.QtCore import Qt, QRectF, QPointF
-from PySide6.QtGui import QPen, QBrush, QColor, QFont, QPainter, QPainterPath
 
-from database import get_steps_by_workflow
+from database import get_steps_by_workflow, list_stages
+from ui.collapsible_section import CollapsibleSection
+from ui.theme import COLORS
 
 
-# 类型配色方案
 TYPE_COLORS = {
-    "python": {"bg": "#EEF2FF", "text": "#4338CA", "label": "Python"},
-    "excel_powerquery": {"bg": "#ECFDF5", "text": "#047857", "label": "Excel PQ"},
-    "powerbi_refresh": {"bg": "#FEF3C7", "text": "#B45309", "label": "Power BI"},
-    "sub_workflow": {"bg": "#F3E8FF", "text": "#7C3AED", "label": "子工作流"},
-}
-
-# 状态配色方案
-STATUS_COLORS = {
-    "pending": {"border": "#D1D5DB", "accent": "#9CA3AF", "bg": "#F9FAFB"},
-    "running": {"border": "#3B82F6", "accent": "#3B82F6", "bg": "#EFF6FF"},
-    "success": {"border": "#10B981", "accent": "#10B981", "bg": "#ECFDF5"},
-    "failure": {"border": "#EF4444", "accent": "#EF4444", "bg": "#FEF2F2"},
+    "python": {"text": "#2563EB", "label": "Python"},
+    "excel_powerquery": {"text": "#047857", "label": "Excel PQ"},
+    "powerbi_refresh": {"text": "#B45309", "label": "Power BI"},
+    "sub_workflow": {"text": "#7C3AED", "label": "子工作流"},
 }
 
 
-class DAGNode(QGraphicsRectItem):
-    """DAG 节点 - Style B 详细卡片"""
-    
-    def __init__(
-        self, 
-        step_id: int, 
-        order: int, 
-        name: str, 
-        step_type: str = "python",
-        is_gate: bool = False
-    ):
+STATUS_STYLES = {
+    "pending": {"strip": "#9CA3AF", "bg": "#FFFFFF"},
+    "running": {"strip": "#3B82F6", "bg": "#EFF6FF"},
+    "success": {"strip": "#10B981", "bg": "#FFFFFF"},
+    "failure": {"strip": "#EF4444", "bg": "#FEF2F2"},
+}
+
+
+LANE_BGS = ["#FAFBFC", "#F8FAFC", "#F5F3FF"]
+
+
+class NodeCard(QFrame):
+    """一个步骤节点卡片（与 Pencil 定稿一致的紧凑外观）。"""
+
+    activated = Signal(int)  # step_id
+
+    def __init__(self, step_id: int, title: str, type_label: str, type_color: str, is_gate: bool):
         super().__init__()
-        
-        self.step_id = step_id
-        self.order = order
-        self.name = name
-        self.step_type = step_type
-        self.is_gate = is_gate
+        self._step_id = int(step_id)
         self._status = "pending"
-        
-        # 节点大小
-        self.node_width = 180
-        self.node_height = 64
-        self.radius = 8
-        self.accent_width = 4
-        
-        self.setRect(0, 0, self.node_width, self.node_height)
-        
-        # 类型信息
-        type_info = TYPE_COLORS.get(step_type, TYPE_COLORS["python"])
-        self.type_label = type_info["label"]
-        self.type_bg = QColor(type_info["bg"])
-        self.type_text_color = QColor(type_info["text"])
-        
-        # 状态颜色
-        self._update_colors()
-        
-        # 步骤名称
-        self.name_text = QGraphicsTextItem(self)
-        display_name = f"{order + 1}. {name}"
-        if len(display_name) > 20:
-            display_name = display_name[:17] + "..."
-        self.name_text.setPlainText(display_name)
-        self.name_text.setDefaultTextColor(QColor("#111827"))
-        self.name_text.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
-        self.name_text.setPos(self.accent_width + 10, 8)
-        
-        # 类型标签
-        self.type_text = QGraphicsTextItem(self)
-        self.type_text.setPlainText(self.type_label)
-        self.type_text.setDefaultTextColor(self.type_text_color)
-        self.type_text.setFont(QFont("Microsoft YaHei", 8))
-        self.type_text.setPos(self.accent_width + 10, 32)
-        
-        # 状态图标占位
-        self.status_text = QGraphicsTextItem(self)
-        self.status_text.setFont(QFont("Segoe UI Symbol", 12))
-        self.status_text.setPos(self.node_width - 28, 20)
-        self._update_status_icon()
-        
-        self.setToolTip(f"步骤 {order + 1}: {name}\n类型: {self.type_label}\n状态: {self._status}")
-        
-        # 允许鼠标悬停效果
-        self.setAcceptHoverEvents(True)
-    
-    def _update_colors(self):
-        """更新状态颜色"""
-        status_info = STATUS_COLORS.get(self._status, STATUS_COLORS["pending"])
-        self.border_color = QColor(status_info["border"])
-        self.accent_color = QColor(status_info["accent"])
-        self.bg_color = QColor(status_info["bg"])
-    
-    def _update_status_icon(self):
-        """更新状态图标"""
-        status_info = STATUS_COLORS.get(self._status, STATUS_COLORS["pending"])
-        icons = {
-            "pending": ("○", "#9CA3AF"),
-            "running": ("◉", "#3B82F6"),
-            "success": ("✓", "#10B981"),
-            "failure": ("✗", "#EF4444"),
-        }
-        icon, color = icons.get(self._status, icons["pending"])
-        self.status_text.setPlainText(icon)
-        self.status_text.setDefaultTextColor(QColor(color))
-    
+
+        self.setObjectName("DagNodeCard")
+        self.setFixedHeight(52)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.strip = QFrame()
+        self.strip.setFixedWidth(4)
+        root.addWidget(self.strip)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(10, 8, 10, 8)
+        content_layout.setSpacing(2)
+        root.addWidget(content, stretch=1)
+
+        top = QWidget()
+        top_l = QHBoxLayout(top)
+        top_l.setContentsMargins(0, 0, 0, 0)
+        top_l.setSpacing(6)
+
+        self.title_label = QLabel(title)
+        tf = QFont(self.title_label.font())
+        tf.setPointSize(12)
+        tf.setWeight(QFont.Weight.DemiBold)
+        self.title_label.setFont(tf)
+        self.title_label.setStyleSheet("color:#0F172A;")
+        self.title_label.setWordWrap(False)
+        self.title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        top_l.addWidget(self.title_label, stretch=1)
+
+        self.gate_badge = QLabel("Gate" if is_gate else "")
+        self.gate_badge.setVisible(bool(is_gate))
+        self.gate_badge.setStyleSheet("color:#6B7280; font-size:11px; font-weight:600;")
+        top_l.addWidget(self.gate_badge, alignment=Qt.AlignRight | Qt.AlignVCenter)
+
+        content_layout.addWidget(top)
+
+        self.type_label = QLabel(type_label)
+        self.type_label.setStyleSheet(f"color:{type_color}; font-size:11px; font-weight:600;")
+        content_layout.addWidget(self.type_label)
+
+        self.set_status("pending")
+
     def set_status(self, status: str):
-        """设置状态"""
-        if status not in STATUS_COLORS:
-            status = "pending"
+        status = status if status in STATUS_STYLES else "pending"
         self._status = status
-        self._update_colors()
-        self._update_status_icon()
-        self.setToolTip(f"步骤 {self.order + 1}: {self.name}\n类型: {self.type_label}\n状态: {self._status}")
-        self.update()
-    
-    def paint(self, painter: QPainter, option, widget=None):
-        painter.setRenderHint(QPainter.Antialiasing)
-        rect = self.rect()
-        
-        # 阴影
-        shadow_rect = rect.adjusted(2, 2, 2, 2)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 15))
-        painter.drawRoundedRect(shadow_rect, self.radius, self.radius)
-        
-        # 背景
-        painter.setPen(QPen(self.border_color, 1.5))
-        painter.setBrush(QBrush(self.bg_color))
-        painter.drawRoundedRect(rect, self.radius, self.radius)
-        
-        # 左侧强调条
-        accent_path = QPainterPath()
-        accent_rect = QRectF(0, 0, self.accent_width, self.node_height)
-        accent_path.addRoundedRect(accent_rect, self.radius, self.radius)
-        # 裁剪右侧
-        clip_rect = QRectF(0, 0, self.accent_width, self.node_height)
-        painter.setClipRect(clip_rect)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(self.accent_color))
-        painter.drawRoundedRect(QRectF(0, 0, self.radius * 2, self.node_height), self.radius, self.radius)
-        painter.setClipping(False)
-        
-        # 类型标签背景
-        label_rect = QRectF(self.accent_width + 8, 34, 60, 18)
-        painter.setBrush(QBrush(self.type_bg))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(label_rect, 4, 4)
-    
-    def hoverEnterEvent(self, event):
-        self.setOpacity(0.9)
-        super().hoverEnterEvent(event)
-    
-    def hoverLeaveEvent(self, event):
-        self.setOpacity(1.0)
-        super().hoverLeaveEvent(event)
+        st = STATUS_STYLES[status]
+        self.strip.setStyleSheet(f"background:{st['strip']};")
+        self.setStyleSheet(
+            f"""
+            QFrame#DagNodeCard {{
+                background: {st['bg']};
+                border-radius: 12px;
+            }}
+            """
+        )
+
+    def mouseDoubleClickEvent(self, event):
+        try:
+            self.activated.emit(self._step_id)
+        finally:
+            super().mouseDoubleClickEvent(event)
+
+
+@dataclass(frozen=True)
+class StageLike:
+    uid: Optional[str]
+    name: str
 
 
 class DAGViewPanel(QWidget):
-    """DAG 可视化面板"""
-    
+    """DAG 可视化面板（泳道=用途阶段列）。"""
+
+    step_activated = Signal(int)  # step_id（用于双击定位步骤）
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._workflow_id = None
+        self._workflow_id: Optional[int] = None
         self._is_collapsed = False
-        self._nodes: Dict[int, DAGNode] = {}  # step_id -> DAGNode
+        self._nodes: Dict[int, NodeCard] = {}
         self._setup_ui()
-    
+
     def _setup_ui(self):
-        """设置 UI"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 分组框
-        self.group = QGroupBox("DAG 可视化")
-        group_layout = QVBoxLayout(self.group)
-        group_layout.setContentsMargins(12, 18, 12, 12)
-        group_layout.setSpacing(10)
-        
-        # 折叠按钮
-        header = QHBoxLayout()
-        self.btn_toggle = QPushButton("折叠")
-        self.btn_toggle.setFixedWidth(60)
-        self.btn_toggle.clicked.connect(self._toggle_collapse)
-        header.addStretch()
-        header.addWidget(self.btn_toggle)
-        group_layout.addLayout(header)
-        
-        # 视图 - 水平滚动
-        self.scene = QGraphicsScene()
-        self.view = QGraphicsView(self.scene)
-        self.view.setRenderHint(QPainter.Antialiasing)
-        self.view.setFixedHeight(120)  # 固定高度，单行
-        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.view.setStyleSheet("""
-            QGraphicsView {
-                background-color: #FAFAFA;
-                border: 1px solid #E5E7EB;
-                border-radius: 6px;
-            }
-        """)
-        group_layout.addWidget(self.view)
-        
-        layout.addWidget(self.group)
-    
-    def _toggle_collapse(self):
-        """切换折叠状态"""
-        self._is_collapsed = not self._is_collapsed
-        self.view.setVisible(not self._is_collapsed)
-        self.btn_toggle.setText("展开" if self._is_collapsed else "折叠")
-    
+
+        self.section = CollapsibleSection("DAG 可视化", collapsed=self._is_collapsed, header_height=44, title_font_size=15, title_weight=700)
+        self.section.collapsed_changed.connect(lambda c: setattr(self, "_is_collapsed", c))
+        body = self.section.body_layout
+
+        self.hint_label = QLabel("")
+        self.hint_label.setVisible(False)
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setStyleSheet("color:#6B7280; font-size:11px;")
+        body.addWidget(self.hint_label)
+
+        # Canvas（白底圆角 12）
+        self.canvas = QFrame()
+        self.canvas.setObjectName("DagCanvas")
+        # 最小高度对齐定稿，实际高度由内容自适配（避免固定高度导致“折叠占地过大/展开看不全”）
+        self.canvas.setMinimumHeight(215)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.canvas.setStyleSheet(
+            f"""
+            QFrame#DagCanvas {{
+                background: {COLORS['background']};
+                border-radius: 12px;
+            }}
+            """
+        )
+        canvas_layout = QVBoxLayout(self.canvas)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        # 你明确希望看到“左右滑块”用于查看后续阶段：水平滚动条常驻
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        canvas_layout.addWidget(self.scroll)
+
+        self.lanes_widget = QWidget()
+        self.lanes_widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        self.lanes_layout = QHBoxLayout(self.lanes_widget)
+        self.lanes_layout.setContentsMargins(10, 0, 10, 0)
+        self.lanes_layout.setSpacing(10)
+        self.scroll.setWidget(self.lanes_widget)
+
+        body.addWidget(self.canvas)
+        layout.addWidget(self.section)
+
     def update_dag(self, workflow_id: int):
-        """更新 DAG"""
-        self._workflow_id = workflow_id
-        self.scene.clear()
+        self._workflow_id = int(workflow_id) if workflow_id is not None else None
         self._nodes.clear()
-        
-        steps = get_steps_by_workflow(workflow_id)
+        self.hint_label.setVisible(False)
+        self.hint_label.setText("")
+
+        # 清空 lanes
+        while self.lanes_layout.count():
+            item = self.lanes_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        if not self._workflow_id:
+            return
+
+        steps = get_steps_by_workflow(self._workflow_id)
         if not steps:
             return
-        
-        # 布局参数 - 水平单行排列
-        node_width = 180
-        node_height = 64
-        h_spacing = 40
-        start_x = 20
-        start_y = 15
-        
-        step_by_id = {s.id: s for s in steps}
-        step_by_uid = {s.uid: s for s in steps}
-        positions = {}
-        
-        # 创建节点 - 全部水平排列
-        for i, step in enumerate(steps):
-            x = start_x + i * (node_width + h_spacing)
-            y = start_y
-            
-            node = DAGNode(
-                step.id, 
-                step.order, 
-                step.name, 
-                step.step_type,
-                step.is_gate
-            )
-            node.setPos(x, y)
-            self.scene.addItem(node)
-            
-            self._nodes[step.id] = node
-            positions[step.id] = (x, y)
-        
-        # 绘制连线
-        pen = QPen(QColor("#CBD5E1"), 2)
-        pen.setStyle(Qt.SolidLine)
-        
-        # 优先使用依赖关系
-        has_deps = any(s.get_depends_on() for s in steps)
-        if has_deps:
-            for step in steps:
-                deps = step.get_depends_on()
-                for dep_uid in deps:
-                    dep_step = step_by_uid.get(dep_uid)
-                    if not dep_step or dep_step.id not in positions or step.id not in positions:
-                        continue
-                    x1, y1 = positions[dep_step.id]
-                    x2, y2 = positions[step.id]
-                    self._draw_connection(x1, y1, x2, y2, node_width, node_height, pen)
-        else:
-            for i in range(len(steps) - 1):
-                step = steps[i]
-                next_step = steps[i + 1]
-                if step.id in positions and next_step.id in positions:
-                    x1, y1 = positions[step.id]
-                    x2, y2 = positions[next_step.id]
-                    self._draw_connection(x1, y1, x2, y2, node_width, node_height, pen)
-        
-        # 调整场景大小
-        self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-10, -10, 10, 10))
-    
-    def _draw_connection(self, x1, y1, x2, y2, node_width, node_height, pen):
-        """绘制连接线"""
-        if y1 == y2:
-            # 同行，水平连线
-            line = QGraphicsLineItem(
-                x1 + node_width, y1 + node_height / 2,
-                x2, y2 + node_height / 2
-            )
-        else:
-            # 不同行，垂直连线
-            line = QGraphicsLineItem(
-                x1 + node_width / 2, y1 + node_height,
-                x2 + node_width / 2, y2
-            )
-        line.setPen(pen)
-        self.scene.addItem(line)
-    
+
+        # stages（严格按用途阶段排序）
+        stages = list_stages(self._workflow_id)
+        stage_ordered: List[StageLike] = [StageLike(uid=s.uid, name=s.name) for s in stages]
+
+        # 未归类兜底
+        known = {s.uid for s in stages}
+        has_unassigned = any(getattr(s, "stage_uid", None) not in known for s in steps)
+        if has_unassigned:
+            stage_ordered.append(StageLike(uid=None, name="未归类"))
+
+        # group steps by stage
+        stage_uid_to_steps: Dict[Optional[str], List] = {st.uid: [] for st in stage_ordered}
+        for s in sorted(steps, key=lambda x: x.order):
+            suid = getattr(s, "stage_uid", None)
+            if suid not in stage_uid_to_steps:
+                suid = None
+            stage_uid_to_steps.setdefault(suid, []).append(s)
+
+        # 自适配高度：按“最长阶段”的步骤数量计算画布最小高度
+        try:
+            max_steps = max((len(v) for v in stage_uid_to_steps.values()), default=0)
+        except Exception:
+            max_steps = 0
+        card_h = 52
+        gap = 8
+        body_padding = 12 * 2
+        hdr_h = 28
+        content_h = hdr_h + body_padding + (max_steps * card_h) + (max(0, max_steps - 1) * gap)
+        self.canvas.setMinimumHeight(max(215, content_h + 24))
+
+        # no explicit deps hint
+        has_deps = any(bool(s.get_depends_on()) for s in steps)
+        if not has_deps:
+            self.hint_label.setText("无显式依赖：按用途阶段顺序执行")
+            self.hint_label.setVisible(True)
+
+        for idx, st in enumerate(stage_ordered, start=1):
+            lane = QFrame()
+            lane.setFixedWidth(180)
+            lane.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            lane.setStyleSheet(f"background:{LANE_BGS[(idx - 1) % len(LANE_BGS)]};")
+
+            lane_layout = QVBoxLayout(lane)
+            lane_layout.setContentsMargins(0, 0, 0, 0)
+            lane_layout.setSpacing(0)
+
+            hdr = QFrame()
+            hdr.setFixedHeight(28)
+            hdr.setStyleSheet("background:#F3F4F6;")
+            hdr_l = QHBoxLayout(hdr)
+            hdr_l.setContentsMargins(12, 0, 12, 0)
+            hdr_l.setSpacing(6)
+            count = len(stage_uid_to_steps.get(st.uid, []))
+            hdr_text = QLabel(f"S{idx} {st.name} · {count}步")
+            hdr_text.setStyleSheet("color:#6B7280; font-size:11px; font-weight:600;")
+            hdr_l.addWidget(hdr_text)
+            lane_layout.addWidget(hdr)
+
+            body_w = QWidget()
+            body_l = QVBoxLayout(body_w)
+            body_l.setContentsMargins(12, 12, 12, 12)
+            body_l.setSpacing(8)
+            lane_layout.addWidget(body_w, stretch=1)
+
+            # 垂直居中：步骤较少时上下留白均分（更接近定稿示意）
+            body_l.addStretch(1)
+            for s in stage_uid_to_steps.get(st.uid, []):
+                t = TYPE_COLORS.get(s.step_type, TYPE_COLORS["python"])
+                title = f"{s.order + 1}. {s.name}"
+                card = NodeCard(s.id, title, t["label"], t["text"], bool(getattr(s, "is_gate", False)))
+                card.activated.connect(self.step_activated.emit)
+                # tooltip：依赖摘要
+                deps = list(s.get_depends_on() or [])
+                tip = [title, f"类型: {t['label']}"]
+                if deps:
+                    tip.append("依赖: " + "、".join(deps[:4]) + ("…" if len(deps) > 4 else ""))
+                card.setToolTip("\n".join(tip))
+                body_l.addWidget(card)
+                self._nodes[s.id] = card
+
+            body_l.addStretch(1)
+            self.lanes_layout.addWidget(lane)
+
+        # 确保水平滚动条生效：为 lanes_widget 设置明确的最小宽度（lane 固定宽度 + spacing + margins）
+        lane_w = 180
+        spacing = 10
+        margins_lr = 20  # lanes_layout 左右 10 + 10
+        total_w = margins_lr + (len(stage_ordered) * lane_w) + (max(0, len(stage_ordered) - 1) * spacing)
+        self.lanes_widget.setMinimumWidth(total_w)
+
+        # 注意：不要 addStretch()，否则内容会被拉伸到 viewport 宽度，水平滚动条不会出现
+
     def update_step_status(self, step_id: int, status: str):
-        """更新步骤状态"""
-        if step_id in self._nodes:
-            self._nodes[step_id].set_status(status)
-    
+        node = self._nodes.get(int(step_id)) if step_id else None
+        if node:
+            node.set_status(status)
+
     def reset_all_status(self):
-        """重置所有步骤状态为 pending"""
         for node in self._nodes.values():
             node.set_status("pending")
-    
+
     def clear(self):
-        """清空"""
         self._workflow_id = None
         self._nodes.clear()
-        self.scene.clear()
+        while self.lanes_layout.count():
+            item = self.lanes_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()

@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """主窗口"""
 
+import threading
+
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QStatusBar, QToolBar, QMessageBox,
-    QScrollArea, QFrame, QCheckBox, QLabel
+    QScrollArea, QFrame, QLabel, QPushButton, QToolButton,
+    QSizePolicy, QLayout
 )
-from PySide6.QtCore import Qt, Slot, QThread
+from PySide6.QtCore import Qt, Slot, QSize
 from PySide6.QtGui import QAction, QIcon
 
 from config import APP_NAME, APP_VERSION, ICON_PATH
@@ -21,6 +24,8 @@ from ui.run_history import RunHistoryPanel
 from ui.run_control import RunControlPanel
 from ui.workflow_config import WorkflowConfigPanel
 from ui.webhook_manager import WebhookManagerDialog
+from ui.error_summary import ErrorSummaryDialog
+from ui.ios_switch import IosSwitch
 
 
 class MainWindow(QMainWindow):
@@ -74,32 +79,46 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # 主分割器（左-中-右）
+        # 主分割器（按 Pencil 定稿：左栏 / 左折叠条 / 中区 / 右折叠条 / 右栏）
         self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setObjectName("MainSplitter")
+        self.main_splitter.setHandleWidth(0)
         main_layout.addWidget(self.main_splitter)
         
         # ===== 左侧面板 =====
-        left_panel = QWidget()
+        left_panel = QFrame()
+        left_panel.setObjectName("LeftPanel")
+        left_panel.setMaximumWidth(260)
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(16, 16, 16, 16)
-        left_layout.setSpacing(12)
+        # Pencil：Left Panel 宽 260，内部以组件自身 padding 为准
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
         
         # 工作流列表
         self.workflow_list = WorkflowListPanel()
         left_layout.addWidget(self.workflow_list, stretch=1)
 
-        # 编辑开关（防误操作）
+        # 编辑开关 + 保存（按 Pencil：编辑模式 + iOS Switch + 保存按钮）
         edit_bar = QWidget()
         edit_bar_layout = QHBoxLayout(edit_bar)
-        edit_bar_layout.setContentsMargins(0, 0, 0, 0)
-        edit_bar_layout.setSpacing(8)
-        edit_bar_layout.addWidget(QLabel("编辑"))
-        self.check_edit_mode = QCheckBox("开启")
-        self.check_edit_mode.setObjectName("toggle")
-        self.check_edit_mode.setChecked(False)
-        self.check_edit_mode.toggled.connect(self._set_edit_mode)
+        edit_bar_layout.setContentsMargins(4, 0, 4, 0)
+        edit_bar_layout.setSpacing(10)
+        edit_bar_layout.addWidget(QLabel("编辑模式"))
         edit_bar_layout.addStretch()
+
+        self.check_edit_mode = IosSwitch()
+        self.check_edit_mode.setChecked(False)
+        # 使用 stateChanged（int->bool）避免个别平台/自绘控件下 toggled 未触发的边缘问题
+        self.check_edit_mode.stateChanged.connect(lambda st: self._set_edit_mode(st == Qt.Checked))
+        # 冗余兜底：部分情况下 stateChanged/toggled 可能只触发其一（自绘控件/样式差异）
+        self.check_edit_mode.toggled.connect(lambda v: self._set_edit_mode(bool(v)))
         edit_bar_layout.addWidget(self.check_edit_mode)
+
+        self.btn_left_save = QPushButton("保存")
+        self.btn_left_save.setObjectName("primarySmall")
+        self.btn_left_save.setFixedSize(78, 26)
+        self.btn_left_save.clicked.connect(self._action_save)
+        edit_bar_layout.addWidget(self.btn_left_save)
         left_layout.addWidget(edit_bar)
         
         # 运行控制
@@ -107,28 +126,66 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.run_control)
         
         self.main_splitter.addWidget(left_panel)
+
+        # ===== 左侧折叠条（24px）=====
+        self.left_fold_strip = QFrame()
+        self.left_fold_strip.setObjectName("FoldStrip")
+        self.left_fold_strip.setFixedWidth(24)
+        strip_l = QVBoxLayout(self.left_fold_strip)
+        strip_l.setContentsMargins(0, 0, 0, 0)
+        strip_l.setSpacing(0)
+        strip_l.addSpacing(230)
+        btn_l_wrap = QFrame()
+        btn_l_wrap.setObjectName("FoldBtnWrap")
+        btn_l_wrap.setFixedSize(20, 28)
+        btn_l_layout = QHBoxLayout(btn_l_wrap)
+        btn_l_layout.setContentsMargins(0, 0, 0, 0)
+        btn_l_layout.setSpacing(0)
+        self.btn_toggle_left_strip = QToolButton()
+        self.btn_toggle_left_strip.setObjectName("FoldBtn")
+        self.btn_toggle_left_strip.setAutoRaise(True)
+        self.btn_toggle_left_strip.setFixedSize(20, 28)
+        self.btn_toggle_left_strip.setIconSize(QSize(12, 12))
+        self.btn_toggle_left_strip.setArrowType(Qt.LeftArrow)
+        self.btn_toggle_left_strip.clicked.connect(self._toggle_left_panel)
+        btn_l_layout.addWidget(self.btn_toggle_left_strip, alignment=Qt.AlignCenter)
+        strip_l.addWidget(btn_l_wrap, alignment=Qt.AlignCenter)
+        strip_l.addStretch()
+        self.main_splitter.addWidget(self.left_fold_strip)
         
         # ===== 中区面板 =====
-        center_container = QWidget()
+        center_container = QFrame()
+        center_container.setObjectName("CenterPanel")
         center_layout = QVBoxLayout(center_container)
-        center_layout.setContentsMargins(16, 16, 16, 16)
-        center_layout.setSpacing(12)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(16)
+        # 关键：让 ScrollArea 依据内容计算最小高度，避免“展开后看不见/被挤压为 0 高度”
+        # 同时让中区可自然滚动，解决固定高度导致的占地与不可见问题。
+        center_layout.setSizeConstraint(QLayout.SetMinimumSize)
+        center_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         
         # 基础配置（可折叠）
         self.workflow_config = WorkflowConfigPanel()
+        self.workflow_config.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         center_layout.addWidget(self.workflow_config)
 
         # DAG 可视化
         self.dag_view = DAGViewPanel()
+        self.dag_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         center_layout.addWidget(self.dag_view)
         
         # 步骤列表
         self.step_table = StepTablePanel()
-        center_layout.addWidget(self.step_table, stretch=1)
+        self.step_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        center_layout.addWidget(self.step_table)
         
         # 步骤详情编辑器
         self.step_editor = StepEditorPanel()
+        self.step_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         center_layout.addWidget(self.step_editor)
+
+        # 吸收多余高度：避免当多个模块折叠时仍“强行填满界面”导致大片空白卡片
+        center_layout.addStretch(1)
         
         center_scroll = QScrollArea()
         center_scroll.setWidgetResizable(True)
@@ -136,103 +193,97 @@ class MainWindow(QMainWindow):
         center_scroll.setWidget(center_container)
         self.center_scroll = center_scroll
         self.main_splitter.addWidget(self.center_scroll)
+
+        # ===== 右侧折叠条（24px）=====
+        self.right_fold_strip = QFrame()
+        self.right_fold_strip.setObjectName("FoldStrip")
+        self.right_fold_strip.setFixedWidth(24)
+        strip_r = QVBoxLayout(self.right_fold_strip)
+        strip_r.setContentsMargins(0, 0, 0, 0)
+        strip_r.setSpacing(0)
+        strip_r.addSpacing(230)
+        btn_r_wrap = QFrame()
+        btn_r_wrap.setObjectName("FoldBtnWrap")
+        btn_r_wrap.setFixedSize(20, 28)
+        btn_r_layout = QHBoxLayout(btn_r_wrap)
+        btn_r_layout.setContentsMargins(0, 0, 0, 0)
+        btn_r_layout.setSpacing(0)
+        self.btn_toggle_right_strip = QToolButton()
+        self.btn_toggle_right_strip.setObjectName("FoldBtn")
+        self.btn_toggle_right_strip.setAutoRaise(True)
+        self.btn_toggle_right_strip.setFixedSize(20, 28)
+        self.btn_toggle_right_strip.setIconSize(QSize(12, 12))
+        self.btn_toggle_right_strip.setArrowType(Qt.RightArrow)
+        self.btn_toggle_right_strip.clicked.connect(self._toggle_right_panel)
+        btn_r_layout.addWidget(self.btn_toggle_right_strip, alignment=Qt.AlignCenter)
+        strip_r.addWidget(btn_r_wrap, alignment=Qt.AlignCenter)
+        strip_r.addStretch()
+        self.main_splitter.addWidget(self.right_fold_strip)
         
         # ===== 右侧面板 =====
-        right_panel = QWidget()
+        right_panel = QFrame()
+        right_panel.setObjectName("RightPanel")
+        right_panel.setMaximumWidth(340)
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(16, 16, 16, 16)
-        right_layout.setSpacing(12)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(16)
         
         # 实时日志
         self.log_panel = LogPanel()
-        right_layout.addWidget(self.log_panel, stretch=1)
+        self.log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.log_panel.setFixedHeight(500)
+        right_layout.addWidget(self.log_panel)
         
         # 运行历史
         self.run_history = RunHistoryPanel()
-        right_layout.addWidget(self.run_history)
+        right_layout.addWidget(self.run_history, stretch=1)
         
         self.main_splitter.addWidget(right_panel)
         
         # 设置分割比例
-        self.main_splitter.setSizes([250, 600, 350])
+        self.main_splitter.setSizes([260, 24, 792, 24, 340])
 
         # 记录折叠前尺寸
-        self._left_last_size = 250
-        self._right_last_size = 350
+        self._left_last_size = 260
+        self._right_last_size = 340
 
     
     def _setup_toolbar(self):
         """设置工具栏"""
         toolbar = QToolBar("主工具栏")
         toolbar.setMovable(False)
+        toolbar.setObjectName("MainToolbar")
+        toolbar.setFixedHeight(44)
         self.addToolBar(toolbar)
-        
-        # 新建工作流
-        self.action_new = QAction("新建工作流", self)
-        self.action_new.setShortcut("Ctrl+N")
-        self.action_new.triggered.connect(self._action_new_workflow)
-        toolbar.addAction(self.action_new)
-        
-        # 保存
-        self.action_save = QAction("保存", self)
-        self.action_save.setShortcut("Ctrl+S")
-        self.action_save.triggered.connect(self._action_save)
-        toolbar.addAction(self.action_save)
-        
-        toolbar.addSeparator()
-        
-        # 运行
-        self.action_run = QAction("运行", self)
-        self.action_run.setShortcut("F5")
-        self.action_run.triggered.connect(self._run_workflow)
-        toolbar.addAction(self.action_run)
-        
-        # 停止
-        self.action_stop = QAction("停止", self)
-        self.action_stop.setShortcut("Shift+F5")
-        self.action_stop.triggered.connect(self._stop_workflow)
-        self.action_stop.setEnabled(False)
-        toolbar.addAction(self.action_stop)
-        
-        toolbar.addSeparator()
-        
-        # 导入
-        self.action_import = QAction("导入 JSON", self)
+
+        # 导入/导出（按 Pencil：导入 / 导出）
+        self.action_import = QAction("导入", self)
         self.action_import.triggered.connect(self._action_import_json)
         toolbar.addAction(self.action_import)
         
-        # 导出
-        self.action_export = QAction("导出 JSON", self)
+        self.action_export = QAction("导出", self)
         self.action_export.triggered.connect(self._action_export_json)
         toolbar.addAction(self.action_export)
 
         toolbar.addSeparator()
 
-        # 左右面板折叠
-        self.action_toggle_left = QAction("折叠左侧", self)
-        self.action_toggle_left.triggered.connect(self._toggle_left_panel)
-        toolbar.addAction(self.action_toggle_left)
-
-        self.action_toggle_right = QAction("折叠右侧", self)
-        self.action_toggle_right.triggered.connect(self._toggle_right_panel)
-        toolbar.addAction(self.action_toggle_right)
-
-        toolbar.addSeparator()
-
         # Webhook 管理
-        self.action_webhook = QAction("🔔 Webhook 管理", self)
+        self.action_webhook = QAction("Webhook 管理", self)
         self.action_webhook.triggered.connect(self._open_webhook_manager)
         toolbar.addAction(self.action_webhook)
 
     def _set_edit_mode(self, enabled: bool):
-        self._edit_mode = bool(enabled)
+        enabled = bool(enabled)
+        if self._edit_mode == enabled:
+            return
+        self._edit_mode = enabled
         self.workflow_list.set_edit_enabled(self._edit_mode)
         self.workflow_config.set_edit_enabled(self._edit_mode)
         self.step_table.set_edit_enabled(self._edit_mode)
         self.step_editor.set_edit_enabled(self._edit_mode)
 
         self.statusbar.showMessage("编辑模式：开启" if self._edit_mode else "编辑模式：关闭（防误操作）")
-        self.check_edit_mode.setText("开启" if self._edit_mode else "关闭")
+        self.btn_left_save.setEnabled(self._edit_mode)
 
     def _require_edit_mode(self, action_name: str) -> bool:
         if self._edit_mode:
@@ -265,6 +316,7 @@ class MainWindow(QMainWindow):
         """设置状态栏"""
         self.statusbar = QStatusBar()
         self.setStatusBar(self.statusbar)
+        self.statusbar.setFixedHeight(28)
         self.statusbar.showMessage("就绪")
     
     def _connect_signals(self):
@@ -277,8 +329,12 @@ class MainWindow(QMainWindow):
         self.step_table.step_selected.connect(self._on_step_selected)
         self.step_table.steps_changed.connect(self._on_steps_changed)
 
+        # DAG 双击定位步骤
+        self.dag_view.step_activated.connect(self._on_dag_step_activated)
+
         # 步骤编辑器
         self.step_editor.step_saved.connect(self._on_step_saved)
+        self.step_editor.navigate_to_step.connect(self._on_dag_step_activated)
 
         # 基础配置
         self.workflow_config.workflow_updated.connect(self._on_workflow_updated)
@@ -293,6 +349,16 @@ class MainWindow(QMainWindow):
         self.engine.step_finished.connect(self._on_step_finished)
         self.engine.log_output.connect(self.log_panel.append_log)
         self.engine.progress_updated.connect(self._on_progress_updated)
+        self.engine.error_details.connect(self._on_error_details)
+
+        # 右侧日志：停止运行兜底入口
+        self.log_panel.stop_clicked.connect(self._stop_workflow)
+        
+        # 预演按钮
+        self.run_control.dry_run_clicked.connect(self._on_dry_run)
+
+        # 运行历史：查看失败步骤
+        self.run_history.open_failures_requested.connect(self._open_failures_for_history)
     
     # ===== 槽函数 =====
     
@@ -353,6 +419,14 @@ class MainWindow(QMainWindow):
         self.step_editor.load_step(step_id)
         self.run_control.set_selected_step(step_id)
         self.log_panel.set_context(workflow_id=self._current_workflow_id, step_id=step_id)
+
+    @Slot(int)
+    def _on_dag_step_activated(self, step_id: int):
+        """DAG 双击节点：定位到步骤列表并打开编辑器"""
+        if not step_id:
+            return
+        self.step_table.select_step(step_id)
+        self._on_step_selected(step_id)
     
     @Slot()
     def _on_steps_changed(self):
@@ -391,6 +465,12 @@ class MainWindow(QMainWindow):
         if not self._current_workflow_id:
             QMessageBox.warning(self, "警告", "请先选择一个工作流")
             return
+
+        # 取消/停止：直接执行，不创建后台线程
+        if mode == "cancel":
+            self.engine.cancel()
+            self.statusbar.showMessage("正在停止...")
+            return
         
         # 在后台线程中运行工作流，避免 UI 阻塞
         workflow_id = self._current_workflow_id
@@ -405,27 +485,45 @@ class MainWindow(QMainWindow):
             elif mode == "retry_failed":
                 self.engine.retry_failed(workflow_id)
         
-        self._run_thread = QThread()
-        self._run_thread.run = run_in_thread
+        self._run_thread = threading.Thread(target=run_in_thread, daemon=True)
         self._run_thread.start()
     
     @Slot(int, str)
     def _on_workflow_started(self, workflow_id: int, run_id: str):
         """工作流开始"""
-        self.action_run.setEnabled(False)
-        self.action_stop.setEnabled(True)
         self.statusbar.showMessage(f"运行中... ({run_id})")
-        # 重置 DAG 所有节点状态
+
+        # 运行中：启用停止入口并避免重复触发
+        self.run_control.set_running(True)
+        self.log_panel.set_running(True)
+
+        # 若右侧折叠，则自动展开（确保可随时停止）
+        sizes = self.main_splitter.sizes()
+        if len(sizes) >= 5 and sizes[4] <= 0:
+            sizes[4] = max(getattr(self, "_right_last_size", 340), 250)
+            self.main_splitter.setSizes(sizes)
+        # 运行中锁定右侧折叠按钮，避免误折叠导致无处停止
+        self.btn_toggle_right_strip.setEnabled(False)
+
+        # 重置 DAG 和步骤表格状态
         self.dag_view.reset_all_status()
+        self.step_table.reset_all_status()
     
-    @Slot(int, str, bool)
-    def _on_workflow_finished(self, workflow_id: int, run_id: str, success: bool):
+    @Slot(int, str, str)
+    def _on_workflow_finished(self, workflow_id: int, run_id: str, status: str):
         """工作流结束"""
-        self.action_run.setEnabled(True)
-        self.action_stop.setEnabled(False)
-        
-        status = "完成" if success else "失败"
-        self.statusbar.showMessage(f"运行{status} ({run_id})")
+        # 运行结束：禁用停止入口
+        self.run_control.set_running(False)
+        self.log_panel.set_running(False)
+        self.btn_toggle_right_strip.setEnabled(True)
+
+        status_map = {
+            "success": "完成",
+            "failure": "失败",
+            "cancelled": "已取消",
+        }
+        text = status_map.get(status, status)
+        self.statusbar.showMessage(f"运行{text} ({run_id})")
         
         # 刷新运行历史
         if self._current_workflow_id == workflow_id:
@@ -448,6 +546,77 @@ class MainWindow(QMainWindow):
     def _on_progress_updated(self, current: int, total: int):
         """进度更新"""
         self.statusbar.showMessage(f"进度: {current}/{total}")
+    
+    @Slot(list)
+    def _on_error_details(self, error_list: list):
+        """失败汇总：日志内联 + 弹窗"""
+        self.log_panel.append_error_details(error_list)
+        dialog = ErrorSummaryDialog(error_list, self)
+        dialog.navigate_to_step.connect(self._focus_step)
+        dialog.retry_failed.connect(lambda: self._on_run_requested("retry_failed", None))
+        dialog.open_step_log.connect(lambda sid: self._open_step_log_for_step(sid))
+        dialog.exec_()
+
+    @Slot(int)
+    def _focus_step(self, step_id: int):
+        """定位到步骤（列表选中 + 打开编辑器 + 滚动到可见）"""
+        if not step_id:
+            return
+        try:
+            self.step_table.select_step(step_id)
+            self._on_step_selected(step_id)
+            # 确保步骤列表在中区可见
+            self.center_scroll.ensureWidgetVisible(self.step_table)
+        except Exception:
+            return
+
+    def _open_step_log_for_step(self, step_id: int):
+        """打开指定步骤在最新一次运行中的日志（复用 LogPanel 的上下文）"""
+        if not self._current_workflow_id or not step_id:
+            return
+        try:
+            self.log_panel.set_context(workflow_id=self._current_workflow_id, step_id=step_id)
+            self.log_panel._open_step_log()
+        except Exception:
+            return
+
+    @Slot(int)
+    def _open_failures_for_history(self, history_id: int):
+        """从运行历史打开失败步骤汇总"""
+        if not self._current_workflow_id or not history_id:
+            return
+        try:
+            from database import get_step_logs_by_run, get_steps_by_workflow
+
+            steps = get_steps_by_workflow(self._current_workflow_id)
+            step_name_by_id = {s.id: s.name for s in steps}
+            logs = get_step_logs_by_run(history_id)
+            failures = [
+                {
+                    "step_id": l.step_id,
+                    "step_name": step_name_by_id.get(l.step_id, f"步骤#{l.step_id}"),
+                    "error_message": getattr(l, "error_message", "") or "",
+                }
+                for l in logs
+                if l.status == "failure"
+            ]
+            if not failures:
+                QMessageBox.information(self, "提示", "该次运行没有失败步骤。")
+                return
+            dialog = ErrorSummaryDialog(failures, self)
+            dialog.navigate_to_step.connect(self._focus_step)
+            dialog.retry_failed.connect(lambda: self._on_run_requested("retry_failed", None))
+            dialog.open_step_log.connect(lambda sid: self._open_step_log_for_step(sid))
+            dialog.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, "打开失败汇总失败", str(e))
+    
+    def _on_dry_run(self):
+        """预演模式"""
+        if not self._current_workflow_id:
+            QMessageBox.warning(self, "警告", "请先选择一个工作流")
+            return
+        self.engine.dry_run(self._current_workflow_id)
     
     # ===== 工具栏操作 =====
     
@@ -518,25 +687,29 @@ class MainWindow(QMainWindow):
     def _toggle_left_panel(self):
         """折叠/展开左侧面板"""
         sizes = self.main_splitter.sizes()
+        if len(sizes) < 5:
+            return
         if sizes[0] > 0:
             self._left_last_size = sizes[0]
             sizes[0] = 0
-            self.action_toggle_left.setText("展开左侧")
+            self.btn_toggle_left_strip.setArrowType(Qt.RightArrow)
         else:
             sizes[0] = max(self._left_last_size, 200)
-            self.action_toggle_left.setText("折叠左侧")
+            self.btn_toggle_left_strip.setArrowType(Qt.LeftArrow)
         self.main_splitter.setSizes(sizes)
 
     def _toggle_right_panel(self):
         """折叠/展开右侧面板"""
         sizes = self.main_splitter.sizes()
-        if sizes[2] > 0:
-            self._right_last_size = sizes[2]
-            sizes[2] = 0
-            self.action_toggle_right.setText("展开右侧")
+        if len(sizes) < 5:
+            return
+        if sizes[4] > 0:
+            self._right_last_size = sizes[4]
+            sizes[4] = 0
+            self.btn_toggle_right_strip.setArrowType(Qt.LeftArrow)
         else:
-            sizes[2] = max(self._right_last_size, 250)
-            self.action_toggle_right.setText("折叠右侧")
+            sizes[4] = max(self._right_last_size, 250)
+            self.btn_toggle_right_strip.setArrowType(Qt.RightArrow)
         self.main_splitter.setSizes(sizes)
     
     def closeEvent(self, event):

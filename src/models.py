@@ -37,6 +37,7 @@ class Workflow(Base):
     watch_folders: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     cooldown_seconds: Mapped[int] = mapped_column(Integer, default=8)
     settle_seconds: Mapped[int] = mapped_column(Integer, default=15)
+    log_retention_days: Mapped[int] = mapped_column(Integer, default=30)  # 日志保留天数
 
     # 单脚本模式
     single_script_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -53,6 +54,12 @@ class Workflow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
     
     # 关系
+    stages: Mapped[List["WorkflowStage"]] = relationship(
+        "WorkflowStage",
+        back_populates="workflow",
+        cascade="all, delete-orphan",
+        order_by="WorkflowStage.order",
+    )
     steps: Mapped[List["Step"]] = relationship(
         "Step", back_populates="workflow", 
         cascade="all, delete-orphan",
@@ -102,6 +109,28 @@ class Workflow(Base):
         return []
 
 
+class WorkflowStage(Base):
+    """用途阶段（人为归类的业务阶段）"""
+
+    __tablename__ = "workflow_stages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    uid: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    workflow_id: Mapped[int] = mapped_column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="默认阶段")
+    order: Mapped[int] = mapped_column(Integer, default=0)
+    color: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    workflow: Mapped["Workflow"] = relationship("Workflow", back_populates="stages")
+
+    def __repr__(self):
+        return f"<WorkflowStage(uid={self.uid!r}, name={self.name!r}, order={self.order})>"
+
+
 class Step(Base):
     """步骤模型"""
     __tablename__ = "steps"
@@ -113,6 +142,9 @@ class Step(Base):
     uid: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     order: Mapped[int] = mapped_column(Integer, default=0)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # 用途阶段（人为归类）
+    stage_uid: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     
     # 脚本配置
     step_type: Mapped[str] = mapped_column(String(32), default="python")  # python, excel_powerquery, powerbi_refresh
@@ -129,6 +161,7 @@ class Step(Base):
     chart_theme: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     timeout_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    skip_on_success: Mapped[bool] = mapped_column(Boolean, default=False)  # 上次成功则跳过
     
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
