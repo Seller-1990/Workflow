@@ -27,7 +27,7 @@ from config import StepType
 from database import (
     get_session, update_step, get_steps_by_workflow,
     list_workflows, update_recent_workflow,
-    has_cross_workflow_cycle, list_stages
+    has_cross_workflow_cycle, list_stages, get_stage_order_map
 )
 from models import Step
 from ui.collapsible_section import CollapsibleSection
@@ -336,6 +336,7 @@ class StepEditorPanel(QWidget):
         # 依赖步骤（高级多选）
         self.dep_list = QListWidget()
         self.dep_list.setMaximumHeight(140)
+        self.dep_list.itemChanged.connect(lambda _it: (self._refresh_dep_quick_text(), self._refresh_dependency_preview()))
         grid.addWidget(QLabel("依赖步骤"), row, 0)
         grid.addWidget(self.dep_list, row, 1, 1, 3)
 
@@ -446,7 +447,16 @@ class StepEditorPanel(QWidget):
         """根据当前步骤 order 计算“上一执行步骤”，用于依赖快捷菜单"""
         self._prev_step_uid = None
 
-        steps = sorted(get_steps_by_workflow(step.workflow_id), key=lambda s: s.order)
+        # 与“用途阶段顺序 + step.order”的展示/执行心智一致：上一“执行步骤”应基于该顺序计算
+        try:
+            stage_map = get_stage_order_map(step.workflow_id)
+        except Exception:
+            stage_map = {}
+
+        def _purpose_stage_order(s):
+            return int(stage_map.get(getattr(s, "stage_uid", None), 0) or 0)
+
+        steps = sorted(get_steps_by_workflow(step.workflow_id), key=lambda s: (_purpose_stage_order(s), s.order))
         current_idx = None
         for i, s in enumerate(steps):
             if s.id == step.id:
@@ -483,6 +493,7 @@ class StepEditorPanel(QWidget):
                 self.advanced.setVisible(True)
                 self._act_toggle_details.setText("隐藏高级设置")
             self.advanced.set_collapsed(False)
+            self._ensure_widget_visible(self.dep_list)
             try:
                 self.dep_list.setFocus()
             except Exception:
@@ -492,25 +503,66 @@ class StepEditorPanel(QWidget):
         """快捷设置依赖（通过高级依赖多选列表落地，保持能力一致）"""
         if mode == "none":
             for i in range(self.dep_list.count()):
-                self.dep_list.item(i).setCheckState(Qt.Unchecked)
+                self.dep_list.item(i).setCheckState(Qt.CheckState.Unchecked)
         elif mode == "prev" and self._prev_step_uid:
             for i in range(self.dep_list.count()):
                 item = self.dep_list.item(i)
-                item.setCheckState(Qt.Checked if item.data(Qt.UserRole) == self._prev_step_uid else Qt.Unchecked)
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if item.data(Qt.ItemDataRole.UserRole) == self._prev_step_uid
+                    else Qt.CheckState.Unchecked
+                )
         self._refresh_dep_quick_text()
+        self._refresh_dependency_preview()
 
     def _refresh_dep_quick_text(self):
         deps = []
         for i in range(self.dep_list.count()):
             it = self.dep_list.item(i)
-            if it.checkState() == Qt.Checked:
-                deps.append(it.data(Qt.UserRole))
+            if it.checkState() == Qt.CheckState.Checked:
+                deps.append(it.data(Qt.ItemDataRole.UserRole))
         if not deps:
             self.btn_dep_quick.setText("(无)")
         elif self._prev_step_uid and deps == [self._prev_step_uid]:
             self.btn_dep_quick.setText("上一步")
         else:
             self.btn_dep_quick.setText(f"{len(deps)} 项")
+
+    def _get_selected_dep_uids_from_ui(self) -> list[str]:
+        deps: list[str] = []
+        for i in range(self.dep_list.count()):
+            it = self.dep_list.item(i)
+            if it.checkState() == Qt.CheckState.Checked:
+                uid = it.data(Qt.ItemDataRole.UserRole)
+                if uid:
+                    deps.append(str(uid))
+        return deps
+
+    def _refresh_dependency_preview(self):
+        """当 UI 中依赖选择发生变化时，刷新“依赖摘要（只读）”以避免用户误以为“设置没生效”。
+
+        说明：此预览不落库，真正持久化仍以“保存”为准。
+        """
+        if not self._step_id:
+            return
+        try:
+            with get_session() as session:
+                step = session.query(Step).filter(Step.id == self._step_id).first()
+                if not step:
+                    return
+                self._refresh_dependency_summary(step, override_dep_uids=self._get_selected_dep_uids_from_ui())
+        except Exception:
+            return
+
+    def _ensure_widget_visible(self, widget: QWidget):
+        """尽量把某个控件滚动到可见（用于“自定义依赖”后把依赖多选列表带到视口内）。"""
+        try:
+            win = self.window()
+            scroll = getattr(win, "center_scroll", None)
+            if scroll and hasattr(scroll, "ensureWidgetVisible"):
+                scroll.ensureWidgetVisible(widget)
+        except Exception:
+            pass
 
     def _toggle_extra_sections(self):
         self._extra_sections_visible = not self._extra_sections_visible
@@ -608,8 +660,13 @@ class StepEditorPanel(QWidget):
         except Exception:
             return
 
-    def _refresh_dependency_summary(self, step: Step):
-        """刷新依赖摘要（只读展示 + 定位）"""
+    def _refresh_dependency_summary(self, step: Step, *, override_dep_uids: list[str] | None = None):
+        """刷新依赖摘要（只读展示 + 定位）
+
+        override_dep_uids:
+          - 用于 UI 预览（未保存前也能看到“已选依赖”）
+          - 不改变数据库中 step.depends_on
+        """
         self.list_depends_on.clear()
         self.list_dependents.clear()
         self.dep_warning.setVisible(False)
@@ -619,7 +676,7 @@ class StepEditorPanel(QWidget):
         by_uid = {s.uid: s for s in steps}
         by_id = {s.id: s for s in steps}
 
-        depends_uids = list(step.get_depends_on() or [])
+        depends_uids = list(override_dep_uids if override_dep_uids is not None else (step.get_depends_on() or []))
         depends_steps = [by_uid.get(uid) for uid in depends_uids if by_uid.get(uid)]
         dependents = [s for s in steps if step.uid in set(s.get_depends_on() or [])]
 
