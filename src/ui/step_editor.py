@@ -214,6 +214,18 @@ class StepEditorPanel(QWidget):
                 border: 1px solid {COLORS['border']};
                 border-radius: 8px;
             }}
+            /* 依赖预览列表不需要 indicator，但统一定义，避免某些全局样式导致“黑块” */
+            QListWidget::indicator {{
+                width: 14px;
+                height: 14px;
+                border: 1px solid #CBD5E1;
+                border-radius: 4px;
+                background: #FFFFFF;
+            }}
+            QListWidget::indicator:checked {{
+                background: {COLORS['primary']};
+                border: 1px solid {COLORS['primary']};
+            }}
             QListWidget::item {{ padding: 6px 8px; }}
             QListWidget::item:selected {{ background: {COLORS['selected_bg']}; }}
         """)
@@ -337,6 +349,22 @@ class StepEditorPanel(QWidget):
         # 依赖步骤（高级多选）
         self.dep_list = QListWidget()
         self.dep_list.setMaximumHeight(140)
+        # 明确 indicator 的未选/已选样式，修复“全是黑色方块看不出是否勾选”
+        self.dep_list.setStyleSheet(
+            f"""
+            QListWidget::indicator {{
+                width: 14px;
+                height: 14px;
+                border: 1px solid #CBD5E1;
+                border-radius: 4px;
+                background: #FFFFFF;
+            }}
+            QListWidget::indicator:checked {{
+                background: {COLORS['primary']};
+                border: 1px solid {COLORS['primary']};
+            }}
+            """
+        )
         self.dep_list.itemChanged.connect(lambda _it: (self._refresh_dep_quick_text(), self._refresh_dependency_preview()))
         grid.addWidget(QLabel("依赖步骤"), row, 0)
         grid.addWidget(self.dep_list, row, 1, 1, 3)
@@ -823,7 +851,6 @@ class StepEditorPanel(QWidget):
         # 验证参数格式
         args_text = self.edit_args.text().strip()
         if args_text:
-            import json
             try:
                 args = json.loads(args_text)
                 if not isinstance(args, list):
