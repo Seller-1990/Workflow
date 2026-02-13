@@ -63,3 +63,4 @@ venv.bak/
 data/
 logs/
 workflows_export.json
+image/
