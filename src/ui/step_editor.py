@@ -19,9 +19,10 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QStyle,
+    QScrollArea,
 )
 import json
-from PySide6.QtCore import Signal, Slot, Qt
+from PySide6.QtCore import Signal, Slot, Qt, QTimer
 
 from config import StepType
 from database import (
@@ -493,7 +494,9 @@ class StepEditorPanel(QWidget):
                 self.advanced.setVisible(True)
                 self._act_toggle_details.setText("隐藏高级设置")
             self.advanced.set_collapsed(False)
-            self._ensure_widget_visible(self.dep_list)
+            self._notify_status("自定义依赖：请在下方“依赖步骤”中勾选依赖项，然后点击保存。")
+            # 展开后再滚动定位（让布局先完成），避免用户感觉“点了没反应”
+            QTimer.singleShot(0, lambda: self._ensure_widget_visible(self.dep_list))
             try:
                 self.dep_list.setFocus()
             except Exception:
@@ -528,6 +531,16 @@ class StepEditorPanel(QWidget):
         else:
             self.btn_dep_quick.setText(f"{len(deps)} 项")
 
+    def _notify_status(self, message: str):
+        try:
+            win = self.window()
+            if win and hasattr(win, "statusBar"):
+                sb = win.statusBar()
+                if sb:
+                    sb.showMessage(message, 5000)
+        except Exception:
+            return
+
     def _get_selected_dep_uids_from_ui(self) -> list[str]:
         deps: list[str] = []
         for i in range(self.dep_list.count()):
@@ -561,6 +574,14 @@ class StepEditorPanel(QWidget):
             scroll = getattr(win, "center_scroll", None)
             if scroll and hasattr(scroll, "ensureWidgetVisible"):
                 scroll.ensureWidgetVisible(widget)
+                return
+            # 兜底：在更深层布局/嵌套滚动场景下，向上找最近的 QScrollArea
+            p = self.parentWidget()
+            while p:
+                if isinstance(p, QScrollArea):
+                    p.ensureWidgetVisible(widget)
+                    break
+                p = p.parentWidget()
         except Exception:
             pass
 
@@ -847,18 +868,16 @@ class StepEditorPanel(QWidget):
                 return
             script_path = uid
 
-        # 验证脚本路径存在性（非阻塞，仅警示）
+        # 验证脚本路径存在性（非阻塞：只提示，不阻断保存）
         import os
         if script_path and step_type != "sub_workflow":
             if not os.path.exists(script_path):
-                reply = QMessageBox.warning(
-                    self, "路径提示",
-                    f"脚本路径不存在：\n{script_path}\n\n是否仍要保存？",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No
+                QMessageBox.warning(
+                    self,
+                    "路径提示",
+                    f"脚本路径不存在（仍会保存配置）：\n{script_path}\n\n建议：确认文件已同步到本机或修正路径。",
+                    QMessageBox.Ok,
                 )
-                if reply != QMessageBox.Yes:
-                    return
 
         deps = []
         for i in range(self.dep_list.count()):
@@ -866,24 +885,29 @@ class StepEditorPanel(QWidget):
             if item.checkState() == Qt.Checked:
                 deps.append(item.data(Qt.UserRole))
 
-        update_step(
-            self._step_id,
-            name=self.edit_name.text().strip(),
-            step_type=step_type,
-            script_path=script_path,
-            args=args_text if args_text else None,
-            cwd=self.edit_cwd.text().strip() or None,
-            chart_theme=self.edit_theme.text().strip() or None,
-            timeout_seconds=timeout,
-            retry_count=retry,
-            is_gate=self.check_gate.isChecked(),
-            skip_on_success=self.check_skip_on_success.isChecked(),
-            depends_on=json.dumps(deps, ensure_ascii=False) if deps else None,
-            stage_uid=self.combo_stage.currentData() if self.combo_stage.count() else None,
-        )
+        try:
+            update_step(
+                self._step_id,
+                name=self.edit_name.text().strip(),
+                step_type=step_type,
+                script_path=script_path,
+                args=args_text if args_text else None,
+                cwd=self.edit_cwd.text().strip() or None,
+                chart_theme=self.edit_theme.text().strip() or None,
+                timeout_seconds=timeout,
+                retry_count=retry,
+                is_gate=self.check_gate.isChecked(),
+                skip_on_success=self.check_skip_on_success.isChecked(),
+                depends_on=json.dumps(deps, ensure_ascii=False) if deps else None,
+                stage_uid=self.combo_stage.currentData() if self.combo_stage.count() else None,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", str(e))
+            return
         if step_type == "sub_workflow" and script_path:
             update_recent_workflow(script_path)
         
+        self._notify_status("已保存步骤配置。")
         self.step_saved.emit()
     
     def _reset(self):
