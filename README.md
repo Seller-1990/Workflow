@@ -34,7 +34,7 @@
 
 1. 克隆仓库
 ```bash
-git clone https://github.com/Seller-1990-droid/Workflow.git
+git clone https://github.com/Seller-1990/Workflow.git
 cd Workflow
 ```
 

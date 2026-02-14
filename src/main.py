@@ -17,7 +17,7 @@ from PySide6.QtGui import QFont, QIcon
 
 from ui import MainWindow
 from ui.theme import get_stylesheet
-from config import ICON_PATH
+from config import ICON_PATH, APP_NAME, APP_VERSION
 
 
 def main(argv=None):
@@ -38,9 +38,10 @@ def main(argv=None):
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     
     # 设置应用信息
-    app.setApplicationName("工作流管理")
-    app.setApplicationVersion("1.0.0")
-    app.setOrganizationName("PowerBI学谦")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    # 避免把个人/本机信息写入应用元数据；同时也利于跨机器一致性
+    app.setOrganizationName(APP_NAME)
     
     # 设置默认字体
     font = QFont("Inter", 10)

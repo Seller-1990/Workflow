@@ -1,7 +1,7 @@
 # 工作流管理应用 — 交接文档
 
 > 撰写时间：2026-02-12  
-> 项目路径：`D:\OneDrive - PowerBI学谦\工作\AI分析\工作流管理`  
+> 项目路径：`<AI分析根目录>\\工作流管理`（示例：`D:\\Work\\AI分析\\工作流管理`）  
 > 技术栈：Python 3 + PySide6 (Qt6) + SQLAlchemy + SQLite
 
 ---
