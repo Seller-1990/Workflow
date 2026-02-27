@@ -451,7 +451,6 @@ class WorkflowEngine(QObject):
 
                     # 发送钉钉通知（若启用），确保 cancelled/failure 也能通知
                     if workflow and log_dir:
-                        duration = (end_time - start_time).total_seconds() if start_time and end_time else None
                         self._send_notification(
                             workflow=workflow,
                             run_id=run_id,
@@ -460,7 +459,6 @@ class WorkflowEngine(QObject):
                             reason=reason,
                             start_time=start_time,
                             end_time=end_time,
-                            duration_seconds=duration,
                         )
             except Exception:
                 self._emit_log("警告：运行收尾处理失败")

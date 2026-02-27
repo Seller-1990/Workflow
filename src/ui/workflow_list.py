@@ -121,20 +121,24 @@ class WorkflowListPanel(QWidget):
             return
         self._delete_workflow()
     
-    def load_workflows(self):
+    def load_workflows(self, selected_workflow_id=None):
         """加载工作流列表"""
         self.list_widget.clear()
-        
+
         workflows = list_workflows()
+        selected_row = -1
         for workflow in workflows:
             item = QListWidgetItem(workflow.name)
             item.setData(Qt.UserRole, workflow.id)
             item.setToolTip(f"ID: {workflow.uid}\n创建时间: {workflow.created_at}")
             self.list_widget.addItem(item)
-        
-        # 选中第一个
+
+            if selected_workflow_id is not None and workflow.id == selected_workflow_id:
+                selected_row = self.list_widget.count() - 1
+
+        # 默认选中第一个；若指定了工作流 ID，则优先恢复该选择
         if self.list_widget.count() > 0:
-            self.list_widget.setCurrentRow(0)
+            self.list_widget.setCurrentRow(selected_row if selected_row >= 0 else 0)
     
     @Slot()
     def create_workflow(self):

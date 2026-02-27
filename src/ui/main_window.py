@@ -447,7 +447,7 @@ class MainWindow(QMainWindow):
     def _on_workflow_updated(self):
         """工作流配置更新"""
         if self._current_workflow_id:
-            self.workflow_list.load_workflows()
+            self.workflow_list.load_workflows(selected_workflow_id=self._current_workflow_id)
             workflow = get_workflow_by_id(self._current_workflow_id)
             single_enabled = bool(workflow.single_script_enabled) if workflow else False
             self.step_table.set_single_script_mode(single_enabled)
