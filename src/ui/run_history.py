@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """运行历史面板"""
 
+import logging
 import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
@@ -11,6 +12,8 @@ from PySide6.QtGui import QColor
 
 from database import get_run_histories_by_workflow, clear_run_histories, get_step_logs_by_run
 from ui.collapsible_section import CollapsibleSection
+
+logger = logging.getLogger(__name__)
 
 
 class RunHistoryPanel(QWidget):
@@ -138,6 +141,7 @@ class RunHistoryPanel(QWidget):
                 run_item.setToolTip((run_item.toolTip() or "") + f"\n{summary}")
                 status_item.setToolTip(summary)
             except Exception:
+                logger.debug("加载运行历史统计失败: history_id=%s", history.id, exc_info=True)
                 pass
             
             # 开始时间
@@ -190,6 +194,7 @@ class RunHistoryPanel(QWidget):
                 logs = get_step_logs_by_run(int(history_id))
                 has_failures = any(l.status == "failure" for l in logs)
         except Exception:
+            logger.debug("查询失败步骤状态失败: history_id=%s", history_id, exc_info=True)
             has_failures = False
         action_failures.setEnabled(bool(history_id) and has_failures)
         if bool(history_id) and not has_failures:

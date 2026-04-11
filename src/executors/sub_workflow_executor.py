@@ -56,11 +56,16 @@ class SubWorkflowExecutor(BaseExecutor):
                     error_message="检测到跨工作流循环依赖"
                 )
 
-        from engine import WorkflowEngine
+        workflow_runner = kwargs.get("workflow_runner")
+        if not callable(workflow_runner):
+            return ExecutorResult(
+                success=False,
+                exit_code=1,
+                error_message="未提供子工作流运行器"
+            )
 
         start_time = datetime.now()
-        engine = WorkflowEngine()
-        ok = engine.run_all(target.id, reason="sub_workflow")
+        ok = workflow_runner(target.id, reason="sub_workflow")
         end_time = datetime.now()
 
         return ExecutorResult(

@@ -22,9 +22,10 @@ def _get_python_executable() -> str:
     # 检查是否在打包环境中运行
     if getattr(sys, 'frozen', False):
         # 打包环境：查找系统 Python
-        python_path = shutil.which('python')
-        if python_path:
-            return python_path
+        for command in ('python', 'python3', 'py'):
+            python_path = shutil.which(command)
+            if python_path:
+                return python_path
         # 备选：尝试常见路径
         for candidate in [
             r'C:\Python312\python.exe',
@@ -70,6 +71,36 @@ def _stream_pipe(pipe, file_obj, stream):
 
 class PythonExecutor(BaseExecutor):
     """Python 脚本执行器"""
+
+    SUPPORTED_SUFFIXES = {".py", ".pyw"}
+
+    def _normalize_args(self, args: List[str] = None) -> List[str]:
+        """标准化并校验命令行参数。"""
+        if args is None:
+            return []
+        if isinstance(args, str):
+            return [args]
+        normalized = list(args)
+        if not all(isinstance(arg, str) for arg in normalized):
+            raise ValueError("参数必须全部为字符串")
+        if any("\x00" in arg for arg in normalized):
+            raise ValueError("参数中不能包含空字符")
+        return normalized
+
+    def _resolve_work_dir(self, script: Path, cwd: str = None) -> Path:
+        """解析并校验工作目录。"""
+        if cwd:
+            work_dir = Path(cwd)
+            if not work_dir.is_absolute():
+                work_dir = script.parent / cwd
+        else:
+            work_dir = script.parent
+        work_dir = work_dir.resolve()
+        if not work_dir.exists():
+            raise ValueError(f"工作目录不存在: {work_dir}")
+        if not work_dir.is_dir():
+            raise ValueError(f"工作目录不是文件夹: {work_dir}")
+        return work_dir
     
     def execute(
         self,
@@ -104,14 +135,28 @@ class PythonExecutor(BaseExecutor):
                 exit_code=1,
                 error_message=f"脚本不存在: {script}"
             )
+        if not script.is_file():
+            return ExecutorResult(
+                success=False,
+                exit_code=1,
+                error_message=f"脚本路径不是文件: {script}"
+            )
+        if script.suffix.lower() not in self.SUPPORTED_SUFFIXES:
+            return ExecutorResult(
+                success=False,
+                exit_code=1,
+                error_message=f"不支持的脚本类型: {script.suffix or '无扩展名'}"
+            )
         
-        # 工作目录
-        if cwd:
-            work_dir = Path(cwd)
-            if not work_dir.is_absolute():
-                work_dir = script.parent / cwd
-        else:
-            work_dir = script.parent
+        try:
+            work_dir = self._resolve_work_dir(script, cwd)
+            args = self._normalize_args(args)
+        except ValueError as e:
+            return ExecutorResult(
+                success=False,
+                exit_code=1,
+                error_message=str(e)
+            )
         
         # 准备日志目录
         if log_dir is None:
@@ -135,12 +180,6 @@ class PythonExecutor(BaseExecutor):
         
         if env:
             run_env.update(env)
-        
-        # 准备参数
-        if args is None:
-            args = []
-        elif isinstance(args, str):
-            args = [args]
         
         # 构建命令 - 使用 _get_python_executable() 而不是 sys.executable
         python_exe = _get_python_executable()

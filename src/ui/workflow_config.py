@@ -2,6 +2,8 @@
 """Workflow configuration panel"""
 
 import json
+import logging
+from engine import WorkflowEngine
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -23,6 +25,8 @@ from PySide6.QtCore import Signal, Qt
 from database import get_workflow_by_id, update_workflow, list_webhooks
 from notifier import get_template_variables_help
 from ui.collapsible_section import CollapsibleSection
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowConfigPanel(QWidget):
@@ -275,6 +279,12 @@ class WorkflowConfigPanel(QWidget):
             line.strip() for line in self.edit_watch_folders.toPlainText().splitlines()
             if line.strip()
         ]
+        if self.check_watch.isChecked():
+            try:
+                watch_folders = WorkflowEngine().validate_watch_folders(watch_folders)
+            except ValueError as e:
+                QMessageBox.warning(self, "监听目录无效", str(e))
+                return
 
         try:
             update_workflow(
@@ -294,6 +304,7 @@ class WorkflowConfigPanel(QWidget):
             )
             self.workflow_updated.emit()
         except Exception as e:
+            logger.exception("保存工作流配置失败: workflow_id=%s", self._workflow_id)
             QMessageBox.critical(self, "保存失败", str(e))
 
     def _browse_watch_folder(self):

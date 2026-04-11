@@ -341,6 +341,7 @@ class MainWindow(QMainWindow):
         
         # 运行控制
         self.run_control.run_requested.connect(self._on_run_requested)
+        self.run_control.watch_requested.connect(self._on_watch_requested)
         
         # 引擎
         self.engine.workflow_started.connect(self._on_workflow_started)
@@ -365,6 +366,8 @@ class MainWindow(QMainWindow):
     @Slot(int)
     def _on_workflow_selected(self, workflow_id: int):
         """工作流被选中"""
+        self.engine.stop_watch()
+        self.run_control.set_watching(False)
         self._current_workflow_id = workflow_id
         
         # 加载基础配置
@@ -398,7 +401,7 @@ class MainWindow(QMainWindow):
         # 更新状态栏
         if workflow:
             self.statusbar.showMessage(f"当前工作流: {workflow.name}")
-            self.engine.start_watch(workflow)
+        self._sync_watch_controls(workflow)
     
     @Slot(int)
     def _on_workflow_deleted(self, workflow_id: int):
@@ -406,6 +409,8 @@ class MainWindow(QMainWindow):
         if self._current_workflow_id == workflow_id:
             self._current_workflow_id = None
             self.engine.stop_watch()
+            self.run_control.set_watching(False)
+            self.run_control.set_watch_available(False)
             self.workflow_config.clear()
             self.step_table.clear()
             self.dag_view.clear()
@@ -456,8 +461,44 @@ class MainWindow(QMainWindow):
             self.step_table.set_parallel_available(parallel_enabled)
             self.step_editor.set_parallel_available(parallel_enabled)
             self.step_table.load_steps(self._current_workflow_id)
-            if workflow:
-                self.engine.start_watch(workflow)
+            self.engine.stop_watch()
+            self.run_control.set_watching(False)
+            self._sync_watch_controls(workflow)
+
+    def _sync_watch_controls(self, workflow):
+        """同步监听按钮的可用性。"""
+        watch_available = False
+        if workflow and workflow.watch_enabled and workflow.get_watch_folders():
+            try:
+                self.engine.validate_watch_folders(workflow.get_watch_folders())
+                watch_available = True
+            except ValueError:
+                watch_available = False
+        self.run_control.set_watch_available(watch_available)
+
+    @Slot(bool)
+    def _on_watch_requested(self, should_start: bool):
+        """显式开始/停止监听。"""
+        if not self._current_workflow_id:
+            return
+
+        workflow = get_workflow_by_id(self._current_workflow_id)
+        if not workflow:
+            self.run_control.set_watch_available(False)
+            self.run_control.set_watching(False)
+            return
+
+        if should_start:
+            started = self.engine.start_watch(workflow)
+            self.run_control.set_watching(started)
+            self.statusbar.showMessage(
+                f"已开始监听: {workflow.name}" if started else "监听未启动，请检查监听配置"
+            )
+            return
+
+        self.engine.stop_watch()
+        self.run_control.set_watching(False)
+        self.statusbar.showMessage(f"已停止监听: {workflow.name}")
     
     @Slot(str, object)
     def _on_run_requested(self, mode: str, param):
@@ -727,5 +768,6 @@ class MainWindow(QMainWindow):
             
             self.engine.cancel()
         self.engine.stop_watch()
+        self.run_control.set_watching(False)
         
         event.accept()

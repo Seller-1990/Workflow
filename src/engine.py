@@ -140,6 +140,49 @@ class WorkflowEngine(QObject):
         self._lock = threading.Lock()
         self._watch_thread = None
         self._watch_stop = threading.Event()
+
+    def validate_watch_folders(self, folders: list[str]) -> list[str]:
+        """校验监听目录并返回去重后的绝对路径列表。"""
+        if not folders:
+            raise ValueError("未配置监听目录")
+
+        system_root = Path(os.environ.get("SystemRoot") or os.environ.get("WINDIR") or "")
+        protected_roots = {
+            p.resolve()
+            for p in (
+                system_root,
+                Path(os.environ.get("ProgramFiles") or ""),
+                Path(os.environ.get("ProgramFiles(x86)") or ""),
+            )
+            if str(p).strip()
+        }
+
+        validated: list[str] = []
+        seen: set[str] = set()
+        for raw_folder in folders:
+            folder = (raw_folder or "").strip()
+            if not folder:
+                continue
+
+            path = Path(folder).expanduser().resolve()
+            path_str = str(path)
+            if path_str in seen:
+                continue
+            if not path.exists():
+                raise ValueError(f"监听目录不存在: {path}")
+            if not path.is_dir():
+                raise ValueError(f"监听路径不是目录: {path}")
+            if path.parent == path:
+                raise ValueError(f"不允许监听磁盘根目录: {path}")
+            if any(path == protected or protected in path.parents for protected in protected_roots):
+                raise ValueError(f"不允许监听系统目录: {path}")
+
+            seen.add(path_str)
+            validated.append(path_str)
+
+        if not validated:
+            raise ValueError("未配置有效的监听目录")
+        return validated
     
     @property
     def is_running(self) -> bool:
@@ -210,14 +253,19 @@ class WorkflowEngine(QObject):
 
     # ============== 监听触发 ==============
 
-    def start_watch(self, workflow: Workflow):
+    def start_watch(self, workflow: Workflow) -> bool:
         """启动文件监听"""
         self.stop_watch()
         if not workflow.watch_enabled:
-            return
+            return False
         folders = workflow.get_watch_folders()
         if not folders:
-            return
+            return False
+        try:
+            folders = self.validate_watch_folders(folders)
+        except ValueError as e:
+            self._emit_log(f"监听未启动: {e}")
+            return False
         cooldown = max(1, int(workflow.cooldown_seconds or 8))
         settle = max(0, int(workflow.settle_seconds or 15))
         mode = workflow.watch_mode or "any_change"
@@ -229,12 +277,17 @@ class WorkflowEngine(QObject):
         )
         self._watch_thread.start()
         self._emit_log("已启动文件监听")
+        return True
 
-    def stop_watch(self):
+    def stop_watch(self, join_timeout: float = 1.0):
         """停止文件监听"""
-        if self._watch_thread and self._watch_thread.is_alive():
+        watch_thread = self._watch_thread
+        if watch_thread and watch_thread.is_alive():
             self._watch_stop.set()
-            self._watch_thread = None
+            watch_thread.join(timeout=max(0.0, float(join_timeout or 0.0)))
+            if watch_thread.is_alive():
+                self._emit_log("警告：文件监听线程未能及时退出")
+        self._watch_thread = None
 
     def _watch_loop(self, workflow_id: int, folders: list, cooldown: int, settle: int, mode: str):
         """监听循环"""
@@ -242,7 +295,8 @@ class WorkflowEngine(QObject):
         last_trigger_time = last_mtime
         pending_since = None
         while not self._watch_stop.is_set():
-            time.sleep(cooldown)
+            if self._watch_stop.wait(cooldown):
+                break
             folder_mtimes = self._scan_folder_mtimes(folders)
             current_mtime = max(folder_mtimes.values()) if folder_mtimes else 0
             
@@ -1003,7 +1057,8 @@ class WorkflowEngine(QObject):
                     log_dir=step_log_dir,
                     timeout=step.timeout_seconds,
                     chart_theme=step.chart_theme or workflow.chart_theme,
-                    workflow_id=workflow.id
+                    workflow_id=workflow.id,
+                    workflow_runner=self.run_all
                 )
                 
                 if exec_result.success:

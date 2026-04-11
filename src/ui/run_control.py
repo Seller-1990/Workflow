@@ -21,11 +21,14 @@ class RunControlPanel(QWidget):
     # 信号
     run_requested = Signal(str, object)  # mode, param
     dry_run_clicked = Signal()  # 预演模式
+    watch_requested = Signal(bool)  # True=开始监听, False=停止监听
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self._selected_step_id = None
         self._is_running = False
+        self._watch_available = False
+        self._is_watching = False
         self._setup_ui()
     
     def _setup_ui(self):
@@ -89,6 +92,20 @@ class RunControlPanel(QWidget):
         self.btn_cancel.clicked.connect(lambda: self.run_requested.emit("cancel", None))
         ghost_layout.addWidget(self.btn_cancel)
 
+        self.btn_watch_start = QPushButton("开始监听")
+        self.btn_watch_start.setObjectName("runGhost")
+        self.btn_watch_start.setFixedHeight(30)
+        self.btn_watch_start.setEnabled(False)
+        self.btn_watch_start.clicked.connect(lambda: self.watch_requested.emit(True))
+        ghost_layout.addWidget(self.btn_watch_start)
+
+        self.btn_watch_stop = QPushButton("停止监听")
+        self.btn_watch_stop.setObjectName("runGhost")
+        self.btn_watch_stop.setFixedHeight(30)
+        self.btn_watch_stop.setEnabled(False)
+        self.btn_watch_stop.clicked.connect(lambda: self.watch_requested.emit(False))
+        ghost_layout.addWidget(self.btn_watch_stop)
+
         layout.addWidget(ghost)
 
     def set_running(self, running: bool):
@@ -106,6 +123,24 @@ class RunControlPanel(QWidget):
     def set_selected_step(self, step_id: int):
         """设置选中的步骤"""
         self._selected_step_id = step_id
+
+    def set_watch_available(self, available: bool):
+        """设置当前工作流是否允许启动监听。"""
+        self._watch_available = bool(available)
+        if not self._watch_available:
+            self._is_watching = False
+        self._apply_watch_state()
+
+    def set_watching(self, watching: bool):
+        """设置当前监听状态。"""
+        self._is_watching = bool(watching) and self._watch_available
+        self._apply_watch_state()
+
+    def _apply_watch_state(self):
+        can_start = self._watch_available and not self._is_watching
+        can_stop = self._watch_available and self._is_watching
+        self.btn_watch_start.setEnabled(can_start)
+        self.btn_watch_stop.setEnabled(can_stop)
     
     def _run_all(self):
         """全流程运行"""

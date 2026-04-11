@@ -2,6 +2,7 @@
 """Power BI Desktop 刷新执行器"""
 
 import os
+import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -27,6 +28,10 @@ class PowerBIExecutor(BaseExecutor):
     
     def find_pbidesktop(self) -> Optional[str]:
         """查找 Power BI Desktop 可执行文件"""
+        for command in ("PBIDesktop.exe", "PBIDesktop"):
+            executable = shutil.which(command)
+            if executable:
+                return executable
         for path in self.PBIDESKTOP_PATHS:
             if os.path.exists(path):
                 return path
