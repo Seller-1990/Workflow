@@ -7,28 +7,31 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 
+from ui.theme import COLORS, get_colors
+
 
 class RunControlPanel(QWidget):
     """运行控制面板
     
-    四种运行模式：
+    五种运行模式：
     1. 全流程运行
     2. 从指定步骤开始
     3. 只运行指定步骤
-    4. 重试失败步骤
+    4. 从指定阶段开始
+    5. 重试失败步骤
     """
     
     # 信号
     run_requested = Signal(str, object)  # mode, param
     dry_run_clicked = Signal()  # 预演模式
-    watch_requested = Signal(bool)  # True=开始监听, False=停止监听
+    run_stage_requested = Signal(str)   # stage_uid
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._dark = False
         self._selected_step_id = None
+        self._selected_stage_uid = None
         self._is_running = False
-        self._watch_available = False
-        self._is_watching = False
         self._setup_ui()
     
     def _setup_ui(self):
@@ -44,10 +47,22 @@ class RunControlPanel(QWidget):
         header.setFont(f)
         layout.addWidget(header)
 
-        # 全流程运行（Primary）
+        # 选中步骤提示
+        self.lbl_selected = QLabel("未选中步骤")
+        self.lbl_selected.setObjectName("selectedStepLabel")
+        self.lbl_selected.setStyleSheet(f"""
+            QLabel#selectedStepLabel {{
+                color: {COLORS["text_tertiary"]};
+                font-size: 11px;
+                padding: 2px 0px;
+            }}
+        """)
+        layout.addWidget(self.lbl_selected)
+
+        # 全流程运行（Primary）—— U-P1-2：Primary 升 36px 加强视觉权重 & 满足 Win11 推荐 32px 最小点击区
         self.btn_run_all = QPushButton("▶  全流程运行")
         self.btn_run_all.setObjectName("runPrimary")
-        self.btn_run_all.setFixedHeight(30)
+        self.btn_run_all.setFixedHeight(36)
         self.btn_run_all.clicked.connect(self._run_all)
         layout.addWidget(self.btn_run_all)
 
@@ -56,92 +71,124 @@ class RunControlPanel(QWidget):
         ghost_layout.setContentsMargins(0, 0, 0, 0)
         ghost_layout.setSpacing(2)
 
-        # Ghost buttons（按 Pencil：透明 + 蓝字，圆角 10，高 30，gap 2）
+        # Ghost buttons：高 32px（仍满足 Win11 推荐最小点击区）
         self.btn_run_from = QPushButton("从选中步骤开始")
         self.btn_run_from.setObjectName("runGhost")
-        self.btn_run_from.setFixedHeight(30)
+        self.btn_run_from.setFixedHeight(32)
         self.btn_run_from.clicked.connect(self._run_from)
         ghost_layout.addWidget(self.btn_run_from)
-        
+
         self.btn_run_only = QPushButton("只运行选中步骤")
         self.btn_run_only.setObjectName("runGhost")
-        self.btn_run_only.setFixedHeight(30)
+        self.btn_run_only.setFixedHeight(32)
         self.btn_run_only.clicked.connect(self._run_only)
         ghost_layout.addWidget(self.btn_run_only)
-        
+
+        self.btn_run_stage = QPushButton("只运行该阶段")
+        self.btn_run_stage.setObjectName("runGhost")
+        self.btn_run_stage.setFixedHeight(32)
+        self.btn_run_stage.clicked.connect(self._run_stage)
+        ghost_layout.addWidget(self.btn_run_stage)
+
+        self.btn_run_from_stage = QPushButton("从该阶段开始")
+        self.btn_run_from_stage.setObjectName("runGhost")
+        self.btn_run_from_stage.setFixedHeight(32)
+        self.btn_run_from_stage.clicked.connect(self._run_from_stage)
+        ghost_layout.addWidget(self.btn_run_from_stage)
+
         self.btn_retry = QPushButton("重试失败步骤")
         self.btn_retry.setObjectName("runGhost")
-        self.btn_retry.setFixedHeight(30)
+        self.btn_retry.setFixedHeight(32)
         self.btn_retry.clicked.connect(self._retry_failed)
         ghost_layout.addWidget(self.btn_retry)
-        
-        # 预演（默认可用，但视觉为“次要”）
+
+        # 预演（默认可用，但视觉为「次要」）
         self.btn_dry_run = QPushButton("工作流预演")
         self.btn_dry_run.setObjectName("runGhostMuted")
-        self.btn_dry_run.setFixedHeight(30)
+        self.btn_dry_run.setFixedHeight(28)
         self.btn_dry_run.setToolTip("预览执行计划，不实际执行")
         self.btn_dry_run.clicked.connect(self.dry_run_clicked.emit)
         ghost_layout.addWidget(self.btn_dry_run)
 
-        # 停止运行（运行中启用）
-        self.btn_cancel = QPushButton("停止运行")
-        self.btn_cancel.setObjectName("runGhostDisabled")
-        self.btn_cancel.setFixedHeight(30)
+        # 停止按钮独立分组，加 6px 分隔间距视觉划分（U-P1-2）
+        ghost_layout.addSpacing(6)
+
+        # 停止运行（运行中启用，红色醒目按钮）
+        self.btn_cancel = QPushButton("⏹  停止运行")
+        self.btn_cancel.setObjectName("runDangerPrimary")
+        self.btn_cancel.setFixedHeight(36)
         self.btn_cancel.setToolTip("停止当前运行")
         self.btn_cancel.setEnabled(False)
-        self.btn_cancel.clicked.connect(lambda: self.run_requested.emit("cancel", None))
+        self._cancel_requested = False
+        self.btn_cancel.clicked.connect(self._on_cancel_clicked)
         ghost_layout.addWidget(self.btn_cancel)
 
-        self.btn_watch_start = QPushButton("开始监听")
-        self.btn_watch_start.setObjectName("runGhost")
-        self.btn_watch_start.setFixedHeight(30)
-        self.btn_watch_start.setEnabled(False)
-        self.btn_watch_start.clicked.connect(lambda: self.watch_requested.emit(True))
-        ghost_layout.addWidget(self.btn_watch_start)
-
-        self.btn_watch_stop = QPushButton("停止监听")
-        self.btn_watch_stop.setObjectName("runGhost")
-        self.btn_watch_stop.setFixedHeight(30)
-        self.btn_watch_stop.setEnabled(False)
-        self.btn_watch_stop.clicked.connect(lambda: self.watch_requested.emit(False))
-        ghost_layout.addWidget(self.btn_watch_stop)
-
         layout.addWidget(ghost)
+
+    def refresh_theme(self, dark: bool):
+        self._dark = dark
+        colors = get_colors(dark)
+        self.lbl_selected.setStyleSheet(f"""
+            QLabel#selectedStepLabel {{
+                color: {colors["text_tertiary"]};
+                font-size: 11px;
+                padding: 2px 0px;
+            }}
+        """)
+        # U-P2-3: cancel 按钮也走主题 token，避免硬编码
+        danger = colors["danger"]
+        danger_hover = "#FF6961" if dark else "#FF6961"  # 高亮态可保持一致
+        danger_pressed = "#CC362E" if dark else "#CC2F26"
+        disabled_bg = colors["pressed"]
+        disabled_fg = colors["text_tertiary"]
+        white = colors["text_inverse"]
+        self.btn_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background: {danger}; color: {white}; border: none; border-radius: 10px;
+                padding: 0px 14px; font-size: 13px; font-weight: 600; text-align: center;
+            }}
+            QPushButton:hover {{ background: {danger_hover}; }}
+            QPushButton:pressed {{ background: {danger_pressed}; }}
+            QPushButton:disabled {{ background: {disabled_bg}; color: {disabled_fg}; }}
+        """)
 
     def set_running(self, running: bool):
         """设置运行状态（用于启用/禁用停止入口与避免重复触发运行）"""
         self._is_running = bool(running)
+        if running:
+            self._cancel_requested = False
+            self.btn_cancel.setText("⏹  停止运行")
         self.btn_cancel.setEnabled(self._is_running)
-        # 运行中禁止再次触发运行/预演，避免用户误操作产生“已有工作流正在运行”的错误日志
+        # 运行中禁止再次触发运行/预演，避免用户误操作产生「已有工作流正在运行」的错误日志
         can_run = not self._is_running
         self.btn_run_all.setEnabled(can_run)
-        self.btn_run_from.setEnabled(can_run)
-        self.btn_run_only.setEnabled(can_run)
+        # 更新选中步骤相关按钮
+        has_step = self._selected_step_id is not None
+        has_stage = self._selected_stage_uid is not None
+        self.btn_run_from.setEnabled(has_step and can_run)
+        self.btn_run_only.setEnabled(has_step and can_run)
+        self.btn_run_stage.setEnabled(has_stage and can_run)
+        self.btn_run_from_stage.setEnabled(has_stage and can_run)
         self.btn_retry.setEnabled(can_run)
         self.btn_dry_run.setEnabled(can_run)
     
-    def set_selected_step(self, step_id: int):
-        """设置选中的步骤"""
+    def set_selected_step(self, step_id: int, stage_uid: str = None):
+        """设置选中的步骤和所属阶段"""
         self._selected_step_id = step_id
+        self._selected_stage_uid = stage_uid
+        if step_id:
+            stage_info = f" | 阶段: {stage_uid}" if stage_uid else ""
+            self.lbl_selected.setText(f"已选中步骤 ID: {step_id}{stage_info}")
+        else:
+            self.lbl_selected.setText("未选中步骤")
+        # 更新按钮状态
+        has_step = step_id is not None
+        has_stage = stage_uid is not None
+        self.btn_run_from.setEnabled(has_step and not self._is_running)
+        self.btn_run_only.setEnabled(has_step and not self._is_running)
+        self.btn_run_stage.setEnabled(has_stage and not self._is_running)
+        self.btn_run_from_stage.setEnabled(has_stage and not self._is_running)
 
-    def set_watch_available(self, available: bool):
-        """设置当前工作流是否允许启动监听。"""
-        self._watch_available = bool(available)
-        if not self._watch_available:
-            self._is_watching = False
-        self._apply_watch_state()
-
-    def set_watching(self, watching: bool):
-        """设置当前监听状态。"""
-        self._is_watching = bool(watching) and self._watch_available
-        self._apply_watch_state()
-
-    def _apply_watch_state(self):
-        can_start = self._watch_available and not self._is_watching
-        can_stop = self._watch_available and self._is_watching
-        self.btn_watch_start.setEnabled(can_start)
-        self.btn_watch_stop.setEnabled(can_stop)
-    
     def _run_all(self):
         """全流程运行"""
         self.run_requested.emit("full", None)
@@ -156,6 +203,25 @@ class RunControlPanel(QWidget):
         if self._selected_step_id:
             self.run_requested.emit("only_step", self._selected_step_id)
     
+    def _run_stage(self):
+        """只运行该阶段"""
+        if self._selected_stage_uid:
+            self.run_requested.emit("only_stage", self._selected_stage_uid)
+
+    def _run_from_stage(self):
+        """从该阶段开始运行"""
+        if self._selected_stage_uid:
+            self.run_requested.emit("from_stage", self._selected_stage_uid)
+    
+    def _on_cancel_clicked(self):
+        """停止按钮点击：切换为「正在停止」状态并防重复点击"""
+        if self._cancel_requested:
+            return
+        self._cancel_requested = True
+        self.btn_cancel.setText("⏹  正在停止...")
+        self.btn_cancel.setEnabled(False)
+        self.run_requested.emit("cancel", None)
+
     def _retry_failed(self):
         """重试失败步骤"""
         self.run_requested.emit("retry_failed", None)

@@ -4,7 +4,7 @@
 Pencil SSOT: `designs/ios_minimal_focus.pen` 的 DAG Card（QNGnx）
 - 列 = 用途阶段（S1/S2…）
 - 卡片 = 紧凑节点（高度 52，圆角 12，左侧状态色条 4px）
-- 默认不画“依赖连线”（设计稿未展示），依赖信息放在 tooltip
+- 默认不画「依赖连线」（设计稿未展示），依赖信息放在 tooltip
 """
 
 from __future__ import annotations
@@ -25,27 +25,14 @@ from PySide6.QtWidgets import (
 )
 
 from database import get_steps_by_workflow, list_stages
+from duration_utils import format_duration_short
+from executors import get_type_label
 from ui.collapsible_section import CollapsibleSection
-from ui.theme import COLORS
+from ui.theme import COLORS, get_colors, get_status_tokens, get_type_tokens, get_duration_tokens
 
 
-TYPE_COLORS = {
-    "python": {"text": "#2563EB", "label": "Python"},
-    "excel_powerquery": {"text": "#047857", "label": "Excel PQ"},
-    "powerbi_refresh": {"text": "#B45309", "label": "Power BI"},
-    "sub_workflow": {"text": "#7C3AED", "label": "子工作流"},
-}
-
-
-STATUS_STYLES = {
-    "pending": {"strip": "#9CA3AF", "bg": "#FFFFFF"},
-    "running": {"strip": "#3B82F6", "bg": "#EFF6FF"},
-    "success": {"strip": "#10B981", "bg": "#FFFFFF"},
-    "failure": {"strip": "#EF4444", "bg": "#FEF2F2"},
-}
-
-
-LANE_BGS = ["#FAFBFC", "#F8FAFC", "#F5F3FF"]
+LANE_BGS = [COLORS["surface_header"], COLORS["surface_primary"], "#F5F3FF"]
+DARK_LANE_BGS = ["#2C2C2E", "#3A3A3C", "#2A2430"]
 
 
 class NodeCard(QFrame):
@@ -53,10 +40,15 @@ class NodeCard(QFrame):
 
     activated = Signal(int)  # step_id
 
-    def __init__(self, step_id: int, title: str, type_label: str, type_color: str, is_gate: bool):
+    def __init__(self, step_id: int, title: str, step_type: str, type_color: str, is_gate: bool, dep_count: int = 0, dep_names: list = None, stage_name: str = "", dark: bool = False):
         super().__init__()
         self._step_id = int(step_id)
+        self._step_type = step_type
         self._status = "pending"
+        self._dark = dark
+        self._is_gate = bool(is_gate)
+        self._type_color = type_color
+        self._duration_seconds: Optional[float] = None
 
         self.setObjectName("DagNodeCard")
         self.setFixedHeight(52)
@@ -81,33 +73,49 @@ class NodeCard(QFrame):
         top_l.setContentsMargins(0, 0, 0, 0)
         top_l.setSpacing(6)
 
+        colors = get_colors(dark)
         self.title_label = QLabel(title)
         tf = QFont(self.title_label.font())
         tf.setPointSize(12)
         tf.setWeight(QFont.Weight.DemiBold)
         self.title_label.setFont(tf)
-        self.title_label.setStyleSheet("color:#0F172A;")
+        self.title_label.setStyleSheet(f"color:{colors['text_primary']};")
         self.title_label.setWordWrap(False)
         self.title_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         top_l.addWidget(self.title_label, stretch=1)
 
-        self.gate_badge = QLabel("Gate" if is_gate else "")
-        self.gate_badge.setVisible(bool(is_gate))
-        self.gate_badge.setStyleSheet("color:#6B7280; font-size:11px; font-weight:600;")
-        top_l.addWidget(self.gate_badge, alignment=Qt.AlignRight | Qt.AlignVCenter)
+        self.duration_badge = QLabel("")
+        self.duration_badge.setVisible(False)
+        top_l.addWidget(self.duration_badge, alignment=Qt.AlignRight | Qt.AlignVCenter)
 
         content_layout.addWidget(top)
 
-        self.type_label = QLabel(type_label)
-        self.type_label.setStyleSheet(f"color:{type_color}; font-size:11px; font-weight:600;")
+        type_label_text = get_type_label(step_type)
+        self._type_label_text = type_label_text
+        self._dep_count = dep_count
+        self.type_label = QLabel("")
         content_layout.addWidget(self.type_label)
 
+        dep_names = dep_names or []
+        tip_lines = [title, f"类型: {type_label_text}"]
+        if stage_name:
+            tip_lines.append(f"阶段: {stage_name}")
+        if dep_names:
+            dep_text = "、".join(dep_names[:6])
+            if len(dep_names) > 6:
+                dep_text += f"… 等{len(dep_names)}项"
+            tip_lines.append(f"依赖: {dep_text}")
+        self.setToolTip("\n".join(tip_lines))
+
+        self._refresh_type_label()
+        self._refresh_duration_badge()
         self.set_status("pending")
 
     def set_status(self, status: str):
-        status = status if status in STATUS_STYLES else "pending"
+        tokens = get_status_tokens(self._dark)
+        status = status if status in tokens else "pending"
         self._status = status
-        st = STATUS_STYLES[status]
+        st = tokens[status]
         self.strip.setStyleSheet(f"background:{st['strip']};")
         self.setStyleSheet(
             f"""
@@ -116,6 +124,52 @@ class NodeCard(QFrame):
                 border-radius: 12px;
             }}
             """
+        )
+
+    def set_dark_mode(self, dark: bool):
+        self._dark = dark
+        colors = get_colors(dark)
+        self.title_label.setStyleSheet(f"color:{colors['text_primary']};")
+        type_tokens = get_type_tokens(dark)
+        t = type_tokens.get(self._step_type, next(iter(type_tokens.values())))
+        self._type_color = t["fg"]
+        self._refresh_type_label()
+        self._refresh_duration_badge()
+        self.set_status(self._status)
+
+    def set_duration_seconds(self, duration_seconds: Optional[float]):
+        self._duration_seconds = duration_seconds
+        self._refresh_duration_badge()
+
+    def _refresh_type_label(self):
+        parts = [self._type_label_text]
+        if self._is_gate:
+            parts.append("Gate")
+        if self._dep_count > 0:
+            parts.append(f"{self._dep_count} 个依赖")
+        self.type_label.setText(" · ".join(parts))
+        self.type_label.setStyleSheet(f"color:{self._type_color}; font-size:11px; font-weight:600;")
+
+    def _refresh_duration_badge(self):
+        colors = get_colors(self._dark)
+        duration_text = format_duration_short(self._duration_seconds)
+        visible = bool(duration_text)
+        self.duration_badge.setVisible(visible)
+        if not visible:
+            self.duration_badge.setText("")
+            return
+
+        duration_tokens = get_duration_tokens(self._dark)
+        ds = max(0.0, float(self._duration_seconds or 0.0))
+        if ds < 30:
+            fg = duration_tokens["fast"]
+        elif ds < 300:
+            fg = duration_tokens["medium"]
+        else:
+            fg = duration_tokens["slow"]
+        self.duration_badge.setText(duration_text)
+        self.duration_badge.setStyleSheet(
+            f"color:{fg}; background:{colors['surface_card']}; font-size:11px; font-weight:700; padding:0 4px; border-radius:6px;"
         )
 
     def mouseDoubleClickEvent(self, event):
@@ -140,6 +194,7 @@ class DAGViewPanel(QWidget):
         super().__init__(parent)
         self._workflow_id: Optional[int] = None
         self._is_collapsed = False
+        self._dark = False
         self._nodes: Dict[int, NodeCard] = {}
         self._setup_ui()
 
@@ -157,10 +212,8 @@ class DAGViewPanel(QWidget):
         self.hint_label.setStyleSheet("color:#6B7280; font-size:11px;")
         body.addWidget(self.hint_label)
 
-        # Canvas（白底圆角 12）
         self.canvas = QFrame()
         self.canvas.setObjectName("DagCanvas")
-        # 最小高度对齐定稿，实际高度由内容自适配（避免固定高度导致“折叠占地过大/展开看不全”）
         self.canvas.setMinimumHeight(215)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.canvas.setStyleSheet(
@@ -177,7 +230,6 @@ class DAGViewPanel(QWidget):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.NoFrame)
-        # 你明确希望看到“左右滑块”用于查看后续阶段：水平滚动条常驻
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         canvas_layout.addWidget(self.scroll)
@@ -198,7 +250,12 @@ class DAGViewPanel(QWidget):
         self.hint_label.setVisible(False)
         self.hint_label.setText("")
 
-        # 清空 lanes
+        # R2-#9: 大工作流时禁用绘制更新，重建完成后再统一刷新，避免逐 widget 重绘
+        try:
+            self.lanes_widget.setUpdatesEnabled(False)
+        except Exception:
+            pass
+
         while self.lanes_layout.count():
             item = self.lanes_layout.takeAt(0)
             w = item.widget()
@@ -206,23 +263,32 @@ class DAGViewPanel(QWidget):
                 w.deleteLater()
 
         if not self._workflow_id:
+            self.hint_label.setText("请选择一个工作流")
+            self.hint_label.setVisible(True)
+            try:
+                self.lanes_widget.setUpdatesEnabled(True)
+            except Exception:
+                pass
             return
 
         steps = get_steps_by_workflow(self._workflow_id)
         if not steps:
+            self.hint_label.setText("暂无步骤，请在下方步骤列表中添加")
+            self.hint_label.setVisible(True)
+            try:
+                self.lanes_widget.setUpdatesEnabled(True)
+            except Exception:
+                pass
             return
 
-        # stages（严格按用途阶段排序）
         stages = list_stages(self._workflow_id)
         stage_ordered: List[StageLike] = [StageLike(uid=s.uid, name=s.name) for s in stages]
 
-        # 未归类兜底
         known = {s.uid for s in stages}
         has_unassigned = any(getattr(s, "stage_uid", None) not in known for s in steps)
         if has_unassigned:
             stage_ordered.append(StageLike(uid=None, name="未归类"))
 
-        # group steps by stage
         stage_uid_to_steps: Dict[Optional[str], List] = {st.uid: [] for st in stage_ordered}
         for s in sorted(steps, key=lambda x: x.order):
             suid = getattr(s, "stage_uid", None)
@@ -230,7 +296,6 @@ class DAGViewPanel(QWidget):
                 suid = None
             stage_uid_to_steps.setdefault(suid, []).append(s)
 
-        # 自适配高度：按“最长阶段”的步骤数量计算画布最小高度
         try:
             max_steps = max((len(v) for v in stage_uid_to_steps.values()), default=0)
         except Exception:
@@ -242,17 +307,41 @@ class DAGViewPanel(QWidget):
         content_h = hdr_h + body_padding + (max_steps * card_h) + (max(0, max_steps - 1) * gap)
         self.canvas.setMinimumHeight(max(215, content_h + 24))
 
-        # no explicit deps hint
         has_deps = any(bool(s.get_depends_on()) for s in steps)
         if not has_deps:
             self.hint_label.setText("无显式依赖：按用途阶段顺序执行")
             self.hint_label.setVisible(True)
 
+        uid_to_name = {s.uid: s.name for s in steps}
+
+        # U-P3-8: 自适应阶段宽度——视口宽度足够容纳全部阶段时按可用宽度等分，
+        # 否则降为最小 160px 以减少水平滚动。最大维持 200px 保留视觉留白。
+        spacing = 10
+        margins_lr = 20
+        min_lane_w = 160
+        max_lane_w = 200
+        try:
+            viewport_w = max(0, int(self.canvas.parent().width()) if self.canvas.parent() else 0)
+        except Exception:
+            viewport_w = 0
+        n = max(1, len(stage_ordered))
+        usable = max(0, viewport_w - margins_lr - (n - 1) * spacing)
+        lane_w = max(min_lane_w, min(max_lane_w, usable // n if usable else min_lane_w))
+
+        # R2-#9: 预计算循环不变量，避免每个 lane / card 重复查找
+        lane_bgs = DARK_LANE_BGS if self._dark else LANE_BGS
+        lane_bg_count = len(lane_bgs)
+        hdr_bg = "#2C2C2E" if self._dark else "#F3F4F6"
+        hdr_text_color = "#AEAEB2" if self._dark else "#6B7280"
+        hdr_text_style = f"color:{hdr_text_color}; font-size:11px; font-weight:600;"
+        type_colors_map = get_type_tokens(self._dark)
+        default_type = type_colors_map["python"]
+
         for idx, st in enumerate(stage_ordered, start=1):
             lane = QFrame()
-            lane.setFixedWidth(180)
+            lane.setFixedWidth(lane_w)
             lane.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-            lane.setStyleSheet(f"background:{LANE_BGS[(idx - 1) % len(LANE_BGS)]};")
+            lane.setStyleSheet(f"background:{lane_bgs[(idx - 1) % lane_bg_count]};")
 
             lane_layout = QVBoxLayout(lane)
             lane_layout.setContentsMargins(0, 0, 0, 0)
@@ -260,13 +349,14 @@ class DAGViewPanel(QWidget):
 
             hdr = QFrame()
             hdr.setFixedHeight(28)
-            hdr.setStyleSheet("background:#F3F4F6;")
+            hdr.setStyleSheet(f"background:{hdr_bg};")
             hdr_l = QHBoxLayout(hdr)
             hdr_l.setContentsMargins(12, 0, 12, 0)
             hdr_l.setSpacing(6)
-            count = len(stage_uid_to_steps.get(st.uid, []))
+            stage_steps = stage_uid_to_steps.get(st.uid, [])
+            count = len(stage_steps)
             hdr_text = QLabel(f"S{idx} {st.name} · {count}步")
-            hdr_text.setStyleSheet("color:#6B7280; font-size:11px; font-weight:600;")
+            hdr_text.setStyleSheet(hdr_text_style)
             hdr_l.addWidget(hdr_text)
             lane_layout.addWidget(hdr)
 
@@ -276,42 +366,54 @@ class DAGViewPanel(QWidget):
             body_l.setSpacing(8)
             lane_layout.addWidget(body_w, stretch=1)
 
-            # 垂直居中：步骤较少时上下留白均分（更接近定稿示意）
             body_l.addStretch(1)
-            for s in stage_uid_to_steps.get(st.uid, []):
-                t = TYPE_COLORS.get(s.step_type, TYPE_COLORS["python"])
+            for s in stage_steps:
+                t = type_colors_map.get(s.step_type, default_type)
                 title = f"{s.order + 1}. {s.name}"
-                card = NodeCard(s.id, title, t["label"], t["text"], bool(getattr(s, "is_gate", False)))
-                card.activated.connect(self.step_activated.emit)
-                # tooltip：依赖摘要
                 deps = list(s.get_depends_on() or [])
-                tip = [title, f"类型: {t['label']}"]
-                if deps:
-                    tip.append("依赖: " + "、".join(deps[:4]) + ("…" if len(deps) > 4 else ""))
-                card.setToolTip("\n".join(tip))
+                dep_names = [uid_to_name.get(uid, uid) for uid in deps]
+                card = NodeCard(
+                    s.id, title, s.step_type, t["fg"],
+                    bool(getattr(s, "is_gate", False)),
+                    dep_count=len(deps),
+                    dep_names=dep_names,
+                    stage_name=st.name,
+                    dark=self._dark,
+                )
+                card.activated.connect(self.step_activated.emit)
                 body_l.addWidget(card)
                 self._nodes[s.id] = card
 
             body_l.addStretch(1)
             self.lanes_layout.addWidget(lane)
 
-        # 确保水平滚动条生效：为 lanes_widget 设置明确的最小宽度（lane 固定宽度 + spacing + margins）
-        lane_w = 180
-        spacing = 10
-        margins_lr = 20  # lanes_layout 左右 10 + 10
+        # U-P3-8: 重新计算总宽度（lane_w 已自适应）
         total_w = margins_lr + (len(stage_ordered) * lane_w) + (max(0, len(stage_ordered) - 1) * spacing)
         self.lanes_widget.setMinimumWidth(total_w)
 
-        # 注意：不要 addStretch()，否则内容会被拉伸到 viewport 宽度，水平滚动条不会出现
+        # R2-#9: 恢复绘制更新
+        try:
+            self.lanes_widget.setUpdatesEnabled(True)
+        except Exception:
+            pass
 
-    def update_step_status(self, step_id: int, status: str):
-        node = self._nodes.get(int(step_id)) if step_id else None
+    def update_step_status(self, step_id: int, status: str, duration_seconds: Optional[float] = None):
+        if step_id is None:
+            return
+        try:
+            sid = int(step_id)
+        except (ValueError, TypeError):
+            return
+        node = self._nodes.get(sid)
         if node:
             node.set_status(status)
+            if duration_seconds is not None or status == "running":
+                node.set_duration_seconds(None if status == "running" else duration_seconds)
 
     def reset_all_status(self):
         for node in self._nodes.values():
             node.set_status("pending")
+            node.set_duration_seconds(None)
 
     def clear(self):
         self._workflow_id = None
@@ -321,3 +423,24 @@ class DAGViewPanel(QWidget):
             w = item.widget()
             if w:
                 w.deleteLater()
+        # R2-#7: 清空后保留空状态提示
+        self.hint_label.setText("请选择一个工作流")
+        self.hint_label.setVisible(True)
+
+    def refresh_theme(self, dark: bool):
+        self._dark = dark
+        colors = get_colors(dark)
+        self.section.refresh_theme(dark)
+        self.hint_label.setStyleSheet(f"color:{colors['text_secondary']}; font-size:11px;")
+        self.canvas.setStyleSheet(
+            f"""
+            QFrame#DagCanvas {{
+                background: {colors['background']};
+                border-radius: 12px;
+            }}
+            """
+        )
+        for node in self._nodes.values():
+            node.set_dark_mode(dark)
+        if self._workflow_id is not None:
+            self.update_dag(self._workflow_id)

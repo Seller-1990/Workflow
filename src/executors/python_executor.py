@@ -44,8 +44,13 @@ def _get_python_executable() -> str:
 
 
 def _decode_line(raw: bytes) -> str:
-    """解码输出行"""
-    for enc in ('utf-8', 'gbk', 'gb2312', 'gb18030', 'latin-1'):
+    """解码输出行
+
+    L7 修复：移除 latin-1 兜底（会把 UTF-8 字节当 latin-1 解码导致中文乱码）。
+    所有候选编码失败后统一使用 utf-8 + replace（不可解码字节渲染为 �），
+    避免出现"乱码字符串通过校验"的假阳性。
+    """
+    for enc in ('utf-8', 'gbk', 'gb2312', 'gb18030'):
         try:
             return raw.decode(enc)
         except (UnicodeDecodeError, LookupError):
@@ -53,20 +58,33 @@ def _decode_line(raw: bytes) -> str:
     return raw.decode('utf-8', errors='replace')
 
 
-def _stream_pipe(pipe, file_obj, stream):
+def _stream_pipe(pipe, file_obj, stream, log_errors: bool = True):
     """流式读取管道输出"""
     try:
         for raw_line in iter(pipe.readline, b''):
+            if not raw_line:  # 管道已关闭
+                break
             decoded = _decode_line(raw_line)
-            file_obj.write(decoded)
-            file_obj.flush()
+            try:
+                file_obj.write(decoded)
+                file_obj.flush()
+            except IOError as e:
+                if log_errors:
+                    print(f"[PythonExecutor] 写入日志文件失败: {e}", file=sys.stderr)
+                break
             try:
                 stream.write(decoded)
                 stream.flush()
             except Exception:
+                # 控制台写入失败可忽略（如重定向到非TTY）
                 pass
-    except Exception:
-        pass
+    except IOError as e:
+        # 管道读取错误（如进程被强制终止）
+        if log_errors:
+            print(f"[PythonExecutor] 读取管道失败: {e}", file=sys.stderr)
+    except Exception as e:
+        if log_errors:
+            print(f"[PythonExecutor] 输出流处理异常: {e}", file=sys.stderr)
 
 
 class PythonExecutor(BaseExecutor):
@@ -111,6 +129,7 @@ class PythonExecutor(BaseExecutor):
         log_dir: Path = None,
         timeout: int = None,
         chart_theme: str = None,
+        cancel_event: threading.Event = None,
         **kwargs
     ) -> ExecutorResult:
         """执行 Python 脚本
@@ -127,6 +146,10 @@ class PythonExecutor(BaseExecutor):
         Returns:
             ExecutorResult: 执行结果
         """
+        # 初始化默认值，防止异常处理中未定义
+        stdout_path = None
+        stderr_path = None
+        
         # 解析路径
         script = self.get_absolute_path(script_path)
         if not script.exists():
@@ -219,9 +242,39 @@ class PythonExecutor(BaseExecutor):
                 t_out.start()
                 t_err.start()
                 
-                # 等待完成
+                # 等待完成（支持取消中断 + 超时）
+                # MA1: 改用 BaseExecutor.wait_with_cancel 统一等待语义
                 try:
-                    proc.wait(timeout=timeout)
+                    if cancel_event:
+                        normal, cancelled = self.wait_with_cancel(
+                            proc, timeout or 0, cancel_event, check_interval=0.5
+                        )
+                        if cancelled:
+                            proc.kill()
+                            try:
+                                proc.communicate(timeout=3)
+                            except subprocess.TimeoutExpired:
+                                proc.wait()
+                            t_out.join(timeout=5)
+                            t_err.join(timeout=5)
+                            end_time = datetime.now()
+                            return ExecutorResult(
+                                success=False,
+                                exit_code=-1,
+                                start_time=start_time,
+                                end_time=end_time,
+                                stdout_path=str(stdout_path),
+                                stderr_path=str(stderr_path),
+                                error_message="用户取消"
+                            )
+                        if not normal:
+                            # 超时：与原 subprocess.TimeoutExpired 路径行为一致
+                            raise subprocess.TimeoutExpired(cmd=str(script_path), timeout=timeout)
+                    else:
+                        if timeout is not None:
+                            proc.wait(timeout=timeout)
+                        else:
+                            proc.wait()
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
@@ -236,8 +289,8 @@ class PythonExecutor(BaseExecutor):
                         error_message=f"执行超时 ({timeout}秒)"
                     )
                 
-                t_out.join()
-                t_err.join()
+                t_out.join(timeout=10)
+                t_err.join(timeout=10)
             
             end_time = datetime.now()
             exit_code = proc.returncode
@@ -259,7 +312,7 @@ class PythonExecutor(BaseExecutor):
                 exit_code=-1,
                 start_time=start_time,
                 end_time=end_time,
-                stdout_path=str(stdout_path) if stdout_path.exists() else None,
-                stderr_path=str(stderr_path) if stderr_path.exists() else None,
+                stdout_path=str(stdout_path) if stdout_path and stdout_path.exists() else None,
+                stderr_path=str(stderr_path) if stderr_path and stderr_path.exists() else None,
                 error_message=str(e)
             )

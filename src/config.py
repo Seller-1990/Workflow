@@ -3,6 +3,7 @@
 
 import os
 import sys
+import json
 from pathlib import Path
 
 # 判断是否为打包后的 exe
@@ -20,18 +21,24 @@ ICON_PATH = ROOT_DIR / "图标.png"
 
 # 数据目录
 DATA_DIR = APP_DATA_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 
 # 日志目录
 LOG_DIR = APP_DATA_DIR / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 
 # 数据库路径
 DATABASE_PATH = DATA_DIR / "workflows.db"
 
 # 应用信息
 APP_NAME = "工作流管理"
-APP_VERSION = "2.0.0"
+APP_VERSION = "3.0.0"
 
 # 默认配置
 DEFAULT_CONFIG = {
@@ -49,6 +56,30 @@ DEFAULT_CONFIG = {
         "message_template": "{工作流名称} | {状态} | 编号={运行编号}"
     }
 }
+
+# 配置文件路径
+CONFIG_PATH = APP_DATA_DIR / "config.json"
+
+
+def load_user_config() -> dict:
+    """加载用户配置"""
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_user_config(config: dict):
+    """保存用户配置"""
+    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+# 合并默认配置和用户配置
+USER_CONFIG = {**DEFAULT_CONFIG, **load_user_config()}
 
 # 步骤类型
 class StepType:

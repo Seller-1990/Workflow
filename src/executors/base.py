@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """执行器基类"""
 
+import subprocess
+import sys
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+import threading
 
 
 @dataclass
@@ -34,6 +38,94 @@ class BaseExecutor(ABC):
     def __init__(self):
         self.name = self.__class__.__name__
     
+    @staticmethod
+    def wait_with_cancel(
+        proc,
+        timeout: int,
+        cancel_event: threading.Event = None,
+        check_interval: float = 0.5
+    ) -> tuple[bool, bool]:
+        """统一的取消感知等待
+
+        Args:
+            proc: subprocess.Popen 进程对象
+            timeout: 超时时间（秒）
+            cancel_event: 取消事件，设置后应尽早中断
+            check_interval: 检查间隔（秒）
+
+        Returns:
+            tuple[bool, bool]: (是否正常结束, 是否被取消)
+            - (True, False): 进程正常结束
+            - (True, True): 进程被取消中断
+            - (False, False): 进程超时
+        """
+        start = time.time()
+        while proc.poll() is None:
+            if cancel_event and cancel_event.is_set():
+                return (True, True)  # 被取消
+            if timeout and time.time() - start > timeout:
+                return (False, False)  # 超时
+            time.sleep(check_interval)
+        return (True, False)  # 进程正常结束
+
+    @staticmethod
+    def sleep_with_cancel(
+        duration: float,
+        cancel_event: threading.Event = None,
+        chunk: float = 0.5,
+    ) -> bool:
+        """MA1: 取消感知的固定时长等待
+
+        用于"启动后等待若干秒让外部应用初始化"的场景。
+
+        Returns:
+            bool: True = 期间被取消；False = 正常等待完成
+        """
+        if duration <= 0:
+            return bool(cancel_event and cancel_event.is_set())
+        remaining = float(duration)
+        while remaining > 0:
+            if cancel_event and cancel_event.is_set():
+                return True
+            step = chunk if remaining > chunk else remaining
+            time.sleep(step)
+            remaining -= step
+        return bool(cancel_event and cancel_event.is_set())
+
+    @staticmethod
+    def kill_process_tree(proc, taskkill_timeout: int = 10, wait_timeout: int = 5) -> None:
+        """MA1: 统一的进程树终止逻辑（Windows: taskkill /F /T，其它: proc.kill）
+
+        子类如果有更激进的兜底（如 psutil 扫描特定进程名），可以在调用本方法后追加。
+        """
+        if proc is None:
+            return
+        if sys.platform == "win32":
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    timeout=taskkill_timeout,
+                )
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        else:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=wait_timeout)
+        except (subprocess.TimeoutExpired, Exception):
+            try:
+                proc.kill()
+                proc.wait(timeout=wait_timeout)
+            except Exception:
+                pass
+
     @abstractmethod
     def execute(
         self,
@@ -43,6 +135,7 @@ class BaseExecutor(ABC):
         env: Dict[str, str] = None,
         log_dir: Path = None,
         timeout: int = None,
+        cancel_event: threading.Event = None,
         **kwargs
     ) -> ExecutorResult:
         """执行步骤
@@ -54,6 +147,7 @@ class BaseExecutor(ABC):
             env: 环境变量
             log_dir: 日志目录
             timeout: 超时时间（秒）
+            cancel_event: 取消事件，设置后执行器应尽早中断并返回
             **kwargs: 其他参数
             
         Returns:
@@ -85,6 +179,9 @@ class BaseExecutor(ABC):
         Returns:
             绝对路径
         """
+        if not path_value:
+            return Path()
+        
         path = Path(path_value)
         if path.is_absolute():
             return path
@@ -92,6 +189,13 @@ class BaseExecutor(ABC):
         if base_dir:
             return (base_dir / path).resolve()
         
-        # 默认使用项目根目录
-        from config import ROOT_DIR
-        return (ROOT_DIR.parent / path).resolve()
+        # 检测是否在打包环境中
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            # PyInstaller 打包环境
+            base_dir = Path(sys._MEIPASS)
+        else:
+            # 开发环境：使用项目根目录
+            from config import ROOT_DIR
+            base_dir = ROOT_DIR.parent
+        
+        return (base_dir / path).resolve()

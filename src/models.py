@@ -2,16 +2,19 @@
 """SQLAlchemy ORM 模型定义"""
 
 import json
+import logging
 from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, DateTime, 
-    ForeignKey, create_engine, JSON
+    Column, Integer, String, Text, Boolean, DateTime,
+    ForeignKey, Index
 )
 from sqlalchemy.orm import (
     DeclarativeBase, relationship, Mapped, mapped_column
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -52,7 +55,7 @@ class Workflow(Base):
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
-    
+
     # 关系
     stages: Mapped[List["WorkflowStage"]] = relationship(
         "WorkflowStage",
@@ -69,19 +72,24 @@ class Workflow(Base):
         "RunHistory", back_populates="workflow",
         cascade="all, delete-orphan"
     )
-    
+    versions: Mapped[List["WorkflowVersion"]] = relationship(
+        "WorkflowVersion", back_populates="workflow",
+        cascade="all, delete-orphan",
+        order_by="WorkflowVersion.version.desc()"
+    )
+
     def __repr__(self):
         return f"<Workflow(uid={self.uid!r}, name={self.name!r})>"
-    
+
     def get_notify_config(self) -> dict:
         """获取通知配置"""
         if self.notify_config:
             try:
                 return json.loads(self.notify_config)
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning("通知配置 JSON 解析失败: %s", e)
         return {}
-    
+
     def set_notify_config(self, config: dict):
         """设置通知配置"""
         self.notify_config = json.dumps(config, ensure_ascii=False)
@@ -91,8 +99,8 @@ class Workflow(Base):
         if self.watch_folders:
             try:
                 return json.loads(self.watch_folders)
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning("监听目录 JSON 解析失败: %s", e)
         return []
 
     def set_watch_folders(self, folders: list):
@@ -104,9 +112,24 @@ class Workflow(Base):
         if self.single_script_args:
             try:
                 return json.loads(self.single_script_args)
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning("单脚本参数 JSON 解析失败: %s", e)
         return []
+
+
+class WorkflowVersion(Base):
+    """工作流配置版本历史"""
+    __tablename__ = "workflow_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workflow_id: Mapped[int] = mapped_column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)  # 自增版本号
+    snapshot: Mapped[str] = mapped_column(Text, nullable=False)     # JSON 快照
+    change_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+
+    # 关系
+    workflow: Mapped["Workflow"] = relationship("Workflow", back_populates="versions")
 
 
 class WorkflowStage(Base):
@@ -136,7 +159,7 @@ class Step(Base):
     __tablename__ = "steps"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    workflow_id: Mapped[int] = mapped_column(Integer, ForeignKey("workflows.id"), nullable=False)
+    workflow_id: Mapped[int] = mapped_column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
     
     # 基本信息
     uid: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -145,6 +168,11 @@ class Step(Base):
 
     # 用途阶段（人为归类）
     stage_uid: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+
+    __table_args__ = (
+        Index('uq_steps_workflow_uid', 'workflow_id', 'uid', unique=True),
+        Index('ix_steps_workflow_order', 'workflow_id', 'order'),
+    )
     
     # 脚本配置
     step_type: Mapped[str] = mapped_column(String(32), default="python")  # python, excel_powerquery, powerbi_refresh
@@ -182,8 +210,8 @@ class Step(Base):
         if self.args:
             try:
                 return json.loads(self.args)
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning("步骤参数 JSON 解析失败: %s", e)
         return []
     
     def set_args(self, args: list):
@@ -195,8 +223,8 @@ class Step(Base):
         if self.depends_on:
             try:
                 return json.loads(self.depends_on)
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning("步骤依赖 JSON 解析失败: %s", e)
         return []
     
     def set_depends_on(self, deps: list):
@@ -209,8 +237,8 @@ class RunHistory(Base):
     __tablename__ = "run_histories"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    workflow_id: Mapped[int] = mapped_column(Integer, ForeignKey("workflows.id"), nullable=False)
-    
+    workflow_id: Mapped[int] = mapped_column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+
     # 运行信息
     run_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")  # pending, running, success, failure, cancelled
@@ -226,12 +254,21 @@ class RunHistory(Base):
     # 运行模式
     run_mode: Mapped[str] = mapped_column(String(32), default="full")  # full, from_step, only_step, retry_failed
     run_mode_param: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # 相关参数
+
+    # 执行追踪
+    trace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)  # 追踪 ID（同一次完整执行的顶级 ID）
+    parent_run_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)  # 父运行 ID（子工作流关联）
     
     # 关系
     workflow: Mapped["Workflow"] = relationship("Workflow", back_populates="run_histories")
     step_logs: Mapped[List["StepLog"]] = relationship(
         "StepLog", back_populates="run_history",
         cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index('ix_run_histories_wf_status_time', 'workflow_id', 'status', 'start_time'),
+        Index('ix_run_histories_wf_endtime', 'workflow_id', 'end_time'),  # HA3: 加速 only_finished 路径
     )
     
     def __repr__(self):
@@ -250,8 +287,8 @@ class StepLog(Base):
     __tablename__ = "step_logs"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_history_id: Mapped[int] = mapped_column(Integer, ForeignKey("run_histories.id"), nullable=False)
-    step_id: Mapped[int] = mapped_column(Integer, ForeignKey("steps.id"), nullable=False)
+    run_history_id: Mapped[int] = mapped_column(Integer, ForeignKey("run_histories.id"), nullable=False, index=True)
+    step_id: Mapped[int] = mapped_column(Integer, ForeignKey("steps.id"), nullable=False, index=True)
     
     # 执行信息
     order: Mapped[int] = mapped_column(Integer, default=0)
@@ -270,7 +307,14 @@ class StepLog(Base):
     # 关系
     run_history: Mapped["RunHistory"] = relationship("RunHistory", back_populates="step_logs")
     step: Mapped["Step"] = relationship("Step", back_populates="step_logs")
-    
+
+    __table_args__ = (
+        Index('ix_step_logs_run_status', 'run_history_id', 'status'),
+        Index('ix_step_logs_step_status', 'step_id', 'status'),  # HA3: 加速 skip_on_success 检查
+        # R2-#5: 加速 get_recent_step_logs_for_step（WHERE step_id=? AND run_history_id IN (...) ORDER BY run_history_id DESC）
+        Index('ix_step_logs_step_run', 'step_id', 'run_history_id'),
+    )
+
     def __repr__(self):
         return f"<StepLog(step_id={self.step_id}, status={self.status!r})>"
     

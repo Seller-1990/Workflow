@@ -4,12 +4,46 @@
 import os
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from executors.base import BaseExecutor, ExecutorResult
+from constants import POWERBI_REFRESH_TIMEOUT
+
+
+def _kill_process_tree(proc):
+    """终止进程及其所有子进程
+
+    M5 修复：Power BI Desktop 启动后会 fork msmdsrv / Microsoft.Mashup.Container 子进程；
+    若 launcher 已退出，子进程成为孤儿仍占文件锁。先用 taskkill /T 杀进程树，
+    再用 psutil 扫描全机 PBIDesktop / msmdsrv / Mashup 残余进程兜底。
+
+    MA1：通用 taskkill / proc.kill 已迁移到 BaseExecutor.kill_process_tree；
+    本函数仅保留 Power BI 特定的残余进程兜底扫描。
+    """
+    BaseExecutor.kill_process_tree(proc)
+
+    # 兜底清扫：扫描机器上仍存活的 Power BI 系列进程（仅 Windows）
+    if sys.platform == "win32":
+        try:
+            import psutil
+            targets = ("PBIDesktop.exe", "msmdsrv.exe", "Microsoft.Mashup.Container.NetFX45.exe", "Microsoft.Mashup.Container.exe")
+            for p in psutil.process_iter(attrs=["pid", "name"]):
+                try:
+                    if (p.info.get("name") or "") in targets:
+                        # 谨慎：若用户手动开了 PBIDesktop，会被一起杀掉。
+                        # 但本函数只在 cancel / timeout 路径被调用，权衡上接受这种副作用。
+                        p.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except ImportError:
+            pass
+        except Exception:
+            pass
 
 
 class PowerBIExecutor(BaseExecutor):
@@ -47,6 +81,7 @@ class PowerBIExecutor(BaseExecutor):
         timeout: int = None,
         auto_close: bool = True,
         auto_refresh: bool = True,
+        cancel_event: threading.Event = None,
         **kwargs
     ) -> ExecutorResult:
         """刷新 Power BI 文件
@@ -111,9 +146,9 @@ class PowerBIExecutor(BaseExecutor):
                 if arg == "--no-auto-refresh":
                     auto_refresh = False
 
-        # 默认超时 10 分钟
+        # 默认超时（MA3：来自 constants.py）
         if timeout is None:
-            timeout = 600
+            timeout = POWERBI_REFRESH_TIMEOUT
         
         start_time = datetime.now()
         log_messages = []
@@ -131,15 +166,31 @@ class PowerBIExecutor(BaseExecutor):
             # 使用 shell 打开（调用默认程序）
             proc = subprocess.Popen(
                 [pbidesktop, str(pbix_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
             )
             
             # 等待一段时间让 Power BI 加载
             wait_time = min(30, timeout)
             log_messages.append(f"[{datetime.now().isoformat()}] 等待 Power BI 加载 ({wait_time}秒)...")
-            time.sleep(wait_time)
-            
+            if BaseExecutor.sleep_with_cancel(wait_time, cancel_event, chunk=1.0):
+                log_messages.append(f"[{datetime.now().isoformat()}] 用户取消，尝试关闭 Power BI...")
+                _kill_process_tree(proc)
+                end_time = datetime.now()
+                with open(stdout_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(log_messages))
+                with open(stderr_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(error_messages))
+                return ExecutorResult(
+                    success=False,
+                    exit_code=-1,
+                    start_time=start_time,
+                    end_time=end_time,
+                    stdout_path=str(stdout_path),
+                    stderr_path=str(stderr_path),
+                    error_message="用户取消"
+                )
+
             # 检查进程是否仍在运行
             if proc.poll() is not None:
                 # 进程已结束，可能是打开失败
@@ -169,7 +220,7 @@ class PowerBIExecutor(BaseExecutor):
             log_messages.append("")
             if auto_refresh:
                 log_messages.append("尝试自动触发刷新...")
-                self._try_auto_refresh(pbidesktop, log_messages, error_messages)
+                self._try_auto_refresh(pbidesktop, log_messages, error_messages, pid=proc.pid)
             else:
                 log_messages.append("已关闭自动刷新（--no-auto-refresh）")
                 log_messages.append("请在 Power BI Desktop 中手动点击'刷新'按钮。")
@@ -178,15 +229,43 @@ class PowerBIExecutor(BaseExecutor):
             if auto_close:
                 log_messages.append("")
                 log_messages.append(f"[{datetime.now().isoformat()}] 等待用户完成刷新并关闭 Power BI...")
-                
-                # 等待进程结束或超时
-                try:
-                    proc.wait(timeout=timeout - wait_time)
+
+                remaining = timeout - wait_time
+                cancelled = False
+                timed_out = False
+                # MA1: 改用 BaseExecutor.wait_with_cancel 统一等待语义
+                normal, cancelled = BaseExecutor.wait_with_cancel(
+                    proc, max(0, int(remaining)), cancel_event, check_interval=1.0
+                )
+                if cancelled:
+                    log_messages.append(f"[{datetime.now().isoformat()}] 用户取消，尝试关闭 Power BI...")
+                    _kill_process_tree(proc)
+                elif normal:
                     log_messages.append(f"[{datetime.now().isoformat()}] Power BI 已关闭")
-                except subprocess.TimeoutExpired:
-                    log_messages.append(f"[{datetime.now().isoformat()}] 等待超时，Power BI 仍在运行")
-                    # 不强制终止，让用户自行关闭
-            
+                else:
+                    timed_out = True
+
+                if timed_out:
+                    log_messages.append(f"[{datetime.now().isoformat()}] 等待超时 ({timeout}秒)，强制关闭 Power BI...")
+                    error_messages.append(f"等待超时 ({timeout}秒)，Power BI 可能未完成刷新")
+                    _kill_process_tree(proc)
+
+                if cancelled or timed_out:
+                    end_time = datetime.now()
+                    with open(stdout_path, 'w', encoding='utf-8') as f:
+                        f.write('\n'.join(log_messages))
+                    with open(stderr_path, 'w', encoding='utf-8') as f:
+                        f.write('\n'.join(error_messages))
+                    return ExecutorResult(
+                        success=False,
+                        exit_code=-1,
+                        start_time=start_time,
+                        end_time=end_time,
+                        stdout_path=str(stdout_path),
+                        stderr_path=str(stderr_path),
+                        error_message="用户取消" if cancelled else f"等待超时 ({timeout}秒)"
+                    )
+
             end_time = datetime.now()
             
             # 写入日志
@@ -236,11 +315,21 @@ class PowerBIExecutor(BaseExecutor):
             return False
         return path.suffix.lower() == '.pbix'
 
-    def _try_auto_refresh(self, pbidesktop: str, log_messages: list, error_messages: list):
-        """尝试自动刷新（需要 pywinauto）"""
+    def _try_auto_refresh(self, pbidesktop: str, log_messages: list, error_messages: list, pid: Optional[int] = None):
+        """尝试自动刷新（需要 pywinauto）
+
+        M4 修复：优先按 process=pid 连接，避免多个 PBIDesktop.exe 实例下抓到错的窗口。
+        """
         try:
             from pywinauto import Application
-            app = Application(backend="uia").connect(path=pbidesktop, timeout=10)
+            if pid:
+                try:
+                    app = Application(backend="uia").connect(process=pid, timeout=10)
+                except Exception:
+                    # 兜底：仍按 path 连接（旧逻辑）
+                    app = Application(backend="uia").connect(path=pbidesktop, timeout=10)
+            else:
+                app = Application(backend="uia").connect(path=pbidesktop, timeout=10)
             window = app.top_window()
             window.set_focus()
             window.type_keys("{F5}")

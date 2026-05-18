@@ -3,7 +3,7 @@
 
 说明：
 - 在 QScrollArea 中，若父容器被拉伸到 viewport 高度，而内部没有 spacer，
-  Qt 可能会把“多余高度”分配给这些 section，导致折叠态仍占据大量空白。
+  Qt 可能会把「多余高度」分配给这些 section，导致折叠态仍占据大量空白。
 - 这里在折叠态下强制将 section 高度收敛到 header 高度，并在展开态恢复，
   以获得更符合 iOS/Swiss minimal 的紧凑表现。
 """
@@ -12,13 +12,13 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolBu
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
-from ui.theme import COLORS, CORNER_RADIUS
+from ui.theme import COLORS, CORNER_RADIUS, get_colors
 
 
 class CollapsibleSection(QFrame):
     """一个带标题栏的可折叠容器。
 
-    - 标题与折叠按钮同一行（避免“按钮单独占一行”的浪费）
+    - 标题与折叠按钮同一行（避免「按钮单独占一行」的浪费）
     - body_layout 可直接 addWidget/addLayout
     """
 
@@ -39,6 +39,7 @@ class CollapsibleSection(QFrame):
     ):
         super().__init__(parent)
         self.setObjectName("collapsibleSection")
+        self._dark = False
         self._collapsed = bool(collapsed)
         self._header_height = int(header_height)
 
@@ -87,12 +88,16 @@ class CollapsibleSection(QFrame):
         self.body_layout.setSpacing(10)
         root.addWidget(self.body)
 
-        # 卡片风格
+        # 卡片风格 - 增强视觉层次：白色卡片 + 微妙阴影 + 边框
         self.setStyleSheet(
             f"""
             QFrame#collapsibleSection {{
                 border-radius: {CORNER_RADIUS['large']}px;
-                background: {COLORS['surface']};
+                background: {COLORS['surface_card']};
+                border: 1px solid {COLORS['border_subtle']};
+            }}
+            QFrame#collapsibleSection:hover {{
+                border-color: {COLORS['border']};
             }}
             QToolButton#sectionChevron {{
                 color: {COLORS['text_tertiary']};
@@ -116,6 +121,25 @@ class CollapsibleSection(QFrame):
     def toggle(self):
         self.set_collapsed(not self._collapsed)
 
+    def refresh_theme(self, dark: bool):
+        self._dark = dark
+        colors = get_colors(dark)
+        self.setStyleSheet(
+            f"""
+            QFrame#collapsibleSection {{
+                border-radius: {CORNER_RADIUS['large']}px;
+                background: {colors['surface_card']};
+                border: 1px solid {colors['border_subtle']};
+            }}
+            QFrame#collapsibleSection:hover {{
+                border-color: {colors['border']};
+            }}
+            QToolButton#sectionChevron {{
+                color: {colors['text_tertiary']};
+            }}
+            """
+        )
+
     def _apply_state(self, emit: bool):
         self.body.setVisible(not self._collapsed)
         self.btn_toggle.setArrowType(Qt.RightArrow if self._collapsed else Qt.DownArrow)
@@ -124,12 +148,14 @@ class CollapsibleSection(QFrame):
         # 折叠态：不允许 section 撑满剩余高度
         if self._collapsed:
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.setMinimumHeight(self._header_height)
             self.setMaximumHeight(self._header_height)
         else:
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
 
-        # 触发布局重算（避免在 ScrollArea 中出现“折叠后仍占地很大”）
+        # 触发布局重算（避免在 ScrollArea 中出现「折叠后仍占地很大」）
         self.updateGeometry()
         try:
             p = self.parentWidget()

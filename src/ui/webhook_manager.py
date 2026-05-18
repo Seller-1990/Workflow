@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """Webhook 管理对话框"""
 
+from urllib.parse import urlparse
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QLabel, QLineEdit, QTextEdit, QGroupBox, QFormLayout,
-    QMessageBox, QHeaderView, QDialogButtonBox
+    QHeaderView, QDialogButtonBox, QMessageBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from database import list_webhooks, create_webhook, update_webhook, delete_webhook
 from notifier import send_dingtalk_message
+from ui.theme import get_colors, msg_information, msg_warning, msg_question
 
 
 class WebhookManagerDialog(QDialog):
@@ -20,8 +23,21 @@ class WebhookManagerDialog(QDialog):
         self.setWindowTitle("Webhook 管理")
         self.setMinimumSize(700, 500)
         self._current_webhook_id = None
+        self._test_result_timer = None
+        self._dark = False
+        win = parent.window() if parent else None
+        if win and hasattr(win, '_dark_mode'):
+            self._dark = win._dark_mode
+        elif win and hasattr(win, '_dark'):
+            self._dark = win._dark
         self._setup_ui()
         self._load_webhooks()
+        # U-P3-6: 让对话框沿用主窗口主题，避免在暗色模式下出现系统色突兀的弹窗
+        try:
+            from ui.theme import get_stylesheet
+            self.setStyleSheet(get_stylesheet(self._dark))
+        except Exception:
+            pass
     
     def _setup_ui(self):
         """设置 UI"""
@@ -82,9 +98,12 @@ class WebhookManagerDialog(QDialog):
         action_layout = QHBoxLayout()
         self.btn_test = QPushButton("🔔 测试发送")
         self.btn_test.clicked.connect(self._on_test)
-        self.btn_save = QPushButton("💾 保存")
+        self.lbl_test_result = QLabel()
+        self.lbl_test_result.setStyleSheet("font-size: 12px; padding-left: 8px;")
+        self.btn_save = QPushButton("保存")
         self.btn_save.clicked.connect(self._on_save)
         action_layout.addWidget(self.btn_test)
+        action_layout.addWidget(self.lbl_test_result)
         action_layout.addStretch()
         action_layout.addWidget(self.btn_save)
         right_layout.addLayout(action_layout)
@@ -144,6 +163,16 @@ class WebhookManagerDialog(QDialog):
         self.edit_url.clear()
         self.edit_keyword.clear()
         self.edit_desc.clear()
+
+    def _validate_webhook_url(self, url: str) -> bool:
+        """验证 Webhook URL 格式"""
+        if not url.startswith("https://"):
+            return False
+        try:
+            result = urlparse(url)
+            return all([result.scheme, result.netloc])
+        except Exception:
+            return False
     
     def _on_add(self):
         """新增"""
@@ -153,14 +182,17 @@ class WebhookManagerDialog(QDialog):
     
     def _on_delete(self):
         """删除"""
+        win = self.window()
+        if hasattr(win, 'is_edit_mode') and not win.is_edit_mode():
+            msg_information(self, self._dark, "提示", "请先开启编辑模式")
+            return
+
         if not self._current_webhook_id:
             return
         
-        reply = QMessageBox.question(
-            self, "确认删除",
+        reply = msg_question(
+            self, self._dark, "确认删除",
             f"确定要删除「{self.edit_name.text()}」吗？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
@@ -170,21 +202,26 @@ class WebhookManagerDialog(QDialog):
     
     def _on_save(self):
         """保存"""
+        win = self.window()
+        if hasattr(win, 'is_edit_mode') and not win.is_edit_mode():
+            msg_information(self, self._dark, "提示", "请先开启编辑模式")
+            return
+
         name = self.edit_name.text().strip()
         url = self.edit_url.text().strip()
         keyword = self.edit_keyword.text().strip()
         desc = self.edit_desc.toPlainText().strip()
         
         if not name:
-            QMessageBox.warning(self, "提示", "请输入名称")
+            msg_warning(self, self._dark, "提示", "请输入名称")
             return
         
         if not url:
-            QMessageBox.warning(self, "提示", "请输入 Webhook URL")
+            msg_warning(self, self._dark, "提示", "请输入 Webhook URL")
             return
         
-        if not url.startswith("https://"):
-            QMessageBox.warning(self, "提示", "Webhook URL 必须以 https:// 开头")
+        if not self._validate_webhook_url(url):
+            msg_warning(self, self._dark, "提示", "Webhook URL 格式无效，必须以 https:// 开头且为有效的 URL")
             return
         
         if self._current_webhook_id:
@@ -195,10 +232,10 @@ class WebhookManagerDialog(QDialog):
                 keyword=keyword,
                 description=desc
             )
-            QMessageBox.information(self, "成功", "Webhook 已更新")
+            msg_information(self, self._dark, "成功", "Webhook 已更新")
         else:
             create_webhook(name, url, keyword, desc)
-            QMessageBox.information(self, "成功", "Webhook 已创建")
+            msg_information(self, self._dark, "成功", "Webhook 已创建")
         
         self._load_webhooks()
     
@@ -208,7 +245,7 @@ class WebhookManagerDialog(QDialog):
         keyword = self.edit_keyword.text().strip()
         
         if not url:
-            QMessageBox.warning(self, "提示", "请先输入 Webhook URL")
+            msg_warning(self, self._dark, "提示", "请先输入 Webhook URL")
             return
         
         success, msg = send_dingtalk_message(
@@ -218,6 +255,28 @@ class WebhookManagerDialog(QDialog):
         )
         
         if success:
-            QMessageBox.information(self, "成功", "测试消息已发送，请检查钉钉群")
+            ok_color = get_colors(getattr(self, "_dark", False))["success"]
+            self.lbl_test_result.setStyleSheet(
+                f"font-size: 12px; padding-left: 8px; color: {ok_color};"
+            )
+            self.lbl_test_result.setText("发送成功")
         else:
-            QMessageBox.warning(self, "发送失败", msg)
+            err_color = get_colors(getattr(self, "_dark", False))["danger"]
+            self.lbl_test_result.setStyleSheet(
+                f"font-size: 12px; padding-left: 8px; color: {err_color};"
+            )
+            self.lbl_test_result.setText(f"发送失败: {msg}")
+        self._test_result_timer = QTimer(self)
+        self._test_result_timer.setSingleShot(True)
+        self._test_result_timer.timeout.connect(self._clear_test_result)
+        self._test_result_timer.start(5000)
+
+    def _clear_test_result(self):
+        """清除测试结果标签"""
+        self.lbl_test_result.clear()
+
+    def closeEvent(self, event):
+        if self._test_result_timer is not None:
+            self._test_result_timer.stop()
+            self._test_result_timer = None
+        super().closeEvent(event)

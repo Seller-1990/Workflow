@@ -3,15 +3,16 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QInputDialog, QMessageBox, QMenu, QLabel
+    QPushButton, QInputDialog, QMessageBox, QMenu, QLabel, QLineEdit
 )
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtGui import QFont
 
 from database import (
-    list_workflows, create_workflow, delete_workflow, 
-    copy_workflow, update_workflow
+    list_workflows, create_workflow, delete_workflow,
+    update_workflow, clone_workflow
 )
+from ui.theme import COLORS, get_colors, get_menu_stylesheet, msg_information, msg_warning, msg_question, input_get_text
 
 
 class WorkflowListPanel(QWidget):
@@ -23,7 +24,9 @@ class WorkflowListPanel(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._edit_enabled = True
+        self._dark = False
+        self._edit_enabled = False
+        self._all_items = []
         self._setup_ui()
     
     def _setup_ui(self):
@@ -40,28 +43,52 @@ class WorkflowListPanel(QWidget):
         header.setFont(f)
         layout.addWidget(header)
 
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("搜索工作流...")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: {COLORS["surface_secondary"]};
+                color: {COLORS["text_primary"]};
+                border: 1px solid {COLORS["divider_strong"]};
+                border-radius: 8px;
+                padding: 6px 10px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border-color: {COLORS["primary"]};
+            }}
+        """)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(300)
+        self._search_timer.timeout.connect(self._filter_workflows)
+        self.search_input.textChanged.connect(lambda: self._search_timer.start())
+        layout.addWidget(self.search_input)
+
         # 列表（行高 36，圆角 10，选中蓝底 + 蓝字）
         self.list_widget = QListWidget()
+        self.list_widget.setAccessibleName("工作流列表")
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self.list_widget.currentRowChanged.connect(self._on_selection_changed)
         self.list_widget.setStyleSheet(
-            """
-            QListWidget {
+            f"""
+            QListWidget {{
                 background: transparent;
                 border: none;
-            }
-            QListWidget::item {
+            }}
+            QListWidget::item {{
                 height: 36px;
                 padding: 0px 10px;
                 border-radius: 10px;
-                color: #1A1A1A;
-            }
-            QListWidget::item:selected {
-                background: #E8F0FE;
-                color: #007AFF;
+                color: {COLORS["text_primary"]};
+            }}
+            QListWidget::item:selected {{
+                background: {COLORS["selected_bg"]};
+                color: {COLORS["selected_text"]};
                 font-weight: 600;
-            }
+            }}
             """
         )
         layout.addWidget(self.list_widget, stretch=1)
@@ -77,7 +104,7 @@ class WorkflowListPanel(QWidget):
         self.btn_new.setObjectName("wfPill")
         btn_layout.addWidget(self.btn_new)
         
-        self.btn_copy = QPushButton("复制")
+        self.btn_copy = QPushButton("克隆")
         self.btn_copy.clicked.connect(self._on_copy_clicked)
         self.btn_copy.setFixedHeight(32)
         self.btn_copy.setObjectName("wfPill")
@@ -91,19 +118,55 @@ class WorkflowListPanel(QWidget):
         
         layout.addLayout(btn_layout)
 
+    def refresh_theme(self, dark: bool):
+        self._dark = dark
+        colors = get_colors(dark)
+        self.search_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: {colors["surface_secondary"]};
+                color: {colors["text_primary"]};
+                border: 1px solid {colors["divider_strong"]};
+                border-radius: 8px;
+                padding: 6px 10px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border-color: {colors["primary"]};
+            }}
+        """)
+        self.list_widget.setStyleSheet(
+            f"""
+            QListWidget {{
+                background: transparent;
+                border: none;
+            }}
+            QListWidget::item {{
+                height: 36px;
+                padding: 0px 10px;
+                border-radius: 10px;
+                color: {colors["text_primary"]};
+            }}
+            QListWidget::item:selected {{
+                background: {colors["selected_bg"]};
+                color: {colors["selected_text"]};
+                font-weight: 600;
+            }}
+            """
+        )
+
     def set_edit_enabled(self, enabled: bool):
         self._edit_enabled = enabled
         self.btn_new.setEnabled(enabled)
         self.btn_copy.setEnabled(enabled)
         self.btn_delete.setEnabled(enabled)
-        self.btn_new.setToolTip("" if enabled else "请先开启左侧“编辑”开关")
-        self.btn_copy.setToolTip("" if enabled else "请先开启左侧“编辑”开关")
-        self.btn_delete.setToolTip("" if enabled else "请先开启左侧“编辑”开关")
+        self.btn_new.setToolTip("" if enabled else "请先开启左侧「编辑」开关")
+        self.btn_copy.setToolTip("" if enabled else "请先开启左侧「编辑」开关")
+        self.btn_delete.setToolTip("" if enabled else "请先开启左侧「编辑」开关")
 
     def _require_edit_enabled(self, action_name: str) -> bool:
         if self._edit_enabled:
             return True
-        QMessageBox.information(self, "需要开启编辑", f"{action_name} 前请先开启左侧“编辑”开关。")
+        msg_information(self, self._dark, "需要开启编辑", f"{action_name} 前请先开启左侧「编辑」开关。")
         return False
 
     def _on_new_clicked(self):
@@ -124,6 +187,7 @@ class WorkflowListPanel(QWidget):
     def load_workflows(self, selected_workflow_id=None):
         """加载工作流列表"""
         self.list_widget.clear()
+        self._all_items.clear()
 
         workflows = list_workflows()
         selected_row = -1
@@ -131,22 +195,56 @@ class WorkflowListPanel(QWidget):
             item = QListWidgetItem(workflow.name)
             item.setData(Qt.UserRole, workflow.id)
             item.setToolTip(f"ID: {workflow.uid}\n创建时间: {workflow.created_at}")
-            self.list_widget.addItem(item)
+            self._all_items.append(item)
 
             if selected_workflow_id is not None and workflow.id == selected_workflow_id:
-                selected_row = self.list_widget.count() - 1
+                selected_row = len(self._all_items) - 1
 
-        # 默认选中第一个；若指定了工作流 ID，则优先恢复该选择
-        if self.list_widget.count() > 0:
-            self.list_widget.setCurrentRow(selected_row if selected_row >= 0 else 0)
-    
+        self._filter_workflows()
+
+        if selected_row >= 0:
+            for i in range(self.list_widget.count()):
+                item = self.list_widget.item(i)
+                if item.data(Qt.UserRole) == selected_workflow_id:
+                    self.list_widget.setCurrentRow(i)
+                    break
+        elif self.list_widget.count() > 0:
+            # R2-#7: 找第一个真实 item（跳过 placeholder）
+            for i in range(self.list_widget.count()):
+                it = self.list_widget.item(i)
+                if it and it.data(Qt.UserRole) is not None:
+                    self.list_widget.setCurrentRow(i)
+                    break
+
+    def _filter_workflows(self):
+        """根据搜索框内容过滤工作流列表"""
+        filter_text = self.search_input.text().strip().lower()
+        self.list_widget.clear()
+        for item in self._all_items:
+            if not filter_text or filter_text in item.text().lower():
+                new_item = QListWidgetItem(item)
+                new_item.setToolTip(item.toolTip())
+                self.list_widget.addItem(new_item)
+        # R2-#7: 空状态占位提示
+        if self.list_widget.count() == 0:
+            if filter_text:
+                placeholder = QListWidgetItem(f"未匹配到「{filter_text}」")
+            elif not self._all_items:
+                placeholder = QListWidgetItem("暂无工作流，点击「新建」按钮开始")
+            else:
+                placeholder = QListWidgetItem("(空)")
+            placeholder.setFlags(Qt.NoItemFlags)
+            placeholder.setForeground(get_colors(self._dark)["text_tertiary"])
+            placeholder.setData(Qt.UserRole, None)
+            self.list_widget.addItem(placeholder)
+
     @Slot()
     def create_workflow(self):
         """新建工作流"""
         if not self._require_edit_enabled("新建工作流"):
             return
-        name, ok = QInputDialog.getText(
-            self, "新建工作流", "工作流名称:",
+        name, ok = input_get_text(
+            self, self._dark, "新建工作流", "工作流名称:",
             text="新工作流"
         )
         
@@ -162,24 +260,27 @@ class WorkflowListPanel(QWidget):
                     break
     
     def _copy_workflow(self):
-        """复制工作流"""
-        if not self._require_edit_enabled("复制工作流"):
+        """克隆工作流（含阶段和步骤）"""
+        if not self._require_edit_enabled("克隆工作流"):
             return
         current = self.list_widget.currentItem()
         if not current:
             return
-        
+
         workflow_id = current.data(Qt.UserRole)
         old_name = current.text()
-        
-        new_name, ok = QInputDialog.getText(
-            self, "复制工作流", "新工作流名称:",
-            text=f"{old_name} (副本)"
+
+        new_name, ok = input_get_text(
+            self, self._dark, "克隆工作流", "新工作流名称:",
+            text=f"{old_name} 副本"
         )
-        
+
         if ok and new_name.strip():
-            copy_workflow(workflow_id, new_name.strip())
-            self.load_workflows()
+            cloned = clone_workflow(workflow_id, new_name.strip())
+            if cloned:
+                self.load_workflows(selected_workflow_id=cloned.id)
+            else:
+                msg_warning(self, self._dark, "克隆失败", "工作流克隆失败，请重试。")
     
     def _delete_workflow(self):
         """删除工作流"""
@@ -192,11 +293,9 @@ class WorkflowListPanel(QWidget):
         workflow_id = current.data(Qt.UserRole)
         name = current.text()
         
-        reply = QMessageBox.question(
-            self, "确认删除",
+        reply = msg_question(
+            self, self._dark, "确认删除",
             f"确定要删除工作流 '{name}' 吗？\n此操作不可恢复！",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
@@ -215,8 +314,8 @@ class WorkflowListPanel(QWidget):
         workflow_id = current.data(Qt.UserRole)
         old_name = current.text()
         
-        new_name, ok = QInputDialog.getText(
-            self, "重命名工作流", "新名称:",
+        new_name, ok = input_get_text(
+            self, self._dark, "重命名工作流", "新名称:",
             text=old_name
         )
         
@@ -229,23 +328,32 @@ class WorkflowListPanel(QWidget):
         item = self.list_widget.itemAt(pos)
         if not item:
             return
-        
+
         menu = QMenu(self)
+        menu.setStyleSheet(get_menu_stylesheet(self._dark))
 
         action_rename = menu.addAction("重命名")
-        action_rename.setEnabled(True)
-        action_rename.triggered.connect(self._rename_workflow)
+        action_rename.setEnabled(self._edit_enabled)
+        if not self._edit_enabled:
+            action_rename.setToolTip("请先开启编辑模式")
 
         action_copy = menu.addAction("复制")
-        action_copy.setEnabled(True)
-        action_copy.triggered.connect(self._copy_workflow)
+        action_copy.setEnabled(self._edit_enabled)
+        if not self._edit_enabled:
+            action_copy.setToolTip("请先开启编辑模式")
 
         menu.addSeparator()
 
         action_delete = menu.addAction("删除")
-        action_delete.setEnabled(True)
+        action_delete.setEnabled(self._edit_enabled)
+        if not self._edit_enabled:
+            action_delete.setToolTip("请先开启编辑模式")
+
+        # 连接信号
+        action_rename.triggered.connect(self._rename_workflow)
+        action_copy.triggered.connect(self._copy_workflow)
         action_delete.triggered.connect(self._delete_workflow)
-        
+
         menu.exec_(self.list_widget.mapToGlobal(pos))
     
     @Slot(int)
@@ -255,6 +363,9 @@ class WorkflowListPanel(QWidget):
             return
         
         item = self.list_widget.item(row)
-        if item:
-            workflow_id = item.data(Qt.UserRole)
-            self.workflow_selected.emit(workflow_id)
+        if item is None:
+            return
+        workflow_id = item.data(Qt.UserRole)
+        if workflow_id is None:
+            return
+        self.workflow_selected.emit(workflow_id)

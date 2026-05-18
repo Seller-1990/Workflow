@@ -15,7 +15,12 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QIcon
 
-from ui import MainWindow
+try:
+    from ui import MainWindow
+except ImportError as e:
+    print(f"导入 UI 模块失败: {e}")
+    print("请确保已安装所有依赖: pip install PySide6")
+    sys.exit(1)
 from ui.theme import get_stylesheet
 from config import ICON_PATH, APP_NAME, APP_VERSION
 

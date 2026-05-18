@@ -305,19 +305,74 @@ src/
 
 ---
 
-## 五、关键注意事项
+## 五、关键注意事项（续）
 
-### 5.1 文件损坏风险
+## 六、2026-05-13 紧急修复记录
+
+### 6.1 SQLite WAL 外键可见性问题（CRITICAL）
+
+**现象**：`FOREIGN KEY constraint failed` 导致步骤日志插入失败，工作流运行到一半中断
+
+**根因**：SQLite WAL 模式下，`create_run_history()` 在会话 A 中提交后关闭，`create_step_log()` 在新会话 B 中插入时，新会话无法看到刚提交的行
+
+**修复**：
+1. `database.py` `create_run_history()`：提交后增加 `session.execute(text("PRAGMA wal_checkpoint(PASSIVE)"))`
+2. `database.py` `create_step_log()`：3 次重试机制（每次失败后 WAL checkpoint + 递增延迟 0.1s/0.2s）
+3. `database.py` `get_session()` finally：移除冗余 `session.close()`
+
+**验证日期**：2026-05-13 — 通过月度数据处理（34 步）和人员数据处理（9 步）实际运行验证
+
+### 6.2 进程强制终止后残留 running 状态
+
+**现象**：exe 进程被强制 Kill 后，`run_histories` 中仍有 `status='running'` 的记录
+
+**修复**：直接操作数据库 UPDATE
+
+**代码变更**：
+```python
+# 在任何 db session 外部强制 UPDATE
+cur.execute("""
+    UPDATE run_histories
+    SET status='cancelled', end_time=?
+    WHERE status='running'
+""", (datetime.now().isoformat(),))
+```
+
+### 6.3 月度批量运行脚本 `_import_and_run.py`
+
+**用途**：每月定期运行时一键导入 + 运行 + 钉钉通知
+
+**使用方式**（详见 README.md）：
+```bash
+# 导入最新备份 + 运行月度数据 + 运行人员数据
+python _import_and_run.py --auto
+```
+
+**内部逻辑**：
+1. `import` 子命令：删除同名 uid 工作流（避免冲突）→ 调用 `import_from_json()` → 列出所有工作流
+2. `run` 子命令：通过 `get_workflow_by_id` / `get_workflow_by_name` / 模糊匹配查找工作流 → `WorkflowEngine._run()` + `RunSignalPolicy(send_notification=True)` → 失败时输出错误步骤信息
+3. 工作流查找支持：精确名称、部分关键词模糊匹配、纯数字 ID
+
+**关键常量**（脚本顶部）：
+```python
+WORKFLOWS_JSON = Path(r"D:\OneDrive - PowerBI学谦\Data Analysis\workflows_export.json")
+```
+
+---
+
+## 七、关键注意事项（续）
+
+### 7.1 文件损坏风险
 
 在本次开发中，`run_control.py` 曾因 `multi_replace_file_content` 工具匹配不精确而被破坏（文件内容重复、缩进错乱）。**建议**：
 - 对于小文件（<100 行），优先使用 `write_to_file(Overwrite=true)` 完全重写
 - 修改后立即运行 `python -m compileall src -q` 验证
 
-### 5.2 数据库迁移兼容
+### 7.2 数据库迁移兼容
 
 `database.py` 中的 `_ensure_workflow_columns()` 和 `_ensure_step_columns()` 负责旧库字段迁移。新增模型字段时**必须**同步在这两个函数中添加 ALTER TABLE 逻辑，否则旧数据库文件会报列不存在错误。
 
-### 5.3 信号线程安全
+### 7.3 信号线程安全
 
 `WorkflowEngine` 在 `QThread` 中运行，所有信号（如 `error_details`、`log_output`）通过 Qt 的线程安全信号机制传递到主线程 UI。在 `_on_run_requested` 中，工作流执行函数被封装在 `QThread` 中：
 
@@ -327,7 +382,7 @@ self._run_thread.run = run_in_thread
 self._run_thread.start()
 ```
 
-### 5.4 compute_batches 的关键地位
+### 7.4 compute_batches 的关键地位
 
 `WorkflowEngine.compute_batches()` 是阶段计算的唯一真相源（single source of truth），被以下三处调用：
 1. `engine.py` → `_execute_steps()` 和 `dry_run()` — 运行时分批
@@ -336,6 +391,6 @@ self._run_thread.start()
 
 任何对分批逻辑的修改都会影响这三处。
 
-### 5.5 编辑模式防误操作
+### 7.5 编辑模式防误操作
 
 应用有"编辑开关"机制（`_edit_mode`），默认关闭。所有增删改操作（新建/删除工作流、保存步骤、拖拽排序等）都需要先开启编辑模式。接手后注意测试时先开启左侧"编辑 → 开启"复选框。

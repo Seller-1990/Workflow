@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """钉钉消息通知模块"""
 
-import requests
+try:
+    import requests
+except ImportError:
+    requests = None
 from typing import Optional
 from datetime import datetime
 
@@ -52,26 +55,26 @@ def format_message(
     Returns:
         格式化后的消息
     """
-    message = template
-    
-    # 替换变量
-    message = message.replace("{工作流名称}", workflow_name or "")
-    message = message.replace("{工作流编号}", workflow_uid or "")
-    message = message.replace("{状态}", STATUS_MAP.get(status, status))
-    message = message.replace("{运行编号}", run_id or "")
-    message = message.replace("{日志目录}", log_dir or "")
-    message = message.replace("{原因}", reason or "手动触发")
+    # 构建变量映射
+    mapping = {
+        "工作流名称": workflow_name or "",
+        "工作流编号": workflow_uid or "",
+        "状态": STATUS_MAP.get(status, status),
+        "运行编号": run_id or "",
+        "日志目录": log_dir or "",
+        "原因": reason or "手动触发",
+    }
     
     # 时间相关
     if start_time:
-        message = message.replace("{开始时间}", start_time.strftime("%Y-%m-%d %H:%M:%S"))
+        mapping["开始时间"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
     else:
-        message = message.replace("{开始时间}", "")
+        mapping["开始时间"] = ""
     
     if end_time:
-        message = message.replace("{结束时间}", end_time.strftime("%Y-%m-%d %H:%M:%S"))
+        mapping["结束时间"] = end_time.strftime("%Y-%m-%d %H:%M:%S")
     else:
-        message = message.replace("{结束时间}", "")
+        mapping["结束时间"] = ""
     
     if duration_seconds is not None:
         if duration_seconds < 60:
@@ -80,14 +83,26 @@ def format_message(
             minutes = int(duration_seconds // 60)
             seconds = int(duration_seconds % 60)
             duration_str = f"{minutes}分{seconds}秒"
-        message = message.replace("{耗时}", duration_str)
+        mapping["耗时"] = duration_str
     else:
-        message = message.replace("{耗时}", "")
+        mapping["耗时"] = ""
     
     # 失败摘要
-    message = message.replace("{失败摘要}", failure_summary or "")
+    mapping["失败摘要"] = failure_summary or ""
     
-    return message
+    # 直接进行变量替换（不使用 string.Template，因为它不支持中文变量名）
+    # 支持两种模板格式：{变量名} 和 $变量名$
+    result = template
+    for var in TEMPLATE_VARIABLES.keys():
+        # var 是 "{工作流名称}" 格式，需要提取 "工作流名称"
+        var_name = var[1:-1]  # 去掉花括号
+        value = mapping.get(var_name, "")
+        # 替换 {变量名} 格式
+        result = result.replace(var, value)
+        # 同时替换 $变量名$ 格式（如果用户使用了这种格式）
+        result = result.replace(f"${var_name}$", value)
+    
+    return result
 
 
 def send_dingtalk_message(
@@ -109,10 +124,18 @@ def send_dingtalk_message(
     """
     if not webhook_url:
         return False, "Webhook URL 为空"
+
+    if requests is None:
+        return False, "requests 库未安装，请执行: pip install requests"
     
-    # 如果有关键字，添加到消息开头
-    if keyword and keyword not in message:
-        message = f"【{keyword}】{message}"
+    # L5 修复：避免双重前缀
+    # 旧实现 `if keyword and keyword not in message` 在用户模板已写 "【关键字】..." 时也只检测裸关键字，
+    # 不会发现已加的前缀，结果会再加一遍。改为正则匹配 "【关键字】" 在消息开头是否已存在。
+    if keyword:
+        import re
+        prefix_pattern = re.compile(r"^\s*【" + re.escape(keyword) + r"】")
+        if not prefix_pattern.search(message) and keyword not in message:
+            message = f"【{keyword}】{message}"
     
     payload = {
         "msgtype": "text",
