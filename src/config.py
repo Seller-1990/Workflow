@@ -16,8 +16,10 @@ else:
     ROOT_DIR = Path(__file__).resolve().parents[1]
     APP_DATA_DIR = ROOT_DIR
 
-# 图标路径
-ICON_PATH = ROOT_DIR / "图标.png"
+# 图标路径：优先使用 .ico，兼容 slim 包去掉 png 的场景
+ICON_PATH = ROOT_DIR / "图标.ico"
+if not ICON_PATH.exists():
+    ICON_PATH = ROOT_DIR / "图标.png"
 
 # 数据目录
 DATA_DIR = APP_DATA_DIR / "data"
