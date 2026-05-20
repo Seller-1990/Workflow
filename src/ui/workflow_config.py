@@ -26,10 +26,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Signal, Qt
 
-from database import get_workflow_by_id, update_workflow, list_webhooks
+from database import get_steps_by_workflow, get_workflow_by_id, update_workflow, list_webhooks
 from notifier import get_template_variables_help
 from ui.collapsible_section import CollapsibleSection
 from ui.theme import get_colors, msg_warning, msg_critical
+from watch_rules import detect_watch_output_conflicts
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +311,19 @@ class WorkflowConfigPanel(QWidget):
                 watch_folders = WorkflowEngine.validate_watch_folders(watch_folders)
             except ValueError as e:
                 msg_warning(self, self._dark, "监听目录无效", str(e))
+                return False
+            conflicts = detect_watch_output_conflicts(
+                watch_folders,
+                get_steps_by_workflow(self._workflow_id),
+            )
+            if conflicts:
+                joined = "\n".join(conflicts)
+                msg_warning(
+                    self,
+                    self._dark,
+                    "监听目录高风险",
+                    f"以下监听目录与当前工作流输出目录重叠，保存已阻止：\n{joined}",
+                )
                 return False
 
         try:

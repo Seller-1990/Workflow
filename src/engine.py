@@ -40,6 +40,7 @@ from engine_core.lifecycle import (
 )
 from engine_core.scheduler import run_steps_parallel as _run_steps_parallel
 from engine_core.cancel import install_cancel_watcher as _install_cancel_watcher
+from watch_rules import detect_watch_output_conflicts
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -382,6 +383,14 @@ class WorkflowEngine(QObject):
             folders = _validate_watch_folders(new_folders)
         except ValueError as e:
             self._emit_log(f"监听未启动: {e}")
+            return False
+        conflicts = detect_watch_output_conflicts(
+            folders,
+            get_steps_by_workflow(workflow.id),
+        )
+        if conflicts:
+            joined = "；".join(conflicts)
+            self._emit_log(f"监听未启动: 监听目录与工作流输出目录重叠：{joined}")
             return False
         ok = self._watcher.start(
             workflow_id=workflow.id,

@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker, Session, joinedload, scoped_session
 
 from config import DATABASE_PATH
 from models import Base, Workflow, WorkflowStage, Step, RunHistory, StepLog, RecentWorkflow, WebhookConfig, WorkflowVersion
+from watch_rules import sanitize_workflow_watch_config
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,7 @@ def init_db():
             _write_schema_cache(_engine)
 
         _ensure_stage_data()
+        _repair_legacy_watch_configurations()
         _init_done = True
 
         return _engine
@@ -219,6 +221,34 @@ def _run_pending_migrations(engine):
             logger.exception("schema 迁移 v%s 失败: %s", version, e)
             # 不抛出，避免破坏冷启动；后续启动会重试
             return
+
+
+def _repair_legacy_watch_configurations() -> None:
+    """修正旧版本遗留的高风险监听配置。"""
+    with get_session() as session:
+        workflows = session.query(Workflow).filter(Workflow.watch_enabled.is_(True)).all()
+        changed = False
+        for workflow in workflows:
+            updated, folders, enabled = sanitize_workflow_watch_config(
+                workflow_name=workflow.name,
+                watch_enabled=bool(workflow.watch_enabled),
+                watch_folders=workflow.get_watch_folders(),
+                steps=workflow.steps,
+            )
+            if not updated:
+                continue
+            workflow.watch_enabled = bool(enabled)
+            workflow.set_watch_folders(folders)
+            workflow.updated_at = datetime.now()
+            changed = True
+            logger.info(
+                "已自动修正旧监听配置: workflow=%s, watch_enabled=%s, watch_folders=%s",
+                workflow.name,
+                workflow.watch_enabled,
+                folders,
+            )
+        if changed:
+            session.commit()
 
 
 def _migrate_v1_workflow_step_runhistory_columns(engine):
