@@ -55,7 +55,7 @@ class LogPanel(QWidget):
 
         # 标题与折叠按钮同一行（与全局卡片一致）
         self.section = CollapsibleSection("实时日志", collapsed=False, header_height=44, title_font_size=15, title_weight=700)
-        self.section.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.section.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         group_layout = self.section.body_layout
 
         # U-P2-8: header 工具条 —— 级别多选 + 搜索 + 导出 + 清空
@@ -114,9 +114,9 @@ class LogPanel(QWidget):
                 padding: 12px;
             }}
         """)
-        group_layout.addWidget(self.log_text)
+        group_layout.addWidget(self.log_text, stretch=1)
 
-        layout.addWidget(self.section)
+        layout.addWidget(self.section, stretch=1)
 
     def set_running(self, running: bool):
         """启用/禁用运行状态"""

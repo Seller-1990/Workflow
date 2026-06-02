@@ -102,18 +102,24 @@ class WorkflowListPanel(QWidget):
         self.btn_new.clicked.connect(self._on_new_clicked)
         self.btn_new.setFixedHeight(32)
         self.btn_new.setObjectName("wfPill")
+        self.btn_new.setToolTip("新建一个工作流")
+        self.btn_new.setAccessibleName("新建工作流")
         btn_layout.addWidget(self.btn_new)
         
         self.btn_copy = QPushButton("克隆")
         self.btn_copy.clicked.connect(self._on_copy_clicked)
         self.btn_copy.setFixedHeight(32)
         self.btn_copy.setObjectName("wfPill")
+        self.btn_copy.setToolTip("克隆当前选中的工作流")
+        self.btn_copy.setAccessibleName("克隆工作流")
         btn_layout.addWidget(self.btn_copy)
         
         self.btn_delete = QPushButton("删除")
         self.btn_delete.clicked.connect(self._on_delete_clicked)
         self.btn_delete.setFixedHeight(32)
         self.btn_delete.setObjectName("wfDangerPill")
+        self.btn_delete.setToolTip("删除当前选中的工作流")
+        self.btn_delete.setAccessibleName("删除工作流")
         btn_layout.addWidget(self.btn_delete)
         
         layout.addLayout(btn_layout)
@@ -159,9 +165,9 @@ class WorkflowListPanel(QWidget):
         self.btn_new.setEnabled(enabled)
         self.btn_copy.setEnabled(enabled)
         self.btn_delete.setEnabled(enabled)
-        self.btn_new.setToolTip("" if enabled else "请先开启左侧「编辑」开关")
-        self.btn_copy.setToolTip("" if enabled else "请先开启左侧「编辑」开关")
-        self.btn_delete.setToolTip("" if enabled else "请先开启左侧「编辑」开关")
+        self.btn_new.setToolTip("新建一个工作流" if enabled else "新建工作流（需要先开启左侧「编辑」开关）")
+        self.btn_copy.setToolTip("克隆当前选中的工作流" if enabled else "克隆工作流（需要先开启左侧「编辑」开关）")
+        self.btn_delete.setToolTip("删除当前选中的工作流" if enabled else "删除工作流（需要先开启左侧「编辑」开关）")
 
     def _require_edit_enabled(self, action_name: str) -> bool:
         if self._edit_enabled:

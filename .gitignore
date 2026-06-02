@@ -67,4 +67,10 @@ image/
 *.db
 *.sqlite
 *.sqlite3
+
+# Local scratch / unrelated deployment experiments
+deploy_hermes/
+audit_export.json
+tmp_export.json
+2.0.0
 workflows_export*.json

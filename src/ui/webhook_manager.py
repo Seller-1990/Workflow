@@ -5,14 +5,14 @@ from urllib.parse import urlparse
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QLabel, QLineEdit, QTextEdit, QGroupBox, QFormLayout,
-    QHeaderView, QDialogButtonBox, QMessageBox
+    QPushButton, QLabel, QLineEdit, QTextEdit, QFormLayout,
+    QHeaderView, QMessageBox, QFrame
 )
 from PySide6.QtCore import Qt, QTimer
 
 from database import list_webhooks, create_webhook, update_webhook, delete_webhook
 from notifier import send_dingtalk_message
-from ui.theme import get_colors, msg_information, msg_warning, msg_question
+from ui.theme import get_colors, get_stylesheet, msg_information, msg_warning, msg_question
 
 
 class WebhookManagerDialog(QDialog):
@@ -21,101 +21,231 @@ class WebhookManagerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Webhook 管理")
-        self.setMinimumSize(700, 500)
+        self.setMinimumSize(660, 440)
         self._current_webhook_id = None
         self._test_result_timer = None
+        # 产品已固定浅色主题，Webhook 设置也强制浅色，避免系统/旧偏好带回深色界面。
         self._dark = False
-        win = parent.window() if parent else None
-        if win and hasattr(win, '_dark_mode'):
-            self._dark = win._dark_mode
-        elif win and hasattr(win, '_dark'):
-            self._dark = win._dark
         self._setup_ui()
         self._load_webhooks()
-        # U-P3-6: 让对话框沿用主窗口主题，避免在暗色模式下出现系统色突兀的弹窗
-        try:
-            from ui.theme import get_stylesheet
-            self.setStyleSheet(get_stylesheet(self._dark))
-        except Exception:
-            pass
+        self.setStyleSheet(self._build_stylesheet(False))
     
     def _setup_ui(self):
         """设置 UI"""
         layout = QHBoxLayout(self)
-        
-        # 左侧：列表
-        left_layout = QVBoxLayout()
-        
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        self.left_panel = QFrame()
+        self.left_panel.setObjectName("WebhookListPanel")
+        left_layout = QVBoxLayout(self.left_panel)
+        left_layout.setContentsMargins(12, 12, 12, 12)
+        left_layout.setSpacing(10)
+
+        left_head = QHBoxLayout()
+        left_head.setContentsMargins(0, 0, 0, 0)
+        left_head.setSpacing(8)
+        left_title = QLabel("机器人列表")
+        left_title.setObjectName("PanelTitle")
+        left_head.addWidget(left_title)
+        left_head.addStretch()
+        self.btn_add = QPushButton("新增")
+        self.btn_add.clicked.connect(self._on_add)
+        self.btn_add.setObjectName("ghostRect")
+        self.btn_add.setFixedHeight(30)
+        self.btn_add.setToolTip("新增一个 Webhook")
+        left_head.addWidget(self.btn_add)
+        self.btn_delete = QPushButton("删除")
+        self.btn_delete.clicked.connect(self._on_delete)
+        self.btn_delete.setObjectName("dangerTextButton")
+        self.btn_delete.setFixedHeight(30)
+        self.btn_delete.setEnabled(False)
+        self.btn_delete.setToolTip("删除当前选中的 Webhook")
+        left_head.addWidget(self.btn_delete)
+        left_layout.addLayout(left_head)
+
         self.table = QTableWidget()
         self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels(["名称", "关键字"])
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.setColumnWidth(1, 100)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.setColumnWidth(1, 110)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(False)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         left_layout.addWidget(self.table)
-        
-        btn_layout = QHBoxLayout()
-        self.btn_add = QPushButton("新增")
-        self.btn_add.clicked.connect(self._on_add)
-        self.btn_delete = QPushButton("删除")
-        self.btn_delete.clicked.connect(self._on_delete)
-        self.btn_delete.setEnabled(False)
-        btn_layout.addWidget(self.btn_add)
-        btn_layout.addWidget(self.btn_delete)
-        btn_layout.addStretch()
-        left_layout.addLayout(btn_layout)
-        
-        layout.addLayout(left_layout, 1)
-        
-        # 右侧：编辑表单
-        right_layout = QVBoxLayout()
-        
-        form_group = QGroupBox("配置详情")
-        form_layout = QFormLayout(form_group)
-        
+
+        layout.addWidget(self.left_panel, 1)
+
+        self.detail_panel = QFrame()
+        self.detail_panel.setObjectName("WebhookDetailPanel")
+        right_layout = QVBoxLayout(self.detail_panel)
+        right_layout.setContentsMargins(12, 12, 12, 12)
+        right_layout.setSpacing(10)
+
+        right_head = QHBoxLayout()
+        right_head.setContentsMargins(0, 0, 0, 0)
+        right_head.setSpacing(8)
+        detail_title = QLabel("配置详情")
+        detail_title.setObjectName("PanelTitle")
+        right_head.addWidget(detail_title)
+        right_head.addStretch()
+        self.detail_state = QLabel("选择左侧条目进行编辑")
+        self.detail_state.setObjectName("PanelHint")
+        right_head.addWidget(self.detail_state)
+        right_layout.addLayout(right_head)
+
+        form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form_layout.setFormAlignment(Qt.AlignTop)
+        form_layout.setHorizontalSpacing(10)
+        form_layout.setVerticalSpacing(8)
+
+        def _label(text: str) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setFixedWidth(78)
+            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            return lbl
+
         self.edit_name = QLineEdit()
         self.edit_name.setPlaceholderText("如：财务部机器人")
-        form_layout.addRow("名称", self.edit_name)
+        self.edit_name.setFixedHeight(30)
+        self.edit_name.setToolTip("Webhook 显示名称")
+        form_layout.addRow(_label("名称"), self.edit_name)
         
         self.edit_url = QLineEdit()
         self.edit_url.setPlaceholderText("https://oapi.dingtalk.com/robot/send?access_token=...")
-        form_layout.addRow("Webhook URL", self.edit_url)
+        self.edit_url.setFixedHeight(30)
+        self.edit_url.setToolTip("钉钉机器人的 Webhook 地址")
+        form_layout.addRow(_label("URL"), self.edit_url)
         
         self.edit_keyword = QLineEdit()
         self.edit_keyword.setPlaceholderText("钉钉安全设置中的关键字")
-        form_layout.addRow("关键字", self.edit_keyword)
+        self.edit_keyword.setFixedHeight(30)
+        self.edit_keyword.setToolTip("钉钉机器人安全关键字")
+        form_layout.addRow(_label("关键字"), self.edit_keyword)
         
         self.edit_desc = QTextEdit()
-        self.edit_desc.setMaximumHeight(60)
+        self.edit_desc.setMaximumHeight(72)
         self.edit_desc.setPlaceholderText("备注说明（可选）")
-        form_layout.addRow("备注", self.edit_desc)
-        
-        right_layout.addWidget(form_group)
-        
-        # 操作按钮
+        self.edit_desc.setToolTip("备注说明，不影响发送")
+        form_layout.addRow(_label("备注"), self.edit_desc)
+
+        right_layout.addLayout(form_layout)
+
         action_layout = QHBoxLayout()
-        self.btn_test = QPushButton("🔔 测试发送")
+        action_layout.setContentsMargins(0, 2, 0, 0)
+        self.btn_test = QPushButton("测试发送")
+        self.btn_test.setObjectName("ghostRect")
         self.btn_test.clicked.connect(self._on_test)
         self.lbl_test_result = QLabel()
-        self.lbl_test_result.setStyleSheet("font-size: 12px; padding-left: 8px;")
+        self.lbl_test_result.setObjectName("TestResult")
         self.btn_save = QPushButton("保存")
+        self.btn_save.setObjectName("primaryRect")
         self.btn_save.clicked.connect(self._on_save)
         action_layout.addWidget(self.btn_test)
         action_layout.addWidget(self.lbl_test_result)
         action_layout.addStretch()
         action_layout.addWidget(self.btn_save)
+        self.btn_close = QPushButton("关闭")
+        self.btn_close.setObjectName("ghostRect")
+        self.btn_close.clicked.connect(self.accept)
+        action_layout.addWidget(self.btn_close)
         right_layout.addLayout(action_layout)
-        
-        right_layout.addStretch()
-        
-        # 关闭按钮
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(self.accept)
-        right_layout.addWidget(close_btn)
-        
-        layout.addLayout(right_layout, 1)
+
+        layout.addWidget(self.detail_panel, 1)
+
+    def _build_stylesheet(self, dark: bool) -> str:
+        colors = get_colors(dark)
+        return get_stylesheet(False) + f"""
+            QFrame#WebhookListPanel, QFrame#WebhookDetailPanel {{
+                background: {colors['surface_card']};
+                border: 1px solid {colors['border_subtle']};
+                border-radius: 12px;
+            }}
+            QLabel#PanelTitle {{
+                color: {colors['text_primary']};
+                font-size: 15px;
+                font-weight: 700;
+            }}
+            QLabel#PanelHint {{
+                color: {colors['text_tertiary']};
+                font-size: 11px;
+            }}
+            QLabel#TestResult {{
+                color: {colors['text_tertiary']};
+                font-size: 12px;
+                padding-left: 6px;
+            }}
+            QTableWidget {{
+                background: {colors['background']};
+                border: 1px solid {colors['border']};
+                border-radius: 10px;
+            }}
+            QHeaderView::section {{
+                background: {colors['surface_header']};
+                color: {colors['text_secondary']};
+                border: none;
+                padding: 6px 8px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QTableWidget::item {{
+                padding: 5px 8px;
+            }}
+            QTableWidget::item:selected {{
+                background: {colors['selected_bg']};
+                color: {colors['selected_text']};
+            }}
+            QLineEdit, QTextEdit {{
+                background: {colors['background']};
+                border: 1px solid {colors['border']};
+                border-radius: 10px;
+                padding: 0px 10px;
+            }}
+            QTextEdit {{
+                padding-top: 8px;
+                padding-bottom: 8px;
+            }}
+            QPushButton#ghostRect {{
+                background: {colors['surface']};
+                border: 1px solid {colors['border']};
+                border-radius: 10px;
+                padding: 0px 12px;
+                color: {colors['text_primary']};
+                font-weight: 600;
+            }}
+            QPushButton#ghostRect:hover {{
+                background: {colors['hover']};
+            }}
+            QPushButton#dangerTextButton {{
+                background: transparent;
+                border: none;
+                border-radius: 8px;
+                padding: 0px 8px;
+                color: {colors['danger']};
+                font-weight: 600;
+            }}
+            QPushButton#dangerTextButton:hover {{
+                background: {colors['danger']}1A;
+            }}
+            QPushButton#primaryRect {{
+                background: {colors['primary']};
+                color: {colors['text_inverse']};
+                border: none;
+                border-radius: 10px;
+                padding: 0px 14px;
+                font-weight: 600;
+            }}
+            QPushButton#primaryRect:hover {{
+                background: {colors['primary_hover']};
+            }}
+        """
     
     def _load_webhooks(self):
         """加载 Webhook 列表"""
@@ -139,6 +269,7 @@ class WebhookManagerDialog(QDialog):
             self._current_webhook_id = None
             self._clear_form()
             self.btn_delete.setEnabled(False)
+            self.detail_state.setText("选择左侧条目进行编辑")
             return
         
         row = self.table.row(selected[0])
@@ -155,6 +286,7 @@ class WebhookManagerDialog(QDialog):
             self.edit_keyword.setText(webhook.keyword or "")
             self.edit_desc.setPlainText(webhook.description or "")
             self.btn_delete.setEnabled(True)
+            self.detail_state.setText("当前正在编辑")
     
     def _clear_form(self):
         """清空表单"""
@@ -179,6 +311,7 @@ class WebhookManagerDialog(QDialog):
         self.table.clearSelection()
         self._clear_form()
         self.edit_name.setFocus()
+        self.detail_state.setText("新增一个 Webhook")
     
     def _on_delete(self):
         """删除"""

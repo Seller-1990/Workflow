@@ -20,24 +20,31 @@ def _kill_process_tree(proc):
 
     M5 修复：Power BI Desktop 启动后会 fork msmdsrv / Microsoft.Mashup.Container 子进程；
     若 launcher 已退出，子进程成为孤儿仍占文件锁。先用 taskkill /T 杀进程树，
-    再用 psutil 扫描全机 PBIDesktop / msmdsrv / Mashup 残余进程兜底。
+    再按当前进程树中捕获到的子进程做有限兜底，避免误杀其它 Power BI 实例。
 
     MA1：通用 taskkill / proc.kill 已迁移到 BaseExecutor.kill_process_tree；
-    本函数仅保留 Power BI 特定的残余进程兜底扫描。
+    本函数仅保留 Power BI 特定的树内残余进程兜底。
     """
-    BaseExecutor.kill_process_tree(proc)
-
-    # 兜底清扫：扫描机器上仍存活的 Power BI 系列进程（仅 Windows）
+    child_pids = []
     if sys.platform == "win32":
         try:
             import psutil
-            targets = ("PBIDesktop.exe", "msmdsrv.exe", "Microsoft.Mashup.Container.NetFX45.exe", "Microsoft.Mashup.Container.exe")
-            for p in psutil.process_iter(attrs=["pid", "name"]):
+
+            parent = psutil.Process(proc.pid)
+            child_pids = [child.pid for child in parent.children(recursive=True)]
+        except Exception:
+            child_pids = []
+
+    BaseExecutor.kill_process_tree(proc)
+
+    if sys.platform == "win32" and child_pids:
+        try:
+            import psutil
+
+            for pid in child_pids:
                 try:
-                    if (p.info.get("name") or "") in targets:
-                        # 谨慎：若用户手动开了 PBIDesktop，会被一起杀掉。
-                        # 但本函数只在 cancel / timeout 路径被调用，权衡上接受这种副作用。
-                        p.kill()
+                    child = psutil.Process(pid)
+                    child.kill()
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
         except ImportError:

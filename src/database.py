@@ -183,7 +183,7 @@ SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
 
 def _ensure_schema_version_table(engine):
     """创建版本号记录表"""
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         conn.execute(text(
             "CREATE TABLE IF NOT EXISTS schema_versions ("
             "version INTEGER PRIMARY KEY,"
@@ -199,7 +199,7 @@ def _get_applied_versions(engine) -> set[int]:
 
 
 def _record_version(engine, version: int):
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         conn.execute(text("INSERT OR IGNORE INTO schema_versions(version) VALUES (:v)"), {"v": version})
 
 
@@ -266,7 +266,7 @@ def _migrate_v2_version_table_and_step_uid_unique(engine):
 
 def _migrate_v3_step_logs_step_run_index(engine):
     """v3: R2-#5 为 step_logs 加 (step_id, run_history_id) 组合索引"""
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         try:
             conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_step_logs_step_run "
@@ -278,7 +278,7 @@ def _migrate_v3_step_logs_step_run_index(engine):
 
 def _ensure_workflow_columns(engine):
     """兼容老库：补齐新增字段"""
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         rows = conn.execute(text("PRAGMA table_info(workflows)")).fetchall()
         existing = {row[1] for row in rows}
         alter_sql = []
@@ -310,7 +310,7 @@ def _ensure_workflow_columns(engine):
 
 def _ensure_version_table(engine):
     """兼容老库：创建工作流版本表"""
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         conn.execute(text(
             "CREATE TABLE IF NOT EXISTS workflow_versions ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -332,7 +332,7 @@ def _ensure_version_table(engine):
 
 def _ensure_run_history_columns(engine):
     """兼容老库：补齐运行历史新增字段（trace_id, parent_run_id）"""
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         rows = conn.execute(text("PRAGMA table_info(run_histories)")).fetchall()
         existing = {row[1] for row in rows}
         alter_sql = []
@@ -346,7 +346,7 @@ def _ensure_run_history_columns(engine):
 
 def _ensure_step_columns(engine):
     """兼容老库：补齐 steps 表新增字段"""
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         rows = conn.execute(text("PRAGMA table_info(steps)")).fetchall()
         existing = {row[1] for row in rows}
         alter_sql = []
@@ -364,7 +364,7 @@ def _ensure_step_uid_unique(engine):
     场景：import_from_json 或 ensure_single_script_step 在历史上可能在同一 workflow
     下产生重复 uid（特别是 uid='single_script'）。清重保留 id 最大者（最新）。
     """
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         # 1) 探测重复
         dup_rows = conn.execute(text(
             "SELECT workflow_id, uid, COUNT(*) c FROM steps "
@@ -1515,7 +1515,10 @@ def import_from_json(json_path: Path) -> int:
                     cwd=step_data.get('cwd', ''),
                     is_gate=step_data.get('is_gate', False),
                     is_parallel=step_data.get('is_parallel', False),
-                    chart_theme=step_data.get('chart_theme', '')
+                    chart_theme=step_data.get('chart_theme', ''),
+                    timeout_seconds=step_data.get('timeout_seconds'),
+                    retry_count=int(step_data.get('retry_count') or 0),
+                    skip_on_success=bool(step_data.get('skip_on_success', False)),
                 )
                 
                 # 设置参数
@@ -1638,7 +1641,10 @@ def export_to_json(json_path: Path, workflow_ids: List[int] | None = None):
                     "is_gate": step.is_gate,
                     "is_parallel": step.is_parallel,
                     "depends_on": step.get_depends_on(),
-                    "chart_theme": step.chart_theme or ""
+                    "chart_theme": step.chart_theme or "",
+                    "timeout_seconds": step.timeout_seconds,
+                    "retry_count": step.retry_count,
+                    "skip_on_success": step.skip_on_success,
                 }
                 wf_data["steps"].append(step_data)
 
@@ -1784,11 +1790,11 @@ def clone_workflow(workflow_id: int, new_name: str = None) -> Optional[Workflow]
             )
             session.add(cloned_stage)
 
-        # 克隆步骤
-        old_to_new_uid = {}
-        for step in sorted(source.steps, key=lambda s: s.order):
-            new_uid = generate_uid()
-            old_to_new_uid[step.uid] = new_uid
+        # 克隆步骤：先生成完整 UID 映射，避免依赖排序更靠后的步骤时保留旧 UID。
+        source_steps = sorted(source.steps, key=lambda s: s.order)
+        old_to_new_uid = {step.uid: generate_uid() for step in source_steps}
+        for step in source_steps:
+            new_uid = old_to_new_uid[step.uid]
             new_stage_uid = uid_map.get(step.stage_uid, step.stage_uid)
 
             # 更新依赖引用

@@ -71,8 +71,9 @@ def resolve_workflow_id(identifier) -> int:
 
     支持三种方式：
     1. 精确名称匹配 → 返回对应ID（优先，避免名为 "123" 的工作流无法用名称调用）
-    2. 纯数字 → 作为数据库ID
-    3. 模糊匹配 → 如果只有一个结果则自动选择，多个结果则列出供选择
+    2. 精确 UID 匹配 → 返回对应ID
+    3. 纯数字 → 作为数据库ID
+    4. 模糊匹配 → 如果只有一个结果则自动选择，多个结果则列出供选择
 
     M6 修复：调整顺序——先按名称查，再 fallback 到数字 ID。
     """
@@ -83,7 +84,13 @@ def resolve_workflow_id(identifier) -> int:
     if wf:
         return wf.id
 
-    # 2. 纯数字 → fallback 到数据库 ID
+    # 2. 精确 UID 匹配
+    wf = get_workflow_by_uid(name)
+    if wf:
+        print(f"已匹配工作流 UID: {wf.name} (ID: {wf.id})")
+        return wf.id
+
+    # 3. 纯数字 → fallback 到数据库 ID
     if isinstance(identifier, int) or (isinstance(identifier, str) and name.isdigit()):
         wid = int(identifier)
         wf = get_workflow_by_id(wid)
@@ -92,7 +99,7 @@ def resolve_workflow_id(identifier) -> int:
         print(f"工作流 ID {wid} 不存在")
         sys.exit(1)
 
-    # 3. 模糊匹配
+    # 4. 模糊匹配
     results = search_workflows(name)
     if not results:
         print(f"未找到匹配的工作流: {name}")
@@ -117,12 +124,14 @@ def resolve_step_id(workflow_id: int, identifier) -> int:
     支持三种方式：
     1. 纯数字 → 直接作为数据库ID
     2. 精确名称匹配 → 返回对应ID
-    3. 模糊匹配 → 如果只有一个结果则自动选择
+    3. 精确 UID 匹配 → 返回对应ID
+    4. 模糊匹配 → 如果只有一个结果则自动选择
     """
+    steps = get_steps_by_workflow(workflow_id)
+
     # 1. 纯数字 → 直接作为ID
     if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.strip().isdigit()):
         sid = int(identifier)
-        steps = get_steps_by_workflow(workflow_id)
         for s in steps:
             if s.id == sid:
                 return sid
@@ -135,8 +144,14 @@ def resolve_step_id(workflow_id: int, identifier) -> int:
     step = get_step_by_name(workflow_id, name)
     if step:
         return step.id
+
+    # 3. 精确 UID 匹配
+    for s in steps:
+        if s.uid == name:
+            print(f"已匹配步骤 UID: {s.name} (ID: {s.id})")
+            return s.id
     
-    # 3. 模糊匹配
+    # 4. 模糊匹配
     results = search_steps(workflow_id, name)
     if not results:
         print(f"未找到匹配的步骤: {name}")
@@ -183,7 +198,8 @@ def resolve_stage_uid(workflow_id: int, identifier) -> str:
     
     支持两种方式：
     1. 精确名称匹配 → 返回对应UID
-    2. 模糊匹配 → 如果只有一个结果则自动选择
+    2. 精确 UID 匹配 → 返回对应UID
+    3. 模糊匹配 → 如果只有一个结果则自动选择
     """
     name = str(identifier).strip()
     
@@ -191,8 +207,14 @@ def resolve_stage_uid(workflow_id: int, identifier) -> str:
     stage = get_stage_by_name(workflow_id, name)
     if stage:
         return stage.uid
+
+    stages = list_stages(workflow_id)
+    for stage in stages:
+        if stage.uid == name:
+            print(f"已匹配阶段 UID: {stage.name}")
+            return stage.uid
     
-    # 2. 模糊匹配
+    # 3. 模糊匹配
     results = search_stages(workflow_id, name)
     if not results:
         print(f"未找到匹配的阶段: {name}")
@@ -465,26 +487,7 @@ class CLIEngine:
 
     def dry_run(self, workflow_id):
         """预览执行计划"""
-        workflow = get_workflow_by_id(workflow_id)
-        if not workflow:
-            print(f"工作流 ID {workflow_id} 不存在")
-            return
-
-        steps = get_steps_by_workflow(workflow_id)
-        if not steps:
-            print("工作流没有步骤")
-            return
-
-        batches = WorkflowEngine.compute_batches(workflow, steps)
-        print(f"\n工作流: {workflow.name} (ID: {workflow_id})")
-        print(f"共 {len(steps)} 个步骤, {len(batches)} 个批次\n")
-
-        for i, batch in enumerate(batches, 1):
-            print(f"  批次 {i} (并行):")
-            for step in batch:
-                deps = step.depends_on or ""
-                print(f"    - [{step.step_type}] {step.name} (顺序: {step.order}) 依赖: {deps or '无'}")
-            print()
+        self.engine.dry_run(workflow_id)
 
     def close(self):
         self.engine.stop_watch()
@@ -717,66 +720,80 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
 
     # list
-    subparsers.add_parser("list", help="列出所有工作流")
+    subparsers.add_parser("list", aliases=["ls"], help="列出所有工作流")
 
     # run
-    run_parser = subparsers.add_parser("run", help="运行工作流")
-    run_parser.add_argument("workflow_id", help="工作流名称或ID")
-    run_parser.add_argument("--stage", dest="stage", help="只运行指定阶段（名称）")
-    run_parser.add_argument("--from-stage", dest="from_stage", help="从指定阶段开始运行（名称）")
-    run_parser.add_argument("--only", dest="only_step", help="只运行指定步骤（名称或ID）")
-    run_parser.add_argument("--from", dest="from_step", help="从指定步骤开始（名称或ID）")
+    run_parser = subparsers.add_parser("run", aliases=["start"], help="运行工作流")
+    run_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
+    run_parser.add_argument("--stage", "-s", dest="stage", help="只运行指定阶段（名称 / UID）")
+    run_parser.add_argument("--from-stage", "-S", dest="from_stage", help="从指定阶段开始运行（名称 / UID）")
+    run_parser.add_argument("--only", "-o", dest="only_step", help="只运行指定步骤（名称 / UID / ID）")
+    run_parser.add_argument("--from", "-f", dest="from_step", help="从指定步骤开始（名称 / UID / ID）")
 
     # retry
-    retry_parser = subparsers.add_parser("retry", help="重试失败步骤")
-    retry_parser.add_argument("workflow_id", help="工作流名称或ID")
+    retry_parser = subparsers.add_parser("retry", aliases=["rerun"], help="重试失败步骤")
+    retry_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
 
     # history
-    hist_parser = subparsers.add_parser("history", help="查看运行历史")
-    hist_parser.add_argument("workflow_id", help="工作流名称或ID")
-    hist_parser.add_argument("--limit", type=int, default=20, help="显示条数 (默认 20)")
+    hist_parser = subparsers.add_parser("history", aliases=["hist"], help="查看运行历史")
+    hist_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
+    hist_parser.add_argument("--limit", "-n", type=int, default=20, help="显示条数 (默认 20)")
     hist_parser.add_argument("--detail", action="store_true", help="显示最近一次的步骤详情")
 
     # steps
-    steps_parser = subparsers.add_parser("steps", help="查看工作流步骤")
-    steps_parser.add_argument("workflow_id", help="工作流名称或ID")
+    steps_parser = subparsers.add_parser("steps", aliases=["show"], help="查看工作流步骤")
+    steps_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
 
     # stages
-    stages_parser = subparsers.add_parser("stages", help="查看工作流阶段")
-    stages_parser.add_argument("workflow_id", help="工作流名称或ID")
+    stages_parser = subparsers.add_parser("stages", aliases=["stage"], help="查看工作流阶段")
+    stages_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
 
     # dry-run
-    dry_parser = subparsers.add_parser("dry-run", help="预览执行计划")
-    dry_parser.add_argument("workflow_id", help="工作流名称或ID")
+    dry_parser = subparsers.add_parser("dry-run", aliases=["preview"], help="预览执行计划")
+    dry_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
 
     # export
     export_parser = subparsers.add_parser("export", help="导出工作流")
-    export_parser.add_argument("workflow_id", help="工作流名称或ID")
+    export_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
     export_parser.add_argument("output", nargs="?", help="输出路径 (默认: 工作流名.json)")
 
     # import
-    import_parser = subparsers.add_parser("import", help="导入工作流")
+    import_parser = subparsers.add_parser("import", aliases=["load"], help="导入工作流")
     import_parser.add_argument("json_path", help="JSON 文件路径")
 
     # backup
-    backup_parser = subparsers.add_parser("backup", help="备份所有工作流")
-    backup_parser.add_argument("--dir", help="备份目录 (默认: 自动)")
+    backup_parser = subparsers.add_parser("backup", aliases=["bak"], help="备份所有工作流")
+    backup_parser.add_argument("--dir", "-d", help="备份目录 (默认: 自动)")
 
     # clone
-    clone_parser = subparsers.add_parser("clone", help="克隆工作流")
-    clone_parser.add_argument("workflow_id", help="工作流名称或ID")
+    clone_parser = subparsers.add_parser("clone", aliases=["cp"], help="克隆工作流")
+    clone_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
     clone_parser.add_argument("name", nargs="?", help="新名称 (默认: 原名_副本)")
 
     # delete
-    delete_parser = subparsers.add_parser("delete", help="删除工作流")
-    delete_parser.add_argument("workflow_id", help="工作流名称或ID")
-    delete_parser.add_argument("--force", "-f", action="store_true", help="跳过确认")
+    delete_parser = subparsers.add_parser("delete", aliases=["rm"], help="删除工作流")
+    delete_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
+    delete_parser.add_argument("--force", "-f", "-y", action="store_true", help="跳过确认")
 
     args = parser.parse_args()
 
     if not args.command:
         parser.print_help()
         return
+
+    COMMAND_ALIASES = {
+        "ls": "list",
+        "start": "run",
+        "rerun": "retry",
+        "hist": "history",
+        "show": "steps",
+        "stage": "stages",
+        "preview": "dry-run",
+        "load": "import",
+        "bak": "backup",
+        "cp": "clone",
+        "rm": "delete",
+    }
 
     commands = {
         "list": cmd_list,
@@ -793,7 +810,8 @@ def main():
         "delete": cmd_delete,
     }
 
-    handler = commands.get(args.command)
+    command_name = COMMAND_ALIASES.get(args.command, args.command)
+    handler = commands.get(command_name)
     if handler:
         handler(args)
     else:

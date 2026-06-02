@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """执行器策略与发现逻辑测试"""
 
+import io
 import sys
 import threading
 import time
@@ -8,10 +9,22 @@ from datetime import datetime
 from types import SimpleNamespace
 from pathlib import Path
 
+
+def install_fake_excel_modules(monkeypatch, dispatch_ex):
+    pythoncom_mod = SimpleNamespace(CoInitialize=lambda: None, CoUninitialize=lambda: None)
+    win32_client_mod = SimpleNamespace(DispatchEx=dispatch_ex)
+    win32_mod = SimpleNamespace(client=win32_client_mod)
+
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom_mod)
+    monkeypatch.setitem(sys.modules, "win32com", win32_mod)
+    monkeypatch.setitem(sys.modules, "win32com.client", win32_client_mod)
+
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from engine import WorkflowEngine, StepResult
 from executors.base import ExecutorResult
+from executors.excel_executor import ExcelExecutor
 from executors.powerbi_executor import PowerBIExecutor
 from executors.python_executor import PythonExecutor, _get_python_executable
 from executors.sub_workflow_executor import SubWorkflowExecutor
@@ -47,6 +60,175 @@ def test_python_executor_rejects_missing_work_dir(tmp_path: Path):
     assert "工作目录不存在" in (result.error_message or "")
 
 
+def test_python_executor_uses_process_tree_kill_on_cancel(monkeypatch, tmp_path: Path):
+    script = tmp_path / "job.py"
+    script.write_text("print('ok')", encoding="utf-8")
+    cancel_event = threading.Event()
+    killed = {}
+
+    class DummyProc:
+        def __init__(self):
+            self.stdout = io.BytesIO(b"")
+            self.stderr = io.BytesIO(b"")
+            self.pid = 4242
+            self.returncode = None
+            self.kill_called = False
+
+        def poll(self):
+            return self.returncode
+
+        def communicate(self, timeout=None):
+            return b"", b""
+
+        def wait(self, timeout=None):
+            self.returncode = -1
+            return self.returncode
+
+        def kill(self):
+            self.kill_called = True
+            self.returncode = -1
+
+    monkeypatch.setattr("executors.python_executor.subprocess.Popen", lambda *args, **kwargs: DummyProc())
+    monkeypatch.setattr(
+        PythonExecutor,
+        "wait_with_cancel",
+        staticmethod(lambda proc, timeout, cancel_event=None, check_interval=0.5: (True, True)),
+    )
+    monkeypatch.setattr(
+        PythonExecutor,
+        "kill_process_tree",
+        staticmethod(lambda proc, taskkill_timeout=10, wait_timeout=5: killed.setdefault("pid", proc.pid)),
+    )
+
+    result = PythonExecutor().execute(str(script), log_dir=tmp_path / "logs", cancel_event=cancel_event)
+
+    assert result.success is False
+    assert result.error_message == "用户取消"
+    assert killed["pid"] == 4242
+
+
+def test_python_executor_uses_process_tree_kill_on_timeout(monkeypatch, tmp_path: Path):
+    script = tmp_path / "job.py"
+    script.write_text("print('ok')", encoding="utf-8")
+    cancel_event = threading.Event()
+    killed = {}
+
+    class DummyProc:
+        def __init__(self):
+            self.stdout = io.BytesIO(b"")
+            self.stderr = io.BytesIO(b"")
+            self.pid = 4343
+            self.returncode = None
+            self.kill_called = False
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -1
+            return self.returncode
+
+        def kill(self):
+            self.kill_called = True
+            self.returncode = -1
+
+    monkeypatch.setattr("executors.python_executor.subprocess.Popen", lambda *args, **kwargs: DummyProc())
+    monkeypatch.setattr(
+        PythonExecutor,
+        "wait_with_cancel",
+        staticmethod(lambda proc, timeout, cancel_event=None, check_interval=0.5: (False, False)),
+    )
+    monkeypatch.setattr(
+        PythonExecutor,
+        "kill_process_tree",
+        staticmethod(lambda proc, taskkill_timeout=10, wait_timeout=5: killed.setdefault("pid", proc.pid)),
+    )
+
+    result = PythonExecutor().execute(
+        str(script),
+        log_dir=tmp_path / "logs",
+        cancel_event=cancel_event,
+        timeout=1,
+    )
+
+    assert result.success is False
+    assert result.error_message == "执行超时 (1秒)"
+    assert killed["pid"] == 4343
+
+
+def test_python_executor_includes_stderr_excerpt_in_error_message(tmp_path: Path):
+    script = tmp_path / "job.py"
+    script.write_text(
+        "import sys\nprint('ERROR: boom failure', file=sys.stderr)\nsys.exit(1)\n",
+        encoding="utf-8",
+    )
+
+    result = PythonExecutor().execute(str(script), log_dir=tmp_path / "logs")
+
+    assert result.success is False
+    assert "退出码: 1" in (result.error_message or "")
+    assert "ERROR: boom failure" in (result.error_message or "")
+
+
+def test_excel_executor_waits_for_async_queries_before_saving(monkeypatch, tmp_path: Path):
+    workbook_path = tmp_path / "report.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+    app = SimpleNamespace(
+        Workbooks=None,
+        Visible=False,
+        DisplayAlerts=False,
+        Hwnd=1234,
+        CalculationState=1,
+        calculate_calls=0,
+        refresh_called=False,
+    )
+
+    class FakeConnection:
+        def __init__(self):
+            self.OLEDBConnection = SimpleNamespace(BackgroundQuery=True)
+
+    class FakeWorkbook:
+        def __init__(self):
+            self.Connections = [FakeConnection()]
+            self.saved = False
+            self.closed = False
+            self.Sheets = SimpleNamespace(Count=3)
+
+        def RefreshAll(self):
+            app.refresh_called = True
+
+        def Save(self):
+            self.saved = True
+
+        def Close(self, SaveChanges=True):
+            self.closed = True
+
+    class FakeWorkbooks:
+        def Open(self, path):
+            app.opened_path = path
+            return FakeWorkbook()
+
+    def calculate_until_async_queries_done():
+        app.calculate_calls += 1
+        app.CalculationState = 0
+
+    app.Workbooks = FakeWorkbooks()
+    app.CalculateUntilAsyncQueriesDone = calculate_until_async_queries_done
+
+    install_fake_excel_modules(monkeypatch, dispatch_ex=lambda _name: app)
+    monkeypatch.setitem(
+        sys.modules,
+        "win32process",
+        SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: (0, 4321)),
+    )
+
+    result = ExcelExecutor().execute(str(workbook_path), log_dir=tmp_path / "logs", timeout=2)
+
+    assert result.success is True
+    assert app.calculate_calls == 1
+    assert app.refresh_called is True
+
+
 def test_get_python_executable_prefers_python3_before_hardcoded(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr("executors.python_executor.shutil.which", lambda name: {"python": None, "python3": "C:/Tools/python3.exe", "py": None}.get(name))
@@ -63,6 +245,48 @@ def test_powerbi_executor_prefers_path_lookup_before_fallbacks(monkeypatch):
     result = PowerBIExecutor().find_pbidesktop()
 
     assert result == "C:/Tools/PBIDesktop.exe"
+
+
+def test_powerbi_kill_process_tree_limits_cleanup_to_current_tree(monkeypatch):
+    class FakeUnrelatedProcess:
+        def __init__(self, pid):
+            self.pid = pid
+            self.info = {"pid": pid, "name": "PBIDesktop.exe"}
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+    class FakeRootProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def children(self, recursive=True):
+            return []
+
+    unrelated = FakeUnrelatedProcess(9001)
+    base_calls = []
+
+    fake_psutil = SimpleNamespace(
+        Process=lambda pid: FakeRootProcess(pid) if pid == 1234 else unrelated,
+        process_iter=lambda attrs=None: [unrelated],
+        NoSuchProcess=type("NoSuchProcess", (Exception,), {}),
+        AccessDenied=type("AccessDenied", (Exception,), {}),
+        ZombieProcess=type("ZombieProcess", (Exception,), {}),
+    )
+
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr("executors.powerbi_executor.BaseExecutor.kill_process_tree", lambda proc: base_calls.append(proc.pid))
+
+    from executors.powerbi_executor import _kill_process_tree
+
+    class DummyProc:
+        pid = 1234
+
+    _kill_process_tree(DummyProc())
+
+    assert base_calls == [1234]
+    assert unrelated.killed is False
 
 
 def test_sub_workflow_executor_uses_injected_runner(monkeypatch):
@@ -82,6 +306,29 @@ def test_sub_workflow_executor_uses_injected_runner(monkeypatch):
 
     assert result.success is True
     assert calls == [(5, "sub_workflow")]
+
+
+def test_sub_workflow_executor_returns_result_when_runner_raises(monkeypatch):
+    target = SimpleNamespace(id=5, uid="wf-target")
+    parent = SimpleNamespace(id=1)
+
+    monkeypatch.setattr("executors.sub_workflow_executor.get_workflow_by_uid", lambda uid: target if uid == "wf-target" else None)
+    monkeypatch.setattr("executors.sub_workflow_executor.get_workflow_by_id", lambda workflow_id: parent if workflow_id == 1 else None)
+    monkeypatch.setattr("executors.sub_workflow_executor.has_cross_workflow_cycle", lambda parent_id, target_uid: False)
+
+    def workflow_runner(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    result = SubWorkflowExecutor().execute(
+        script_path="wf-target",
+        workflow_id=1,
+        workflow_runner=workflow_runner,
+    )
+
+    assert result.success is False
+    assert result.exit_code == 1
+    assert "子工作流执行异常" in (result.error_message or "")
+    assert "boom" in (result.error_message or "")
 
 
 def test_engine_run_sub_workflow_reuses_parent_context_without_lock_conflict(monkeypatch, tmp_path: Path):

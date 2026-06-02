@@ -2,6 +2,7 @@
 """CLI 契约测试"""
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,3 +38,17 @@ def test_cmd_export_only_exports_requested_workflow(tmp_path, monkeypatch, capsy
     assert exported["workflow_ids"] == [5]
     assert exported["path"].exists()
     assert "工作流已导出到" in capsys.readouterr().out
+
+
+def test_import_and_run_help_starts_without_import_error():
+    script = Path(__file__).resolve().parent.parent / "_import_and_run.py"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "--auto" in result.stdout

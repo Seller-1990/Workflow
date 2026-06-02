@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QStatusBar, QToolBar, QMessageBox,
     QScrollArea, QFrame, QLabel, QPushButton, QToolButton,
-    QSizePolicy, QLayout, QStyle, QApplication
+    QSizePolicy, QLayout, QStyle, QApplication, QTabWidget,
+    QStackedWidget, QButtonGroup
 )
 from PySide6.QtCore import Qt, Slot, QSize, QSettings, QPoint, QTimer
 from PySide6.QtGui import QAction, QIcon
@@ -16,7 +17,16 @@ from PySide6.QtGui import QAction, QIcon
 logger = logging.getLogger(__name__)
 
 from config import APP_NAME, APP_VERSION, ICON_PATH
-from database import init_db, get_workflow_by_id
+from database import (
+    init_db,
+    get_workflow_by_id,
+    delete_step,
+    get_step_by_id,
+    get_steps_by_workflow,
+    list_stages,
+    create_step,
+    create_stage,
+)
 from engine import WorkflowEngine
 from ui.theme import (
     get_colors,
@@ -38,6 +48,7 @@ from ui.workflow_config import WorkflowConfigPanel
 from ui.webhook_manager import WebhookManagerDialog
 from ui.error_summary import ErrorSummaryDialog
 from ui.ios_switch import IosSwitch
+from ui.workbench_board import WorkbenchBoardPanel
 
 
 class MainWindow(QMainWindow):
@@ -66,7 +77,9 @@ class MainWindow(QMainWindow):
         self._edit_mode = False
 
         settings = QSettings(APP_NAME, "ui")  # U-P3-2: 统一 QSettings 节点
-        self._dark_mode = settings.value("dark_mode", False, type=bool)
+        # 固定浅色主题：旧版本保存过的深色偏好会在启动时被清掉。
+        self._dark_mode = False
+        settings.setValue("dark_mode", False)
         
         self._setup_ui()
         self._setup_toolbar()
@@ -86,30 +99,76 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(ICON_PATH)))
         # U-P3-9：1366x768 笔记本兼容（原 1200x800 在 125% DPI 下溢出屏幕）
         self.setMinimumSize(1024, 680)
-        
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
+
         main_layout = QHBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        
+
         self.main_splitter = QSplitter(Qt.Horizontal)
         self.main_splitter.setObjectName("MainSplitter")
         self.main_splitter.setHandleWidth(1)
         self.main_splitter.setChildrenCollapsible(False)
         main_layout.addWidget(self.main_splitter)
-        
-        # ===== 左侧面板 =====
+
+        # ===== 左侧：工作流与资产 =====
         self.left_panel = QFrame()
         self.left_panel.setObjectName("LeftPanel")
-        self.left_panel.setMinimumWidth(200)
+        self.left_panel.setMinimumWidth(240)
+        self.left_panel.setMaximumWidth(320)
         left_layout = QVBoxLayout(self.left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
-        
+        left_layout.setContentsMargins(14, 18, 14, 14)
+        left_layout.setSpacing(14)
+
+        brand_row = QWidget()
+        brand_layout = QHBoxLayout(brand_row)
+        brand_layout.setContentsMargins(2, 0, 2, 0)
+        brand_layout.setSpacing(10)
+        self.lbl_brand_icon = QLabel()
+        self.lbl_brand_icon.setObjectName("BrandMark")
+        self.lbl_brand_icon.setFixedSize(36, 36)
+        if ICON_PATH.exists():
+            pix = QIcon(str(ICON_PATH)).pixmap(36, 36)
+            self.lbl_brand_icon.setPixmap(pix)
+        brand_layout.addWidget(self.lbl_brand_icon)
+        brand_text = QVBoxLayout()
+        brand_text.setContentsMargins(0, 0, 0, 0)
+        brand_text.setSpacing(2)
+        self.lbl_brand_name = QLabel("Workflow")
+        self.lbl_brand_name.setObjectName("BrandName")
+        brand_text.addWidget(self.lbl_brand_name)
+        self.lbl_brand_subtitle = QLabel("本地自动化工作台")
+        self.lbl_brand_subtitle.setObjectName("BrandSubtitle")
+        brand_text.addWidget(self.lbl_brand_subtitle)
+        brand_layout.addLayout(brand_text, stretch=1)
+        left_layout.addWidget(brand_row)
+
         self.workflow_list = WorkflowListPanel()
         left_layout.addWidget(self.workflow_list, stretch=1)
+
+        asset_label = QLabel("资产")
+        asset_label.setObjectName("SidebarLabel")
+        left_layout.addWidget(asset_label)
+
+        self.btn_asset_import = QPushButton("导入 JSON")
+        self.btn_asset_import.setObjectName("SidebarNav")
+        self.btn_asset_import.setToolTip("导入工作流 JSON")
+        self.btn_asset_import.setAccessibleName("导入 JSON")
+        left_layout.addWidget(self.btn_asset_import)
+
+        self.btn_asset_export = QPushButton("导出 JSON")
+        self.btn_asset_export.setObjectName("SidebarNav")
+        self.btn_asset_export.setToolTip("导出当前工作流为 JSON")
+        self.btn_asset_export.setAccessibleName("导出 JSON")
+        left_layout.addWidget(self.btn_asset_export)
+
+        self.btn_asset_webhook = QPushButton("Webhook")
+        self.btn_asset_webhook.setObjectName("SidebarNav")
+        self.btn_asset_webhook.setToolTip("配置运行通知 Webhook")
+        self.btn_asset_webhook.setAccessibleName("Webhook 管理")
+        left_layout.addWidget(self.btn_asset_webhook)
 
         edit_bar = QWidget()
         edit_bar.setObjectName("foldBar")
@@ -122,78 +181,219 @@ class MainWindow(QMainWindow):
         self.check_edit_mode = IosSwitch()
         self.check_edit_mode.setChecked(False)
         self.check_edit_mode.toggled.connect(self._set_edit_mode)
+        self.check_edit_mode.setToolTip("开启后可以编辑工作流、阶段和步骤")
         edit_bar_layout.addWidget(self.check_edit_mode)
 
         self.btn_left_save = QPushButton("保存")
         self.btn_left_save.setObjectName("primarySmall")
         self.btn_left_save.setFixedSize(78, 26)
         self.btn_left_save.clicked.connect(self._action_save)
+        self.btn_left_save.setToolTip("保存当前工作流和步骤修改")
         edit_bar_layout.addWidget(self.btn_left_save)
         left_layout.addWidget(edit_bar)
-        
+
+        # 保留 RunControlPanel 作为运行信号与快捷键兼容层；新 UI 的入口在顶部命令栏。
         self.run_control = RunControlPanel()
+        self.run_control.setVisible(False)
         left_layout.addWidget(self.run_control)
-        
+
         self.main_splitter.addWidget(self.left_panel)
 
-        # ===== 中区面板 =====
+        # ===== 中间：工作台 =====
         self.center_container = QFrame()
         self.center_container.setObjectName("CenterPanel")
         center_layout = QVBoxLayout(self.center_container)
-        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setContentsMargins(22, 20, 22, 22)
         center_layout.setSpacing(16)
         center_layout.setSizeConstraint(QLayout.SetMinimumSize)
-        self.center_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        
-        self.workflow_config = WorkflowConfigPanel()
-        self.workflow_config.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        center_layout.addWidget(self.workflow_config)
+        self.center_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        command_bar = QWidget()
+        command_bar.setObjectName("CommandBar")
+        command_layout = QHBoxLayout(command_bar)
+        command_layout.setContentsMargins(0, 0, 0, 0)
+        command_layout.setSpacing(20)
+
+        title_block = QVBoxLayout()
+        title_block.setContentsMargins(0, 0, 0, 0)
+        title_block.setSpacing(4)
+        self.lbl_workflow_eyebrow = QLabel("当前工作流")
+        self.lbl_workflow_eyebrow.setObjectName("Eyebrow")
+        title_block.addWidget(self.lbl_workflow_eyebrow)
+        self.lbl_workflow_title = QLabel("请选择工作流")
+        self.lbl_workflow_title.setObjectName("WorkflowTitle")
+        title_block.addWidget(self.lbl_workflow_title)
+        self.lbl_workflow_meta = QLabel("0 阶段 · 0 步 · 未运行")
+        self.lbl_workflow_meta.setObjectName("WorkflowMeta")
+        title_block.addWidget(self.lbl_workflow_meta)
+        command_layout.addLayout(title_block, stretch=1)
+
+        run_cluster = QWidget()
+        run_cluster.setObjectName("RunCluster")
+        run_layout = QHBoxLayout(run_cluster)
+        run_layout.setContentsMargins(0, 0, 0, 0)
+        run_layout.setSpacing(8)
+        self.lbl_run_state = QLabel("● 就绪")
+        self.lbl_run_state.setObjectName("RunStateChip")
+        self.lbl_run_state.setToolTip("当前运行状态")
+        run_layout.addWidget(self.lbl_run_state)
+        self.btn_header_run = QPushButton("▶ 运行全流程")
+        self.btn_header_run.setObjectName("PrimaryAction")
+        self.btn_header_run.setToolTip("运行当前工作流的全流程（F5）")
+        self.btn_header_run.setAccessibleName("运行全流程")
+        self.btn_header_run.clicked.connect(lambda: self._on_run_requested("full", None))
+        run_layout.addWidget(self.btn_header_run)
+        self.btn_header_stop = QToolButton()
+        self.btn_header_stop.setObjectName("DangerIconButton")
+        self.btn_header_stop.setText("■")
+        self.btn_header_stop.setToolTip("停止当前运行（Shift+F5）")
+        self.btn_header_stop.setAccessibleName("停止运行")
+        self.btn_header_stop.clicked.connect(self._stop_workflow)
+        self.btn_header_stop.setEnabled(False)
+        run_layout.addWidget(self.btn_header_stop)
+        command_layout.addWidget(run_cluster)
+        center_layout.addWidget(command_bar)
+
+        self.mode_tabs = QTabWidget()
+        self.mode_tabs.setObjectName("ModeTabs")
+        self.mode_tabs.setDocumentMode(True)
+
+        plan_page = QWidget()
+        plan_layout = QVBoxLayout(plan_page)
+        plan_layout.setContentsMargins(0, 0, 0, 0)
+        plan_layout.setSpacing(12)
+
+        plan_switch = QWidget()
+        switch_layout = QHBoxLayout(plan_switch)
+        switch_layout.setContentsMargins(0, 0, 0, 0)
+        switch_layout.setSpacing(8)
+        self.btn_view_board = QPushButton("阶段")
+        self.btn_view_board.setObjectName("ViewSwitchActive")
+        self.btn_view_board.setToolTip("阶段泳道编排视图")
+        self.btn_view_board.setAccessibleName("阶段视图")
+        self.btn_view_dag = QPushButton("批次")
+        self.btn_view_dag.setObjectName("ViewSwitch")
+        self.btn_view_dag.setToolTip("查看自动计算的批次与依赖图")
+        self.btn_view_dag.setAccessibleName("批次视图")
+        self.btn_view_table = QPushButton("列表")
+        self.btn_view_table.setObjectName("ViewSwitch")
+        self.btn_view_table.setToolTip("使用表格查看和批量调整步骤")
+        self.btn_view_table.setAccessibleName("列表视图")
+        self._view_buttons = [(self.btn_view_board, 0), (self.btn_view_table, 2)]
+        switch_layout.addWidget(self.btn_view_board)
+        switch_layout.addWidget(self.btn_view_table)
+        switch_layout.addStretch(1)
+        plan_layout.addWidget(plan_switch)
+
+        self.plan_stack = QStackedWidget()
+        self.plan_stack.setObjectName("PlanStack")
+        self.workbench_board = WorkbenchBoardPanel()
+        self.plan_stack.addWidget(self.workbench_board)
 
         self.dag_view = DAGViewPanel()
-        self.dag_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        center_layout.addWidget(self.dag_view)
-        
+        self.dag_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.plan_stack.addWidget(self.dag_view)
+
         self.step_table = StepTablePanel()
-        self.step_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        center_layout.addWidget(self.step_table)
-        
-        self.step_editor = StepEditorPanel()
-        self.step_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        center_layout.addWidget(self.step_editor)
+        self.step_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.plan_stack.addWidget(self.step_table)
+        plan_layout.addWidget(self.plan_stack, stretch=1)
 
-        center_layout.addStretch(1)
-        
-        center_scroll = QScrollArea()
-        center_scroll.setWidgetResizable(True)
-        center_scroll.setFrameShape(QFrame.NoFrame)
-        center_scroll.setWidget(self.center_container)
-        self.center_scroll = center_scroll
-        self.main_splitter.addWidget(self.center_scroll)
+        self.plan_scroll = QScrollArea()
+        self.plan_scroll.setWidgetResizable(True)
+        self.plan_scroll.setFrameShape(QFrame.NoFrame)
+        self.plan_scroll.setWidget(plan_page)
+        self.center_scroll = self.plan_scroll
+        self.mode_tabs.addTab(self.plan_scroll, "编排")
 
-        # ===== 右侧面板 =====
-        self.right_panel = QFrame()
-        self.right_panel.setObjectName("RightPanel")
-        self.right_panel.setMinimumWidth(250)
-        right_layout = QVBoxLayout(self.right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(16)
-        
+        run_page = QWidget()
+        run_page_layout = QVBoxLayout(run_page)
+        run_page_layout.setContentsMargins(0, 0, 0, 0)
+        run_page_layout.setSpacing(0)
+        self.run_splitter = QSplitter(Qt.Vertical)
+        self.run_splitter.setObjectName("RunSplitter")
+        self.run_splitter.setChildrenCollapsible(False)
+        self.run_splitter.setHandleWidth(5)
         self.log_panel = LogPanel()
         self.log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.log_panel.setMinimumHeight(200)
-        right_layout.addWidget(self.log_panel)
-        
         self.run_history = RunHistoryPanel()
-        right_layout.addWidget(self.run_history, stretch=1)
-        
+        self.run_history.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.run_history.setMinimumHeight(240)
+        self.log_panel.setMinimumHeight(300)
+        self.run_splitter.addWidget(self.run_history)
+        self.run_splitter.addWidget(self.log_panel)
+        self.run_splitter.setSizes([360, 560])
+        self.run_splitter.splitterMoved.connect(self._on_run_splitter_moved)
+        run_page_layout.addWidget(self.run_splitter)
+        self.mode_tabs.addTab(run_page, "运行")
+
+        self.workflow_config = WorkflowConfigPanel()
+        self.workflow_config.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        config_scroll = QScrollArea()
+        config_scroll.setWidgetResizable(True)
+        config_scroll.setFrameShape(QFrame.NoFrame)
+        config_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        config_scroll.setWidget(self.workflow_config)
+        self.mode_tabs.addTab(config_scroll, "配置")
+        center_layout.addWidget(self.mode_tabs, stretch=1)
+
+        self.main_splitter.addWidget(self.center_container)
+
+        # ===== 右侧：Inspector =====
+        self.right_panel = QFrame()
+        self.right_panel.setObjectName("RightPanel")
+        self.right_panel.setMinimumWidth(320)
+        self.right_panel.setMaximumWidth(390)
+        right_layout = QVBoxLayout(self.right_panel)
+        right_layout.setContentsMargins(14, 18, 14, 16)
+        right_layout.setSpacing(10)
+
+        inspector_head = QWidget()
+        inspector_head_layout = QHBoxLayout(inspector_head)
+        inspector_head_layout.setContentsMargins(0, 0, 0, 0)
+        inspector_head_layout.setSpacing(10)
+        inspector_title_box = QVBoxLayout()
+        inspector_title_box.setContentsMargins(0, 0, 0, 0)
+        inspector_title_box.setSpacing(4)
+        self.lbl_inspector_kind = QLabel("Inspector")
+        self.lbl_inspector_kind.setObjectName("Eyebrow")
+        inspector_title_box.addWidget(self.lbl_inspector_kind)
+        self.lbl_inspector_title = QLabel("选择步骤或阶段")
+        self.lbl_inspector_title.setObjectName("InspectorTitle")
+        inspector_title_box.addWidget(self.lbl_inspector_title)
+        inspector_head_layout.addLayout(inspector_title_box, stretch=1)
+        self.btn_inspector_copy = QToolButton()
+        self.btn_inspector_copy.setObjectName("IconButton")
+        self.btn_inspector_copy.setText("⧉")
+        self.btn_inspector_copy.setToolTip("复制当前步骤（在列表视图右键也可操作）")
+        self.btn_inspector_copy.setAccessibleName("复制步骤")
+        inspector_head_layout.addWidget(self.btn_inspector_copy)
+        right_layout.addWidget(inspector_head)
+
+        self.step_editor = StepEditorPanel()
+        self.step_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        inspector_scroll = QScrollArea()
+        inspector_scroll.setObjectName("InspectorScroll")
+        inspector_scroll.setWidgetResizable(True)
+        inspector_scroll.setFrameShape(QFrame.NoFrame)
+        inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inspector_scroll.setWidget(self.step_editor)
+        right_layout.addWidget(inspector_scroll, stretch=1)
+
         self.main_splitter.addWidget(self.right_panel)
-        
-        self.main_splitter.setSizes([260, 792, 340])
 
-        self._setup_border_fold_buttons()
+        self.main_splitter.setSizes([280, 840, 340])
 
-        self._left_last_size = 260
+        # 旧折叠按钮不再作为工作台 UI 入口，保留隐藏对象以兼容运行状态逻辑。
+        self.btn_toggle_left = QToolButton(central_widget)
+        self.btn_toggle_left.hide()
+        self.btn_toggle_right = QToolButton(central_widget)
+        self.btn_toggle_right.hide()
+
+        self._left_last_size = 280
         self._right_last_size = 340
+        self._run_splitter_user_adjusted = False
+        self._apply_run_splitter_profile("idle", force=True)
 
         self.step_table.setAccessibleName("步骤列表")
         self.run_control.btn_run_all.setAccessibleName("全流程运行")
@@ -202,6 +402,9 @@ class MainWindow(QMainWindow):
         self.run_control.btn_retry.setAccessibleName("重试失败步骤")
         self.run_control.btn_dry_run.setAccessibleName("工作流预演")
         self.run_control.btn_cancel.setAccessibleName("停止运行")
+
+        self.btn_view_board.clicked.connect(lambda: self._set_plan_view(0))
+        self.btn_view_table.clicked.connect(lambda: self._set_plan_view(2))
 
     def _setup_border_fold_buttons(self):
         """在面板边框上放置浮动折叠按钮"""
@@ -274,40 +477,44 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setObjectName("MainToolbar")
         toolbar.setFixedHeight(44)
+        toolbar.setVisible(False)
         self.addToolBar(toolbar)
 
         self.action_import = QAction("导入", self)
         self.action_import.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
         self.action_import.triggered.connect(self._action_import_json)
+        self.action_import.setToolTip("导入工作流 JSON")
         toolbar.addAction(self.action_import)
         
         self.action_export = QAction("导出", self)
         self.action_export.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
         self.action_export.triggered.connect(self._action_export_json)
+        self.action_export.setToolTip("导出当前工作流为 JSON")
         toolbar.addAction(self.action_export)
 
         toolbar.addSeparator()
 
         self.action_webhook = QAction("Webhook 管理", self)
         self.action_webhook.triggered.connect(self._open_webhook_manager)
+        self.action_webhook.setToolTip("配置运行通知 Webhook")
         toolbar.addAction(self.action_webhook)
 
         toolbar.addSeparator()
 
         self.action_dark_mode = QAction("切换主题", self)
-        self.action_dark_mode.setCheckable(True)
-        self.action_dark_mode.setChecked(self._dark_mode)
-        self.action_dark_mode.triggered.connect(self._toggle_dark_mode)
-        toolbar.addAction(self.action_dark_mode)
+        self.action_dark_mode.setVisible(False)
+        self.action_dark_mode.setEnabled(False)
 
         self.action_save_shortcut = QAction("保存", self)
         self.action_save_shortcut.setShortcut("Ctrl+S")
         self.action_save_shortcut.triggered.connect(self._action_save)
+        self.action_save_shortcut.setToolTip("保存当前工作流和步骤修改")
         self.addAction(self.action_save_shortcut)
 
         self.action_run_shortcut = QAction("运行", self)
         self.action_run_shortcut.setShortcut("F5")
         self.action_run_shortcut.triggered.connect(self.run_control.btn_run_all.click)
+        self.action_run_shortcut.setToolTip("运行当前工作流")
         self.addAction(self.action_run_shortcut)
 
         # R3-#5: Shift+F5 停止运行（仅运行中可用；状态在 _on_workflow_started/finished 切换）
@@ -315,12 +522,44 @@ class MainWindow(QMainWindow):
         self.action_stop_shortcut.setShortcut("Shift+F5")
         self.action_stop_shortcut.setEnabled(False)
         self.action_stop_shortcut.triggered.connect(self._stop_workflow)
+        self.action_stop_shortcut.setToolTip("停止当前运行中的工作流")
         self.addAction(self.action_stop_shortcut)
 
+        if hasattr(self, "btn_asset_import"):
+            self.btn_asset_import.clicked.connect(self.action_import.trigger)
+        if hasattr(self, "btn_asset_export"):
+            self.btn_asset_export.clicked.connect(self.action_export.trigger)
+        if hasattr(self, "btn_asset_webhook"):
+            self.btn_asset_webhook.clicked.connect(self.action_webhook.trigger)
+
+    def _set_plan_view(self, index: int):
+        self.plan_stack.setCurrentIndex(index)
+        for btn, stack_index in getattr(self, "_view_buttons", []):
+            btn.setObjectName("ViewSwitchActive" if stack_index == index else "ViewSwitch")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+    def _on_run_splitter_moved(self, *_args):
+        self._run_splitter_user_adjusted = True
+
+    def _apply_run_splitter_profile(self, profile: str, *, force: bool = False):
+        if not hasattr(self, "run_splitter"):
+            return
+        if self._run_splitter_user_adjusted and not force:
+            return
+        sizes = [320, 620] if profile == "running" else [360, 560]
+        self.run_splitter.blockSignals(True)
+        try:
+            self.run_splitter.setSizes(sizes)
+        finally:
+            self.run_splitter.blockSignals(False)
+        if force:
+            self._run_splitter_user_adjusted = False
+
     def _toggle_dark_mode(self, checked):
-        self._dark_mode = checked
+        self._dark_mode = False
         settings = QSettings(APP_NAME, "ui")  # U-P3-2: 统一 QSettings 节点
-        settings.setValue("dark_mode", self._dark_mode)
+        settings.setValue("dark_mode", False)
         self._apply_theme()
 
     def _apply_theme(self):
@@ -330,25 +569,224 @@ class MainWindow(QMainWindow):
         if app:
             app.setStyleSheet(get_stylesheet(dark=self._dark_mode))
 
+        if self._dark_mode:
+            W = {
+                "bg": C["background"],
+                "paper": C["surface_primary"],
+                "workspace": C["surface_secondary"],
+                "panel": C["surface_card"],
+                "panel_soft": C["surface_secondary"],
+                "ink": C["text_primary"],
+                "muted": C["text_secondary"],
+                "faint": C["text_tertiary"],
+                "line": C["border"],
+                "line_strong": "#636366",
+                "blue": C["primary"],
+                "blue_hover": C["primary_hover"],
+                "blue_weak": "#1A3A5C",
+                "green": C["success"],
+                "green_weak": "#1F3A24",
+                "red": C["danger"],
+                "red_weak": "#3A1515",
+            }
+        else:
+            W = {
+                "bg": "#f6f4ef",
+                "paper": "#fbfaf6",
+                "workspace": "#f6f4ef",
+                "panel": "#ffffff",
+                "panel_soft": "#f1eee7",
+                "ink": "#20242a",
+                "muted": "#6c7077",
+                "faint": "#8b9098",
+                "line": "#ddd8cf",
+                "line_strong": "#c9c1b6",
+                "blue": "#2458d3",
+                "blue_hover": "#1d49b6",
+                "blue_weak": "#e9eefc",
+                "green": "#247145",
+                "green_weak": "#e7f3ea",
+                "red": "#b3312a",
+                "red_weak": "#f8e4e1",
+            }
+
         self.left_panel.setStyleSheet(f"""
             QFrame#LeftPanel {{
-                background-color: {C["surface_primary"]};
+                background: {W["paper"]};
+                border-right: 1px solid {W["line"]};
+            }}
+            QLabel#BrandName {{
+                color: {W["ink"]};
+                font-size: 18px;
+                font-weight: 760;
+            }}
+            QLabel#BrandSubtitle {{
+                color: {W["muted"]};
+                font-size: 12px;
+            }}
+            QLabel#SidebarLabel {{
+                color: {W["muted"]};
+                font-size: 11px;
+                font-weight: 760;
             }}
             QWidget#foldBar {{
                 background: transparent;
+            }}
+            QPushButton#SidebarNav {{
+                min-height: 34px;
+                padding: 0 8px;
+                color: {W["muted"]};
+                background: transparent;
+                border: none;
+                border-radius: 8px;
+                text-align: left;
+            }}
+            QPushButton#SidebarNav:hover {{
+                color: {W["ink"]};
+                background: {W["panel_soft"]};
             }}
         """)
         self.center_container.setStyleSheet(f"""
             QFrame#CenterPanel {{
-                background-color: {C["surface_secondary"]};
+                background: {W["workspace"]};
+            }}
+            QLabel#Eyebrow {{
+                color: {W["muted"]};
+                font-size: 11px;
+                font-weight: 760;
+            }}
+            QLabel#WorkflowTitle {{
+                color: {W["ink"]};
+                font-size: 28px;
+                font-weight: 780;
+            }}
+            QLabel#WorkflowMeta {{
+                color: {W["muted"]};
+                font-size: 12px;
+            }}
+            QLabel#RunStateChip {{
+                min-height: 24px;
+                padding: 0 4px;
+                color: {W["green"]};
+                background: transparent;
+                font-weight: 700;
+            }}
+            QPushButton#PrimaryAction {{
+                min-height: 38px;
+                padding: 0 15px;
+                color: #fffdfa;
+                background: {W["blue"]};
+                border: none;
+                border-radius: 8px;
+                font-weight: 720;
+            }}
+            QPushButton#PrimaryAction:hover {{
+                background: {W["blue_hover"]};
+            }}
+            QToolButton#IconButton {{
+                min-width: 36px;
+                min-height: 36px;
+                color: {W["muted"]};
+                background: {W["panel"]};
+                border: 1px solid {W["line"]};
+                border-radius: 8px;
+                font-weight: 700;
+            }}
+            QToolButton#IconButton:hover {{
+                border-color: {W["line_strong"]};
+            }}
+            QToolButton#DangerIconButton {{
+                min-width: 36px;
+                min-height: 36px;
+                color: {W["red"]};
+                background: {W["red_weak"]};
+                border: none;
+                border-radius: 8px;
+                font-weight: 800;
+            }}
+            QPushButton#ViewSwitch, QPushButton#ViewSwitchActive {{
+                min-height: 30px;
+                padding: 0 12px;
+                border-radius: 8px;
+                font-weight: 700;
+            }}
+            QPushButton#ViewSwitch {{
+                color: {W["muted"]};
+                background: transparent;
+                border: 1px solid transparent;
+            }}
+            QPushButton#ViewSwitch:hover {{
+                border-color: {W["line"]};
+            }}
+            QPushButton#ViewSwitchActive {{
+                color: {W["ink"]};
+                background: {W["panel"]};
+                border: 1px solid {W["line"]};
+            }}
+        """)
+        self.mode_tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: none;
+                background: transparent;
+            }}
+            QTabBar::tab {{
+                height: 38px;
+                padding: 0 15px;
+                margin-right: 6px;
+                color: {W["muted"]};
+                background: transparent;
+                border: 1px solid transparent;
+                border-bottom: 1px solid {W["line"]};
+                border-top-left-radius: 7px;
+                border-top-right-radius: 7px;
+                font-weight: 700;
+            }}
+            QTabBar::tab:selected {{
+                color: {W["blue"]};
+                background: {W["panel"]};
+                border: 1px solid {W["line"]};
+                border-bottom-color: {W["panel"]};
+            }}
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QSplitter#RunSplitter::handle {{
+                background: {W["line"]};
+                border-radius: 2px;
+                margin: 2px 160px;
+            }}
+            QSplitter#RunSplitter::handle:hover {{
+                background: {W["line_strong"]};
             }}
         """)
         self.right_panel.setStyleSheet(f"""
             QFrame#RightPanel {{
-                background-color: {C["surface_primary"]};
+                background: {W["paper"]};
+                border-left: 1px solid {W["line"]};
             }}
-            QWidget#foldBar {{
+            QLabel#Eyebrow {{
+                color: {W["muted"]};
+                font-size: 11px;
+                font-weight: 760;
+            }}
+            QLabel#InspectorTitle {{
+                color: {W["ink"]};
+                font-size: 18px;
+                font-weight: 760;
+            }}
+            QScrollArea#InspectorScroll {{
                 background: transparent;
+                border: none;
+            }}
+            QToolButton#IconButton {{
+                min-width: 36px;
+                min-height: 36px;
+                color: {W["muted"]};
+                background: {W["panel"]};
+                border: 1px solid {W["line"]};
+                border-radius: 8px;
+                font-weight: 700;
             }}
         """)
 
@@ -360,6 +798,7 @@ class MainWindow(QMainWindow):
         self.run_history.refresh_theme(self._dark_mode)
         self.dag_view.refresh_theme(self._dark_mode)
         self.step_table.refresh_theme(self._dark_mode)
+        self.workbench_board.refresh_theme(self._dark_mode)
         self.step_editor.refresh_theme(self._dark_mode)
         self.workflow_config.refresh_theme(self._dark_mode)
         self.step_table.table.refresh_theme(self._dark_mode)
@@ -393,6 +832,7 @@ class MainWindow(QMainWindow):
         self.workflow_list.set_edit_enabled(self._edit_mode)
         self.workflow_config.set_edit_enabled(self._edit_mode)
         self.step_table.set_edit_enabled(self._edit_mode)
+        self.workbench_board.set_edit_enabled(self._edit_mode)
         self.step_editor.set_edit_enabled(self._edit_mode)
 
         self.statusbar.showMessage("编辑模式：开启" if self._edit_mode else "编辑模式：关闭（防误操作）", 5000)
@@ -479,11 +919,20 @@ class MainWindow(QMainWindow):
         self.workflow_list.workflow_deleted.connect(self._on_workflow_deleted)
         
         self.step_table.step_selected.connect(self._on_step_selected)
+        self.step_table.step_deleted.connect(self._on_step_deleted)
         self.step_table.steps_changed.connect(self._on_steps_changed)
+
+        self.workbench_board.step_selected.connect(self._on_step_selected)
+        self.workbench_board.stage_selected.connect(self._on_stage_selected)
+        self.workbench_board.add_step_requested.connect(self._on_add_step_requested)
+        self.workbench_board.add_stage_requested.connect(self._on_add_stage_requested)
+        self.workbench_board.reorder_requested.connect(self._on_board_reorder_requested)
 
         self.dag_view.step_activated.connect(self._on_dag_step_activated)
 
         self.step_editor.step_saved.connect(self._on_step_saved)
+        self.step_editor.step_delete_requested.connect(self._on_step_delete_requested)
+        self.step_editor.step_run_requested.connect(self._on_step_run_requested)
         self.step_editor.navigate_to_step.connect(self._on_dag_step_activated)
 
         self.workflow_config.workflow_updated.connect(self._on_workflow_updated)
@@ -560,6 +1009,8 @@ class MainWindow(QMainWindow):
         self.step_editor.set_parallel_available(parallel_enabled)
 
         self.step_table.load_steps(workflow_id)
+        self.workbench_board.load_workflow(workflow_id)
+        self._refresh_workbench_header(workflow_id)
 
         # P-4: 异步推迟下面两个相对重的 panel；先让 UI 把已加载内容渲染出来
         QTimer.singleShot(0, lambda wid=workflow_id: self._async_load_dag(wid))
@@ -571,6 +1022,8 @@ class MainWindow(QMainWindow):
 
         if workflow:
             self.statusbar.showMessage(f"当前工作流: {workflow.name}", 5000)
+            self.lbl_inspector_kind.setText("Inspector")
+            self.lbl_inspector_title.setText("选择步骤或阶段")
 
         # #1: 切换工作流时同步监听状态——engine.start_watch 内部会先 stop，再按 watch_enabled 决定是否启动
         self._sync_engine_watch(workflow)
@@ -898,10 +1351,116 @@ class MainWindow(QMainWindow):
             self._current_workflow_id = None
             self.workflow_config.clear()
             self.step_table.clear()
+            self.workbench_board.clear()
             self.dag_view.clear()
             self.step_editor.clear()
             self.run_history.clear()
             self.log_panel.set_context(workflow_id=None, step_id=None)
+            self._refresh_workbench_header(None)
+
+    def _refresh_workbench_header(self, workflow_id: int | None):
+        if not workflow_id:
+            self.lbl_workflow_title.setText("请选择工作流")
+            self.lbl_workflow_meta.setText("0 阶段 · 0 步 · 未运行")
+            return
+        workflow = get_workflow_by_id(workflow_id)
+        stages = list_stages(workflow_id)
+        steps = get_steps_by_workflow(workflow_id)
+        self.lbl_workflow_title.setText(workflow.name if workflow else f"工作流 #{workflow_id}")
+        parallel = "自动并行" if (workflow and workflow.parallel_enabled) else "串行"
+        self.lbl_workflow_meta.setText(f"{len(stages)} 阶段 · {len(steps)} 步 · {parallel}")
+
+    @Slot(str)
+    def _on_stage_selected(self, stage_uid: str):
+        if not stage_uid:
+            return
+        stage_label = stage_uid
+        try:
+            stages = list_stages(self._current_workflow_id)
+            for idx, stage in enumerate(stages, start=1):
+                if stage.uid == stage_uid:
+                    stage_label = f"S{idx} {stage.name}"
+                    break
+        except Exception:
+            pass
+        self.lbl_inspector_kind.setText("选中阶段")
+        self.lbl_inspector_title.setText(stage_label)
+        self.step_editor.clear()
+        self.run_control.set_selected_step(None, stage_uid)
+        self.log_panel.set_context(workflow_id=self._current_workflow_id, step_id=None)
+
+    @Slot(str)
+    def _on_add_step_requested(self, stage_uid: str):
+        if not self._current_workflow_id:
+            return
+        if not self._require_edit_mode("添加步骤"):
+            return
+        try:
+            steps = get_steps_by_workflow(self._current_workflow_id)
+            next_order = max([int(s.order or 0) for s in steps], default=-1) + 1
+            stage_uid = stage_uid or self.workbench_board.selected_stage_uid()
+            step = create_step(
+                self._current_workflow_id,
+                name="新步骤",
+                step_type="python",
+                script_path="",
+                order=next_order,
+                stage_uid=stage_uid,
+            )
+        except Exception as e:
+            msg_critical(self, self._dark_mode, "添加失败", str(e))
+            return
+        self._reload_workflow_surfaces(select_step_id=step.id if step else None)
+        self.statusbar.showMessage("已添加步骤", 5000)
+
+    @Slot(str)
+    def _on_add_stage_requested(self, stage_uid: str):
+        if not self._current_workflow_id:
+            return
+        if not self._require_edit_mode("新增阶段"):
+            return
+        try:
+            stages = list_stages(self._current_workflow_id)
+            order_by_uid = {stage.uid: int(stage.order or 0) for stage in stages}
+            base_order = order_by_uid.get(stage_uid, max(order_by_uid.values(), default=0))
+            stage = create_stage(self._current_workflow_id, name="新阶段", order=base_order + 1)
+        except Exception as e:
+            msg_critical(self, self._dark_mode, "新增阶段失败", str(e))
+            return
+        self._reload_workflow_surfaces(select_stage_uid=stage.uid if stage else None)
+        self.statusbar.showMessage("已新增阶段", 5000)
+
+    @Slot(int, str, list)
+    def _on_board_reorder_requested(self, step_id: int, target_stage_uid: str, ordered_step_ids: list):
+        if not self._current_workflow_id:
+            return
+        if not self._require_edit_mode("拖拽调整步骤"):
+            return
+        ok = self.step_table._apply_orders_and_stage_updates(
+            {int(step_id): target_stage_uid},
+            [int(sid) for sid in ordered_step_ids],
+        )
+        if not ok:
+            self.workbench_board.load_workflow(self._current_workflow_id)
+            return
+        self._reload_workflow_surfaces(select_step_id=int(step_id))
+        self.statusbar.showMessage("已更新步骤阶段和顺序", 5000)
+
+    def _reload_workflow_surfaces(self, *, select_step_id: int | None = None, select_stage_uid: str | None = None):
+        if not self._current_workflow_id:
+            return
+        wid = self._current_workflow_id
+        self.step_table.load_steps(wid)
+        self.workbench_board.load_workflow(wid)
+        self._refresh_workbench_header(wid)
+        QTimer.singleShot(0, lambda w=wid: self._async_load_dag(w))
+        if select_step_id:
+            self.step_table.select_step(select_step_id)
+            self.workbench_board.select_step(select_step_id, emit_signal=False)
+            self._on_step_selected(select_step_id)
+        elif select_stage_uid:
+            self.workbench_board.select_stage(select_stage_uid, emit_signal=False)
+            self._on_stage_selected(select_stage_uid)
     
     @Slot(int)
     def _on_step_selected(self, step_id: int):
@@ -910,13 +1469,23 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_unsaved(reason="switch_step", new_target=step_id):
             return
         self.step_editor.load_step(step_id)
+        try:
+            self.workbench_board.select_step(step_id, emit_signal=False)
+        except Exception:
+            pass
+        try:
+            step = get_step_by_id(step_id)
+            if step:
+                self.lbl_inspector_kind.setText("选中步骤")
+                self.lbl_inspector_title.setText(step.name)
+        except Exception:
+            pass
         stage_uid = None
         if step_id:
             # R3-#10: 优先用 step_table 已缓存的 row_meta；缺失再回退 DB（兼容旧入口）
             stage_uid = self.step_table.get_stage_uid_for_step(step_id)
             if stage_uid is None:
                 try:
-                    from database import get_step_by_id
                     step = get_step_by_id(step_id)
                     if step:
                         stage_uid = step.stage_uid
@@ -924,6 +1493,71 @@ class MainWindow(QMainWindow):
                     logger.warning("回退查询 step.stage_uid 失败: %s", e)
         self.run_control.set_selected_step(step_id, stage_uid)
         self.log_panel.set_context(workflow_id=self._current_workflow_id, step_id=step_id)
+
+    @Slot(int)
+    def _on_step_delete_requested(self, step_id: int):
+        """从步骤编辑器发起删除。"""
+        if not step_id:
+            return
+        if not self._require_edit_mode("删除步骤"):
+            return
+
+        step = get_step_by_id(step_id)
+        if not step:
+            msg_warning(self, self._dark_mode, "删除失败", "步骤不存在，可能已被删除。")
+            if self._current_workflow_id:
+                self.step_table.load_steps(self._current_workflow_id)
+            self._on_step_deleted(step_id)
+            return
+
+        reply = msg_question(
+            self,
+            self._dark_mode,
+            "确认删除步骤",
+            f"确定要删除步骤「{step.name}」吗？\n此操作不可撤销，未保存修改也会丢失。",
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            ok = delete_step(step_id)
+        except Exception as e:
+            msg_critical(self, self._dark_mode, "删除失败", str(e))
+            return
+        if not ok:
+            msg_warning(self, self._dark_mode, "删除失败", "步骤不存在或删除失败。")
+            return
+
+        if self._current_workflow_id:
+            wid = self._current_workflow_id
+            self.step_table.load_steps(wid)
+            QTimer.singleShot(0, lambda w=wid: self._async_load_dag(w))
+        self._on_step_deleted(step_id)
+        self.statusbar.showMessage("已删除步骤", 5000)
+
+    @Slot(str, int)
+    def _on_step_run_requested(self, mode: str, step_id: int):
+        """从 Inspector 发起单步运行。"""
+        if mode not in ("only_step", "from_step"):
+            return
+        self._on_run_requested(mode, step_id)
+
+    @Slot(int)
+    def _on_step_deleted(self, step_id: int):
+        """步骤被删除后，清理仍指向该步骤的上下文。"""
+        current_step_id = getattr(self.step_editor, "_step_id", None)
+        if current_step_id != step_id:
+            if self._current_workflow_id:
+                self.workbench_board.load_workflow(self._current_workflow_id)
+            return
+        self.step_editor.clear()
+        if self._current_workflow_id:
+            self.workbench_board.load_workflow(self._current_workflow_id)
+            self._refresh_workbench_header(self._current_workflow_id)
+        self.run_control.set_selected_step(None, None)
+        self.log_panel.set_context(workflow_id=self._current_workflow_id, step_id=None)
+        self.lbl_inspector_kind.setText("Inspector")
+        self.lbl_inspector_title.setText("选择步骤或阶段")
 
     @Slot(int)
     def _on_dag_step_activated(self, step_id: int):
@@ -939,6 +1573,8 @@ class MainWindow(QMainWindow):
         if self._current_workflow_id:
             self.dag_view.update_dag(self._current_workflow_id)
             self.step_table.load_steps(self._current_workflow_id)
+            self.workbench_board.load_workflow(self._current_workflow_id)
+            self._refresh_workbench_header(self._current_workflow_id)
     
     @Slot()
     def _on_step_saved(self):
@@ -946,8 +1582,14 @@ class MainWindow(QMainWindow):
         if self._current_workflow_id:
             # R3-#9: 把较重的 DAG 重建推到下一轮事件循环，避免与 step_table 同步抢主线程
             wid = self._current_workflow_id
+            current_step_id = getattr(self.step_editor, "_step_id", None)
             self.step_table.load_steps(wid)
+            self.workbench_board.load_workflow(wid)
+            self._refresh_workbench_header(wid)
             QTimer.singleShot(0, lambda w=wid: self._async_load_dag(w))
+            if current_step_id:
+                QTimer.singleShot(0, lambda sid=current_step_id: self.step_table.select_step(sid))
+                QTimer.singleShot(0, lambda sid=current_step_id: self.workbench_board.select_step(sid, emit_signal=False))
 
     @Slot()
     def _on_workflow_updated(self):
@@ -963,6 +1605,8 @@ class MainWindow(QMainWindow):
             self.step_table.set_parallel_available(parallel_enabled)
             self.step_editor.set_parallel_available(parallel_enabled)
             self.step_table.load_steps(wid)
+            self.workbench_board.load_workflow(wid)
+            self._refresh_workbench_header(wid)
             # R3-#9 / #15: 把较重的 DAG / history 异步刷新，避免一次性触发 4-5 个 DB 查询阻塞主线程
             QTimer.singleShot(0, lambda w=wid: self._async_load_dag(w))
             QTimer.singleShot(0, lambda w=wid: self._async_load_history(w))
@@ -1098,6 +1742,11 @@ class MainWindow(QMainWindow):
         except Exception:
             self._running_workflow_name = None
         self.statusbar.showMessage(f"运行中... ({run_id})", 5000)
+        self.lbl_run_state.setText("● 运行中")
+        self.lbl_run_state.setToolTip(f"当前运行中：{run_id}")
+        self.btn_header_run.setEnabled(False)
+        self.btn_header_stop.setEnabled(True)
+        self._apply_run_splitter_profile("running")
 
         self.run_control.set_running(True)
         self.log_panel.set_running(True)
@@ -1118,12 +1767,13 @@ class MainWindow(QMainWindow):
 
         sizes = self.main_splitter.sizes()
         if len(sizes) >= 3 and sizes[2] <= 0:
-            sizes[2] = max(getattr(self, "_right_last_size", 340), 250)
+            sizes[2] = max(getattr(self, "_right_last_size", 340), 320)
             self.main_splitter.setSizes(sizes)
         self.btn_toggle_right.setEnabled(False)
 
         self.dag_view.reset_all_status()
         self.step_table.reset_all_status()
+        self.workbench_board.reset_all_status()
 
     @Slot(int, str, str)
     def _on_workflow_finished(self, workflow_id: int, run_id: str, status: str):
@@ -1134,6 +1784,11 @@ class MainWindow(QMainWindow):
         self._stopping_in_progress = False
         self.run_control.set_running(False)
         self.log_panel.set_running(False)
+        self.lbl_run_state.setText("● 就绪")
+        self.lbl_run_state.setToolTip("当前运行状态：就绪")
+        self.btn_header_run.setEnabled(True)
+        self.btn_header_stop.setEnabled(False)
+        self._apply_run_splitter_profile("idle")
         self.btn_toggle_right.setEnabled(True)
         # R2-#8: 隐藏状态栏停止按钮
         try:
@@ -1170,12 +1825,16 @@ class MainWindow(QMainWindow):
         """步骤开始"""
         self.step_table.highlight_step(step_id, "running")
         self.dag_view.update_step_status(step_id, "running")
+        if hasattr(self, "workbench_board"):
+            self.workbench_board.highlight_step(step_id, "running")
     
     @Slot(int, str, str, object)
     def _on_step_finished(self, step_id: int, step_name: str, status: str, duration_seconds=None):
         """步骤结束"""
         self.step_table.highlight_step(step_id, status)
         self.dag_view.update_step_status(step_id, status, duration_seconds)
+        if hasattr(self, "workbench_board"):
+            self.workbench_board.highlight_step(step_id, status, duration_seconds)
     
     @Slot(int, int)
     def _on_progress_updated(self, current: int, total: int):
@@ -1376,10 +2035,10 @@ class MainWindow(QMainWindow):
             self.btn_toggle_right.setText("◀")
         else:
             self.right_panel.setVisible(True)
-            self.right_panel.setMinimumWidth(250)
+            self.right_panel.setMinimumWidth(320)
             sizes = self.main_splitter.sizes()
             if len(sizes) >= 2:
-                sizes[-1] = max(self._right_last_size, 250)
+                sizes[-1] = max(self._right_last_size, 320)
                 self.main_splitter.setSizes(sizes)
             self.btn_toggle_right.setText("▶")
         QTimer.singleShot(50, self._update_border_widget_positions)

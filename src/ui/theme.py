@@ -443,6 +443,29 @@ def get_stylesheet(dark=False):
     QPushButton#runGhost:hover {{ background: {C["surface"]}; }}
     QPushButton#runGhost:disabled {{ color: {C["text_tertiary"]}; }}
 
+    QPushButton#stepRunButton {{
+        background: {C["surface"]};
+        color: {C["primary"]};
+        border: 1px solid {C["border"]};
+        border-radius: 10px;
+        padding: 0px 10px;
+        font-size: 12px;
+        font-weight: 650;
+        text-align: center;
+    }}
+    QPushButton#stepRunButton:hover {{
+        background: {C["hover"]};
+        border-color: {C["border_focus"]};
+    }}
+    QPushButton#stepRunButton:pressed {{
+        background: {C["pressed"]};
+    }}
+    QPushButton#stepRunButton:disabled {{
+        background: {C["surface"]};
+        color: {C["text_tertiary"]};
+        border-color: {C["border_subtle"]};
+    }}
+
     QPushButton#runGhostMuted {{
         background: transparent;
         color: {C["text_secondary"]};

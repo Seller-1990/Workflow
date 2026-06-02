@@ -2,7 +2,7 @@
 """
 工作流管理应用第二版精简打包配置
 使用命令: pyinstaller build_slim2.spec
-输出: dist/工作流管理_3.0.0_slim2.exe
+输出: dist/工作流管理_4.0.0_slim2.exe
 """
 
 import runpy
@@ -53,6 +53,7 @@ a = Analysis(
         "pywintypes",
         "pythoncom",
         "pywinauto",
+        "requests",
         "watchdog",
         "watchdog.observers",
         "watchdog.events",

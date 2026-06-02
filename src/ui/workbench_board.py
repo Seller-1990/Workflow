@@ -1,0 +1,826 @@
+# -*- coding: utf-8 -*-
+"""工作台式阶段编排面板。"""
+
+from pathlib import Path
+
+from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
+from PySide6.QtGui import QDrag, QFont
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from database import get_stage_order_map, get_steps_by_workflow, get_workflow_by_id, list_stages
+from duration_utils import format_duration_short
+from engine import WorkflowEngine
+from ui.theme import get_colors
+
+
+MIME_STEP_ID = "application/x-workflow-step-id"
+STAGE_LANE_MIN_WIDTH = 260
+
+
+TYPE_LABELS = {
+    "python": "Python",
+    "excel_powerquery": "Power Query",
+    "powerbi_refresh": "Power BI",
+    "sub_workflow": "子工作流",
+}
+
+STATUS_LABELS = {
+    "running": "运行中",
+    "success": "成功",
+    "failure": "失败",
+    "cancelled": "已取消",
+    "skipped": "跳过",
+}
+
+
+TYPE_CLASSES = {
+    "python": "python",
+    "excel_powerquery": "excel",
+    "powerbi_refresh": "powerbi",
+    "sub_workflow": "subworkflow",
+}
+
+
+class StepCard(QFrame):
+    """可点击、可拖拽的步骤卡片。"""
+
+    selected = Signal(int)
+
+    def __init__(self, step, order_label: str, dep_text: str, parent=None):
+        super().__init__(parent)
+        self.step_id = int(step.id)
+        self.stage_uid = getattr(step, "stage_uid", "") or ""
+        self._press_pos = QPoint()
+        self._status = "idle"
+        self._duration_seconds = None
+        self.setObjectName("StepCard")
+        self.setProperty("stepStatus", "idle")
+        self.setProperty("stepType", TYPE_CLASSES.get(step.step_type, "python"))
+        if getattr(step, "is_gate", False):
+            self.setProperty("checkpoint", True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAcceptDrops(False)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(7)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(6)
+
+        batch_tip = (
+            f"{order_label} 是执行批次。\n"
+            "批次由阶段顺序、上游依赖和检查点自动计算。\n"
+            "同一批次的步骤在依赖满足后可一起执行；启用自动并行时可并行运行。"
+        )
+        order = QLabel(order_label)
+        order.setObjectName("StepOrder")
+        order.setFixedWidth(42)
+        order.setToolTip(batch_tip)
+        order.setAccessibleName(f"执行批次 {order_label}")
+        order.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        top.addWidget(order)
+
+        step_type = QLabel(TYPE_LABELS.get(step.step_type, "Python"))
+        step_type.setObjectName("TypePill")
+        step_type.setProperty("stepType", TYPE_CLASSES.get(step.step_type, "python"))
+        step_type.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        top.addWidget(step_type)
+
+        if getattr(step, "is_gate", False):
+            gate = QLabel("检查点")
+            gate.setObjectName("CheckpointBadge")
+            gate.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            top.addWidget(gate)
+
+        top.addStretch()
+        self.status_badge = QLabel("")
+        self.status_badge.setObjectName("StatusBadge")
+        self.status_badge.setProperty("stepStatus", "idle")
+        self.status_badge.setVisible(False)
+        self.status_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        top.addWidget(self.status_badge)
+        layout.addLayout(top)
+
+        title = QLabel(step.name or "未命名步骤")
+        title.setObjectName("StepTitle")
+        title.setWordWrap(False)
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        title.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        layout.addWidget(title)
+
+        subtitle = QLabel(self._subtitle(step, dep_text))
+        subtitle.setObjectName("StepSubtitle")
+        subtitle.setWordWrap(False)
+        subtitle.setMinimumWidth(0)
+        subtitle.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        subtitle.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        layout.addWidget(subtitle)
+        self.subtitle = subtitle
+        self._base_subtitle = subtitle.text()
+
+        self.duration_badge = QLabel("")
+        self.duration_badge.setObjectName("DurationBadge")
+        self.duration_badge.setVisible(False)
+        self.duration_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.duration_badge)
+
+        self.setToolTip(
+            f"{step.name}\n{batch_tip}\n类型：{TYPE_LABELS.get(step.step_type, step.step_type)}\n"
+            f"文件：{getattr(step, 'script_path', '') or '未设置'}\n{dep_text}"
+        )
+        self.setAccessibleName(f"步骤：{step.name}")
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", bool(selected))
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def set_status(self, status: str) -> None:
+        self._status = status or "idle"
+        self.setProperty("stepStatus", self._status)
+        self.status_badge.setProperty("stepStatus", self._status)
+        self.status_badge.setText(STATUS_LABELS.get(self._status, ""))
+        self.status_badge.setVisible(self._status in STATUS_LABELS)
+        if self._status == "running":
+            self.set_duration_seconds(None)
+        self.status_badge.style().unpolish(self.status_badge)
+        self.status_badge.style().polish(self.status_badge)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def set_duration_seconds(self, duration_seconds) -> None:
+        self._duration_seconds = duration_seconds
+        duration_text = format_duration_short(duration_seconds)
+        self.duration_badge.setText(f"耗时 {duration_text}" if duration_text else "")
+        self.duration_badge.setVisible(bool(duration_text))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press_pos = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.selected.emit(self.step_id)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not event.buttons() & Qt.LeftButton:
+            return
+        distance = (event.position().toPoint() - self._press_pos).manhattanLength()
+        if distance < 8:
+            return
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(MIME_STEP_ID, str(self.step_id).encode("utf-8"))
+        drag.setMimeData(mime)
+        drag.exec(Qt.MoveAction)
+
+    @staticmethod
+    def _subtitle(step, dep_text: str) -> str:
+        script = getattr(step, "script_path", "") or "未设置脚本 / 文件"
+        name = Path(script).name if script else script
+        if getattr(step, "is_gate", False):
+            return f"{name} · 检查点"
+        return f"{name} · {dep_text}"
+
+
+class StageLane(QFrame):
+    """阶段泳道，接收步骤拖放。"""
+
+    selected = Signal(str)
+    step_dropped = Signal(int, str, object)
+
+    def __init__(self, stage, index: int, parent=None):
+        super().__init__(parent)
+        self.stage_uid = stage.uid
+        self.stage_name = stage.name
+        self.index = index
+        self._cards: list[StepCard] = []
+        self.setObjectName("StageLane")
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumWidth(STAGE_LANE_MIN_WIDTH)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(12, 12, 12, 12)
+        self.layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(10)
+
+        title_box = QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(2)
+        code = QLabel(f"S{index + 1}")
+        code.setObjectName("StageCode")
+        title_box.addWidget(code)
+        title = QLabel(stage.name)
+        title.setObjectName("StageTitle")
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        title.setToolTip(stage.name)
+        title_box.addWidget(title)
+        header.addLayout(title_box, stretch=1)
+
+        self.count_label = QLabel("0 步")
+        self.count_label.setObjectName("StageCount")
+        header.addWidget(self.count_label)
+        self.layout.addLayout(header)
+
+        self.cards_box = QVBoxLayout()
+        self.cards_box.setContentsMargins(0, 0, 0, 0)
+        self.cards_box.setSpacing(10)
+        self.layout.addLayout(self.cards_box)
+        self.layout.addStretch(1)
+
+        self.setToolTip(f"S{index + 1} {stage.name}\n点击选中阶段；拖入步骤可变更阶段或顺序")
+        self.setAccessibleName(f"阶段：S{index + 1} {stage.name}")
+
+    def add_card(self, card: StepCard) -> None:
+        self._cards.append(card)
+        self.cards_box.addWidget(card)
+        self.count_label.setText(f"{len(self._cards)} 步")
+
+    def ordered_step_ids(self) -> list[int]:
+        return [card.step_id for card in self._cards]
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", bool(selected))
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.selected.emit(self.stage_uid)
+        super().mouseReleaseEvent(event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(MIME_STEP_ID):
+            self.setProperty("dragOver", True)
+            self.style().unpolish(self)
+            self.style().polish(self)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(MIME_STEP_ID):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setProperty("dragOver", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self.setProperty("dragOver", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        if not event.mimeData().hasFormat(MIME_STEP_ID):
+            event.ignore()
+            return
+        try:
+            step_id = int(bytes(event.mimeData().data(MIME_STEP_ID)).decode("utf-8"))
+        except ValueError:
+            event.ignore()
+            return
+        before_step_id = self._step_before_y(event.position().toPoint().y())
+        self.step_dropped.emit(step_id, self.stage_uid, before_step_id)
+        event.acceptProposedAction()
+
+    def _step_before_y(self, y: int):
+        for card in self._cards:
+            center_y = card.y() + card.height() // 2
+            if y < center_y:
+                return card.step_id
+        return None
+
+
+class WorkbenchBoardPanel(QWidget):
+    """按阶段泳道展示和编排步骤。"""
+
+    step_selected = Signal(int)
+    stage_selected = Signal(str)
+    add_step_requested = Signal(str)
+    add_stage_requested = Signal(str)
+    reorder_requested = Signal(int, str, list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dark = False
+        self._workflow_id = None
+        self._selected_stage_uid = ""
+        self._selected_step_id = None
+        self._edit_enabled = False
+        self._lanes: dict[str, StageLane] = {}
+        self._cards: dict[int, StepCard] = {}
+        self._step_stage: dict[int, str] = {}
+        self._ordered_step_ids: list[int] = []
+        self._setup_ui()
+
+    def _setup_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(12)
+
+        toolbar = QFrame()
+        toolbar.setObjectName("BoardToolbar")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(10)
+
+        mode_group = QFrame()
+        mode_group.setObjectName("SegmentGroup")
+        mode_layout = QHBoxLayout(mode_group)
+        mode_layout.setContentsMargins(3, 3, 3, 3)
+        mode_layout.setSpacing(3)
+        self.btn_stage_view = QPushButton("阶段")
+        self.btn_stage_view.setObjectName("SegmentActive")
+        self.btn_stage_view.setToolTip("按阶段泳道查看和拖拽编排步骤")
+        self.btn_stage_view.setAccessibleName("阶段视图")
+        mode_layout.addWidget(self.btn_stage_view)
+        toolbar_layout.addWidget(mode_group)
+
+        self.selection_hint = QLabel("选择一个工作流后开始编排")
+        self.selection_hint.setObjectName("SelectionHint")
+        toolbar_layout.addWidget(self.selection_hint, stretch=1)
+
+        self.btn_add_step = QPushButton("+ 添加步骤")
+        self.btn_add_step.setObjectName("GhostButton")
+        self.btn_add_step.setToolTip("添加步骤到当前选中的阶段")
+        self.btn_add_step.setAccessibleName("添加步骤")
+        self.btn_add_step.clicked.connect(self._request_add_step)
+        toolbar_layout.addWidget(self.btn_add_step)
+
+        self.btn_add_stage = QPushButton("+ 新阶段")
+        self.btn_add_stage.setObjectName("GhostButton")
+        self.btn_add_stage.setToolTip("在当前阶段之后新增阶段")
+        self.btn_add_stage.setAccessibleName("新增阶段")
+        self.btn_add_stage.clicked.connect(self._request_add_stage)
+        toolbar_layout.addWidget(self.btn_add_stage)
+        root.addWidget(toolbar)
+
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName("StageBoardScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self.board_widget = QWidget()
+        self.board_widget.setObjectName("StageBoard")
+        self.board_layout = QHBoxLayout(self.board_widget)
+        self.board_layout.setContentsMargins(0, 0, 0, 0)
+        self.board_layout.setSpacing(14)
+        self.scroll.setWidget(self.board_widget)
+        root.addWidget(self.scroll, stretch=1)
+
+        self.empty_state = QLabel("暂无步骤。开启编辑后点击“添加步骤”创建第一步。")
+        self.empty_state.setObjectName("EmptyState")
+        self.empty_state.setAlignment(Qt.AlignCenter)
+        self.empty_state.setVisible(False)
+        root.addWidget(self.empty_state)
+
+        self.refresh_theme(False)
+
+    def refresh_theme(self, dark: bool):
+        self._dark = bool(dark)
+        c = self._tokens()
+        self.setStyleSheet(f"""
+            QFrame#BoardToolbar {{
+                background: transparent;
+            }}
+            QFrame#SegmentGroup {{
+                background: {c["panel_soft"]};
+                border-radius: 10px;
+            }}
+            QPushButton#SegmentActive {{
+                min-height: 30px;
+                padding: 0 12px;
+                color: {c["ink"]};
+                background: {c["panel"]};
+                border: 1px solid {c["line"]};
+                border-radius: 8px;
+                font-weight: 700;
+            }}
+            QLabel#SelectionHint {{
+                min-height: 34px;
+                padding: 0 12px;
+                color: {c["green"]};
+                background: {c["green_weak"]};
+                border-radius: 17px;
+                font-weight: 650;
+            }}
+            QPushButton#GhostButton {{
+                min-height: 34px;
+                padding: 0 13px;
+                color: {c["ink"]};
+                background: {c["panel"]};
+                border: 1px solid {c["line"]};
+                border-radius: 8px;
+                font-weight: 700;
+            }}
+            QPushButton#GhostButton:hover {{
+                border-color: {c["line_strong"]};
+            }}
+            QPushButton#GhostButton:disabled {{
+                color: {c["muted"]};
+                background: {c["panel_soft"]};
+            }}
+            QScrollArea#StageBoardScroll {{
+                background: transparent;
+                border: none;
+            }}
+            QWidget#StageBoard {{
+                background: transparent;
+            }}
+            QFrame#StageLane {{
+                background: {c["lane"]};
+                border: 1px solid {c["line"]};
+                border-radius: 8px;
+            }}
+            QFrame#StageLane[selected="true"] {{
+                border: 1px solid {c["blue"]};
+            }}
+            QFrame#StageLane[dragOver="true"] {{
+                border: 2px solid {c["green"]};
+            }}
+            QLabel#StageCode {{
+                color: {c["blue"]};
+                font-size: 11px;
+                font-weight: 800;
+            }}
+            QLabel#StageTitle {{
+                color: {c["ink"]};
+                font-size: 15px;
+                font-weight: 760;
+            }}
+            QLabel#StageCount {{
+                color: {c["muted"]};
+                font-size: 12px;
+            }}
+            QFrame#StepCard {{
+                background: {c["panel"]};
+                border: 1px solid {c["line"]};
+                border-left: 4px solid {c["green"]};
+                border-radius: 8px;
+            }}
+            QFrame#StepCard:hover, QFrame#StepCard[selected="true"] {{
+                border: 1px solid {c["blue"]};
+                border-left: 4px solid {c["blue"]};
+            }}
+            QFrame#StepCard[checkpoint="true"] {{
+                border-left: 4px solid {c["purple"]};
+            }}
+            QFrame#StepCard[stepStatus="running"] {{
+                border-left: 4px solid {c["blue"]};
+            }}
+            QFrame#StepCard[stepStatus="failure"] {{
+                border-left: 4px solid {c["red"]};
+            }}
+            QFrame#StepCard[stepStatus="success"] {{
+                border-left: 4px solid {c["green"]};
+            }}
+            QFrame#StepCard[stepStatus="cancelled"], QFrame#StepCard[stepStatus="skipped"] {{
+                border-left: 4px solid {c["amber"]};
+            }}
+            QLabel#StepOrder {{
+                min-height: 24px;
+                padding-top: 3px;
+                color: {c["muted"]};
+                background: {c["panel_soft"]};
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 800;
+            }}
+            QLabel#TypePill {{
+                padding: 2px 7px;
+                border-radius: 10px;
+                font-size: 11px;
+                font-weight: 740;
+            }}
+            QLabel#TypePill[stepType="python"] {{
+                color: {c["blue"]};
+                background: {c["blue_weak"]};
+            }}
+            QLabel#TypePill[stepType="excel"] {{
+                color: {c["green"]};
+                background: {c["green_weak"]};
+            }}
+            QLabel#TypePill[stepType="powerbi"] {{
+                color: {c["amber"]};
+                background: {c["amber_weak"]};
+            }}
+            QLabel#TypePill[stepType="subworkflow"] {{
+                color: {c["purple"]};
+                background: {c["purple_weak"]};
+            }}
+            QLabel#CheckpointBadge {{
+                padding: 2px 7px;
+                color: {c["purple"]};
+                background: {c["purple_weak"]};
+                border-radius: 10px;
+                font-size: 11px;
+                font-weight: 740;
+            }}
+            QLabel#StatusBadge {{
+                padding: 2px 7px;
+                border-radius: 10px;
+                font-size: 11px;
+                font-weight: 760;
+            }}
+            QLabel#StatusBadge[stepStatus="running"] {{
+                color: {c["blue"]};
+                background: {c["blue_weak"]};
+            }}
+            QLabel#StatusBadge[stepStatus="success"] {{
+                color: {c["green"]};
+                background: {c["green_weak"]};
+            }}
+            QLabel#StatusBadge[stepStatus="failure"] {{
+                color: {c["red"]};
+                background: {c["red_weak"]};
+            }}
+            QLabel#StatusBadge[stepStatus="cancelled"], QLabel#StatusBadge[stepStatus="skipped"] {{
+                color: {c["amber"]};
+                background: {c["amber_weak"]};
+            }}
+            QLabel#StepTitle {{
+                color: {c["ink"]};
+                font-size: 14px;
+                font-weight: 760;
+            }}
+            QLabel#StepSubtitle {{
+                color: {c["muted"]};
+                font-size: 12px;
+            }}
+            QLabel#DurationBadge {{
+                color: {c["muted"]};
+                font-size: 11px;
+                font-weight: 650;
+            }}
+            QLabel#EmptyState {{
+                color: {c["muted"]};
+                background: {c["panel"]};
+                border: 1px solid {c["line"]};
+                border-radius: 8px;
+                padding: 28px;
+            }}
+        """)
+        self._refresh_button_state()
+
+    def set_edit_enabled(self, enabled: bool):
+        self._edit_enabled = bool(enabled)
+        self._refresh_button_state()
+
+    def load_workflow(self, workflow_id: int):
+        self._workflow_id = workflow_id
+        self._cards.clear()
+        self._lanes.clear()
+        self._step_stage.clear()
+        self._ordered_step_ids.clear()
+        self._clear_layout()
+
+        stages = list_stages(workflow_id)
+        steps = get_steps_by_workflow(workflow_id)
+        workflow = get_workflow_by_id(workflow_id)
+        stage_map = get_stage_order_map(workflow_id)
+
+        if not self._selected_stage_uid and stages:
+            self._selected_stage_uid = stages[0].uid
+
+        batch_map = self._build_batch_map(workflow, steps, stage_map)
+        ordered_steps = sorted(
+            steps,
+            key=lambda s: (int(stage_map.get(getattr(s, "stage_uid", ""), 0) or 0), s.order),
+        )
+        self._ordered_step_ids = [int(s.id) for s in ordered_steps]
+
+        for idx, stage in enumerate(stages):
+            lane = StageLane(stage, idx)
+            lane.selected.connect(self.select_stage)
+            lane.step_dropped.connect(self._on_step_dropped)
+            self._lanes[stage.uid] = lane
+            self.board_layout.addWidget(lane, stretch=1)
+
+            stage_steps = [
+                step for step in ordered_steps if (getattr(step, "stage_uid", "") or "") == stage.uid
+            ]
+            for within_idx, step in enumerate(stage_steps, start=1):
+                dep_text = self._dep_summary(step)
+                order_label = f"B{batch_map.get(int(step.id), within_idx)}"
+                card = StepCard(step, order_label, dep_text)
+                card.selected.connect(self.select_step)
+                lane.add_card(card)
+                self._cards[int(step.id)] = card
+                self._step_stage[int(step.id)] = stage.uid
+
+        self.empty_state.setVisible(not steps)
+        if self._selected_step_id in self._cards:
+            self.select_step(self._selected_step_id, emit_signal=False)
+        else:
+            self.select_stage(self._selected_stage_uid or (stages[0].uid if stages else ""), emit_signal=False)
+        self._refresh_button_state()
+
+    def clear(self):
+        self._workflow_id = None
+        self._selected_stage_uid = ""
+        self._selected_step_id = None
+        self._cards.clear()
+        self._lanes.clear()
+        self._step_stage.clear()
+        self._ordered_step_ids.clear()
+        self._clear_layout()
+        self.selection_hint.setText("选择一个工作流后开始编排")
+        self.empty_state.setVisible(False)
+        self._refresh_button_state()
+
+    def select_stage(self, stage_uid: str, emit_signal: bool = True):
+        if not stage_uid:
+            return
+        self._selected_stage_uid = stage_uid
+        self._selected_step_id = None
+        for uid, lane in self._lanes.items():
+            lane.set_selected(uid == stage_uid)
+        for card in self._cards.values():
+            card.set_selected(False)
+        lane = self._lanes.get(stage_uid)
+        if lane:
+            self.selection_hint.setText(
+                f"已选中 S{lane.index + 1} {lane.stage_name}，新增步骤会加入该阶段"
+            )
+        if emit_signal:
+            self.stage_selected.emit(stage_uid)
+
+    def select_step(self, step_id: int, emit_signal: bool = True):
+        if step_id not in self._cards:
+            return
+        self._selected_step_id = int(step_id)
+        stage_uid = self._step_stage.get(step_id, "")
+        if stage_uid:
+            self._selected_stage_uid = stage_uid
+        for uid, lane in self._lanes.items():
+            lane.set_selected(uid == stage_uid)
+        for sid, card in self._cards.items():
+            card.set_selected(sid == step_id)
+        lane = self._lanes.get(stage_uid)
+        if lane:
+            self.selection_hint.setText(
+                f"已选中 S{lane.index + 1} {lane.stage_name}，新增步骤会加入该阶段"
+            )
+        if emit_signal:
+            self.step_selected.emit(step_id)
+
+    def selected_stage_uid(self) -> str:
+        return self._selected_stage_uid or ""
+
+    def reset_all_status(self):
+        for card in self._cards.values():
+            card.set_status("idle")
+            card.set_duration_seconds(None)
+
+    def highlight_step(self, step_id: int, status: str, duration_seconds=None):
+        card = self._cards.get(int(step_id))
+        if card:
+            card.set_status(status or "idle")
+            if status != "running":
+                card.set_duration_seconds(duration_seconds)
+
+    def _request_add_step(self):
+        if not self._workflow_id:
+            return
+        self.add_step_requested.emit(self._selected_stage_uid)
+
+    def _request_add_stage(self):
+        if not self._workflow_id:
+            return
+        self.add_stage_requested.emit(self._selected_stage_uid)
+
+    def _on_step_dropped(self, step_id: int, target_stage_uid: str, before_step_id):
+        if not self._workflow_id or step_id not in self._ordered_step_ids:
+            return
+        next_order = self._order_after_drop(step_id, target_stage_uid, before_step_id)
+        self.reorder_requested.emit(step_id, target_stage_uid, next_order)
+
+    def _order_after_drop(self, step_id: int, target_stage_uid: str, before_step_id) -> list[int]:
+        stage_blocks: list[tuple[str, list[int]]] = []
+        seen = set()
+        for uid, lane in self._lanes.items():
+            ids = [sid for sid in lane.ordered_step_ids() if sid != step_id]
+            if uid == target_stage_uid:
+                if before_step_id in ids:
+                    ids.insert(ids.index(before_step_id), step_id)
+                else:
+                    ids.append(step_id)
+            stage_blocks.append((uid, ids))
+            seen.update(ids)
+
+        missing = [sid for sid in self._ordered_step_ids if sid not in seen and sid != step_id]
+        ordered = []
+        for _uid, ids in stage_blocks:
+            ordered.extend(ids)
+        ordered.extend(missing)
+        return ordered
+
+    def _clear_layout(self):
+        while self.board_layout.count():
+            item = self.board_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _refresh_button_state(self):
+        enabled = bool(self._workflow_id) and self._edit_enabled
+        self.btn_add_step.setEnabled(enabled)
+        self.btn_add_stage.setEnabled(enabled)
+        suffix = "" if enabled else "（需要先选择工作流并开启编辑模式）"
+        self.btn_add_step.setToolTip(f"添加步骤到当前选中的阶段{suffix}")
+        self.btn_add_stage.setToolTip(f"在当前阶段之后新增阶段{suffix}")
+
+    def _dep_summary(self, step) -> str:
+        deps = step.get_depends_on() if hasattr(step, "get_depends_on") else []
+        if deps:
+            return f"上游依赖：{len(deps)} 个步骤"
+        if getattr(step, "is_gate", False):
+            return "本阶段检查点"
+        return "无显式上游依赖"
+
+    def _build_batch_map(self, workflow, steps, stage_map: dict) -> dict[int, int]:
+        if not workflow or not steps:
+            return {}
+        try:
+            batches = WorkflowEngine.compute_batches(workflow, steps, stage_map)
+        except Exception:
+            return {}
+        batch_map = {}
+        for idx, batch in enumerate(batches, start=1):
+            for step in batch:
+                batch_map[int(step.id)] = idx
+        return batch_map
+
+    def _tokens(self) -> dict:
+        if self._dark:
+            c = get_colors(True)
+            return {
+                "bg": c["background"],
+                "panel": c["surface_card"],
+                "panel_soft": c["surface_secondary"],
+                "lane": "rgba(44, 44, 46, 0.72)",
+                "ink": c["text_primary"],
+                "muted": c["text_secondary"],
+                "line": c["border"],
+                "line_strong": "#636366",
+                "blue": c["primary"],
+                "blue_weak": "#1A3A5C",
+                "green": c["success"],
+                "green_weak": "#1F3A24",
+                "amber": c["warning"],
+                "amber_weak": "#3A2A0F",
+            "red": c["danger"],
+            "purple": "#C084FC",
+            "purple_weak": "#3B274B",
+            "red_weak": "#3A1515",
+        }
+        return {
+            "bg": "#f6f4ef",
+            "panel": "#fbfaf6",
+            "panel_soft": "#f1eee7",
+            "lane": "rgba(255, 255, 255, 0.72)",
+            "ink": "#20242a",
+            "muted": "#6c7077",
+            "line": "#ddd8cf",
+            "line_strong": "#c9c1b6",
+            "blue": "#2458d3",
+            "blue_weak": "#e9eefc",
+            "green": "#247145",
+            "green_weak": "#e7f3ea",
+            "amber": "#9b6417",
+            "amber_weak": "#fbefd8",
+            "red": "#b3312a",
+            "purple": "#6f4aa8",
+            "purple_weak": "#f0e8f7",
+            "red_weak": "#fde7e4",
+        }

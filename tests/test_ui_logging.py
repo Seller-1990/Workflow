@@ -205,7 +205,7 @@ def test_run_history_uses_theme_status_tokens_for_row_colors():
     assert app is not None
 
 
-def test_main_window_statusbar_stop_button_tracks_theme():
+def test_main_window_statusbar_stop_button_stays_light_when_theme_toggle_called():
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
@@ -215,9 +215,10 @@ def test_main_window_statusbar_stop_button_tracks_theme():
 
         window._toggle_dark_mode(True)
 
-        dark_style = window._statusbar_stop_btn.styleSheet()
-        assert get_colors(True)["danger"] in dark_style
-        assert dark_style != light_style
+        forced_light_style = window._statusbar_stop_btn.styleSheet()
+        assert get_colors(False)["danger"] in forced_light_style
+        assert forced_light_style == light_style
+        assert not window.action_dark_mode.isVisible()
     finally:
         window.close()
         assert app is not None
@@ -239,7 +240,7 @@ def test_node_card_shows_duration_badge_and_hides_it_when_empty():
 
         assert card.duration_badge.isHidden() is False
         assert card.duration_badge.text() == "1m23s"
-        assert "Gate" in card.type_label.text()
+        assert "检查点" in card.type_label.text()
 
         card.set_duration_seconds(None)
 

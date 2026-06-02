@@ -143,6 +143,15 @@ class SubWorkflowExecutor(BaseExecutor):
                     break
                 except concurrent.futures.TimeoutError:
                     continue
+                except Exception as e:
+                    child_cancel_event.set()
+                    return ExecutorResult(
+                        success=False,
+                        exit_code=1,
+                        start_time=start_time,
+                        end_time=datetime.now(),
+                        error_message=f"子工作流执行异常: {e}",
+                    )
         finally:
             # 正常 / 取消 / 超时路径都不等待子线程这里同步回收；
             # 真正停止依赖 child_cancel_event，线程会在后台自行收尾。

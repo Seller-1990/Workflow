@@ -12,6 +12,44 @@ from exceptions import WorkflowTimeoutError
 from constants import EXCEL_REFRESH_TIMEOUT
 
 
+def _wait_for_refresh_completion(excel, workbook, timeout: int, cancel_event, log_messages: list[str]) -> None:
+    """等待 Excel PowerQuery 刷新完成。"""
+    start_wait = time.time()
+
+    wait_method = getattr(excel, "CalculateUntilAsyncQueriesDone", None)
+    if callable(wait_method):
+        log_messages.append(f"[{datetime.now().isoformat()}] 等待 Excel 异步查询完成...")
+        try:
+            wait_method()
+        except Exception as e:
+            log_messages.append(f"[{datetime.now().isoformat()}] 异步查询等待失败，改为轮询: {e}")
+
+    while True:
+        if cancel_event and cancel_event.is_set():
+            log_messages.append(f"[{datetime.now().isoformat()}] 用户取消，正在关闭 Excel...")
+            raise WorkflowTimeoutError("用户取消")
+
+        if timeout is not None and time.time() - start_wait > timeout:
+            raise WorkflowTimeoutError(f"刷新超时 ({timeout}秒)")
+
+        try:
+            calc_state = getattr(excel, "CalculationState", None)
+            if calc_state not in (None, 0):
+                time.sleep(1)
+                continue
+        except Exception:
+            pass
+
+        try:
+            if bool(getattr(workbook, "Refreshing")):
+                time.sleep(1)
+                continue
+        except Exception:
+            pass
+
+        return
+
+
 class ExcelExecutor(BaseExecutor):
     """Excel PowerQuery 刷新执行器
     
@@ -123,21 +161,7 @@ class ExcelExecutor(BaseExecutor):
             workbook.RefreshAll()
             
             # 等待刷新完成（支持取消中断）
-            start_wait = time.time()
-            while True:
-                # 检查取消
-                if cancel_event and cancel_event.is_set():
-                    log_messages.append(f"[{datetime.now().isoformat()}] 用户取消，正在关闭 Excel...")
-                    raise WorkflowTimeoutError("用户取消")
-
-                try:
-                    # 尝试访问工作簿，如果还在刷新会阻塞
-                    _ = workbook.Sheets.Count
-                    break
-                except Exception:
-                    if timeout is not None and time.time() - start_wait > timeout:
-                        raise WorkflowTimeoutError(f"刷新超时 ({timeout}秒)")
-                    time.sleep(1)
+            _wait_for_refresh_completion(excel, workbook, timeout, cancel_event, log_messages)
             
             # 保存并关闭
             log_messages.append(f"[{datetime.now().isoformat()}] 正在保存工作簿...")

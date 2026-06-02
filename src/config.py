@@ -40,7 +40,7 @@ DATABASE_PATH = DATA_DIR / "workflows.db"
 
 # 应用信息
 APP_NAME = "工作流管理"
-APP_VERSION = "3.0.0"
+APP_VERSION = "4.0.0"
 
 # 默认配置
 DEFAULT_CONFIG = {
@@ -93,9 +93,9 @@ class StepType:
     @classmethod
     def choices(cls):
         return [
-            (cls.PYTHON, "Python 脚本"),
-            (cls.EXCEL_POWERQUERY, "Excel PowerQuery 刷新"),
-            (cls.POWERBI_REFRESH, "Power BI Desktop 刷新"),
+            (cls.PYTHON, "Python"),
+            (cls.EXCEL_POWERQUERY, "Power Query"),
+            (cls.POWERBI_REFRESH, "Power BI"),
             (cls.SUB_WORKFLOW, "子工作流"),
         ]
     

@@ -12,5 +12,8 @@ pywin32>=306
 # Power BI Desktop 自动刷新（可选）
 pywinauto>=0.6.8
 
+# 钉钉通知
+requests>=2.31.0
+
 # DAG 可视化辅助
 networkx>=3.0

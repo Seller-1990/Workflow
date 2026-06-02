@@ -8,14 +8,11 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QLineEdit,
-    QGroupBox,
     QCheckBox,
     QSpinBox,
     QPushButton,
     QHBoxLayout,
-    QMessageBox,
     QComboBox,
-    QPlainTextEdit,
     QGridLayout,
     QLabel,
     QFileDialog,
@@ -44,7 +41,7 @@ class WorkflowConfigPanel(QWidget):
         super().__init__(parent)
         self._dark = False
         self._workflow_id = None
-        self._is_collapsed = True  # 默认折叠
+        self._is_collapsed = False
         self._edit_enabled = False
         self._setup_ui()
 
@@ -52,33 +49,48 @@ class WorkflowConfigPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # 标题与折叠按钮同一行，避免按钮单独占用一行
-        self.group = CollapsibleSection("基础配置", collapsed=self._is_collapsed, header_height=44, title_font_size=16, title_weight=700)
+        self.group = CollapsibleSection("配置", collapsed=False, header_height=44, title_font_size=16, title_weight=700)
+        self.group.btn_toggle.hide()
         self.group.collapsed_changed.connect(lambda c: setattr(self, "_is_collapsed", c))
+        self.group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         content_layout = self.group.body_layout
+        content_layout.setSpacing(12)
 
         # U-P3-7: 统一表单 label 宽度 + 右对齐，消除 12 个 QLabel 自适应导致的对齐错乱
         def _form_label(text: str) -> QLabel:
             lbl = QLabel(text)
-            lbl.setFixedWidth(96)
+            lbl.setFixedWidth(76)
             lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            return lbl
+
+        def _section_title(text: str) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setObjectName("ConfigSectionTitle")
+            lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             return lbl
 
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(10)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
 
         row = 0
+        grid.addWidget(_section_title("执行策略"), row, 0, 1, 4)
+        row += 1
+
         self.edit_name = QLineEdit()
-        grid.addWidget(_form_label("工作流名称"), row, 0)
+        self.edit_name.setFixedHeight(30)
+        self.edit_name.setToolTip("当前工作流在左侧列表和运行历史中显示的名称")
+        grid.addWidget(_form_label("名称"), row, 0)
         grid.addWidget(self.edit_name, row, 1)
 
         self.combo_theme = QComboBox()
+        self.combo_theme.setFixedHeight(30)
         self.combo_theme.addItems(["default", "print_bw"])
-        grid.addWidget(_form_label("图表主题"), row, 2)
+        self.combo_theme.setToolTip("图表类步骤使用的默认主题")
+        grid.addWidget(_form_label("主题"), row, 2)
         grid.addWidget(self.combo_theme, row, 3)
         row += 1
 
@@ -87,50 +99,68 @@ class WorkflowConfigPanel(QWidget):
         self.check_use_steps.setChecked(True)
         self.check_use_steps.setVisible(False)  # 隐藏此选项，保留后端兼容性
 
-        self.check_parallel = QCheckBox("启用并行")
-        grid.addWidget(_form_label("并行执行"), row, 0)
+        self.check_parallel = QCheckBox("启用")
+        self.check_parallel.setToolTip("工作流级自动并行：同一阶段内依赖满足的普通步骤可并行执行")
+        grid.addWidget(_form_label("自动并行"), row, 0)
         grid.addWidget(self.check_parallel, row, 1)
 
         self.spin_workers = QSpinBox()
+        self.spin_workers.setFixedHeight(30)
         self.spin_workers.setRange(1, 64)
         self.spin_workers.setValue(2)
-        grid.addWidget(_form_label("最大并行数"), row, 2)
+        self.spin_workers.setToolTip("同时运行的最大步骤数量")
+        grid.addWidget(_form_label("并行数"), row, 2)
         grid.addWidget(self.spin_workers, row, 3)
         row += 1
 
-        self.check_notify = QCheckBox("启用钉钉通知")
+        grid.addWidget(_section_title("通知"), row, 0, 1, 4)
+        row += 1
+
+        self.check_notify = QCheckBox("启用")
+        self.check_notify.setToolTip("工作流完成、失败或取消时发送钉钉通知")
         grid.addWidget(_form_label("通知"), row, 0)
         grid.addWidget(self.check_notify, row, 1)
         row += 1
 
         # Webhook 多选列表
         self.webhook_list = QComboBox()
+        self.webhook_list.setFixedHeight(30)
         self.webhook_list.setPlaceholderText("选择钉钉机器人（在 Webhook 管理中配置）")
-        grid.addWidget(_form_label("钉钉机器人"), row, 0)
+        self.webhook_list.setToolTip("选择通知要使用的钉钉机器人")
+        grid.addWidget(_form_label("机器人"), row, 0)
         grid.addWidget(self.webhook_list, row, 1, 1, 3)
         row += 1
         
         # 消息模板
         self.edit_template = QLineEdit()
+        self.edit_template.setFixedHeight(30)
         self.edit_template.setPlaceholderText("{工作流名称} - {状态} - 编号={运行编号}")
-        grid.addWidget(_form_label("消息模板"), row, 0)
+        self.edit_template.setToolTip("通知正文模板，可使用下方变量")
+        grid.addWidget(_form_label("模板"), row, 0)
         grid.addWidget(self.edit_template, row, 1, 1, 3)
         row += 1
         
         # 模板变量提示
-        self._template_hint = QLabel(get_template_variables_help())
+        self._template_hint = QLabel("可用变量：{工作流名称} / {状态} / {运行编号}")
+        self._template_hint.setToolTip(get_template_variables_help())
         self._template_hint.setStyleSheet("color: #888; font-size: 11px;")
         grid.addWidget(self._template_hint, row, 1, 1, 3)
         row += 1
 
-        self.check_watch = QCheckBox("启用监听")
-        grid.addWidget(_form_label("文件夹监听"), row, 0)
+        grid.addWidget(_section_title("文件夹监听"), row, 0, 1, 4)
+        row += 1
+
+        self.check_watch = QCheckBox("启用")
+        self.check_watch.setToolTip("监听目录变化并自动触发当前工作流")
+        grid.addWidget(_form_label("监听"), row, 0)
         grid.addWidget(self.check_watch, row, 1)
 
         self.combo_watch_mode = QComboBox()
+        self.combo_watch_mode.setFixedHeight(30)
         self.combo_watch_mode.addItem("任意变动触发", "any_change")
         self.combo_watch_mode.addItem("全部目录更新后触发", "all_folders_updated_since_success")
-        grid.addWidget(_form_label("监听模式"), row, 2)
+        self.combo_watch_mode.setToolTip("选择目录变化触发工作流的规则")
+        grid.addWidget(_form_label("模式"), row, 2)
         grid.addWidget(self.combo_watch_mode, row, 3)
         row += 1
 
@@ -139,17 +169,21 @@ class WorkflowConfigPanel(QWidget):
         watch_layout.setContentsMargins(0, 0, 0, 0)
         watch_layout.setSpacing(8)
         self.list_watch_folders = QListWidget()
-        self.list_watch_folders.setMinimumHeight(80)
-        self.list_watch_folders.setMaximumHeight(140)
+        self.list_watch_folders.setMinimumHeight(72)
+        self.list_watch_folders.setMaximumHeight(112)
+        self.list_watch_folders.setToolTip("当前工作流监听的目录列表")
         self.list_watch_folders.setSelectionMode(QListWidget.NoSelection)
         self.list_watch_folders.setFocusPolicy(Qt.NoFocus)
+        self.list_watch_folders.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         watch_layout.addWidget(self.list_watch_folders)
 
         watch_btn_layout = QVBoxLayout()
         watch_btn_layout.setContentsMargins(0, 0, 0, 0)
         watch_btn_layout.setSpacing(4)
-        self.btn_add_watch_folder = QPushButton("添加...")
-        self.btn_add_watch_folder.setFixedWidth(60)
+        self.btn_add_watch_folder = QPushButton("添加")
+        self.btn_add_watch_folder.setFixedSize(56, 30)
+        self.btn_add_watch_folder.setToolTip("添加一个监听目录")
+        self.btn_add_watch_folder.setAccessibleName("添加监听目录")
         self.btn_add_watch_folder.clicked.connect(self._browse_watch_folder)
         watch_btn_layout.addWidget(self.btn_add_watch_folder)
         watch_btn_layout.addStretch()
@@ -157,48 +191,71 @@ class WorkflowConfigPanel(QWidget):
 
         watch_widget = QWidget()
         watch_widget.setLayout(watch_layout)
-        grid.addWidget(_form_label("监听目录"), row, 0)
+        grid.addWidget(_form_label("目录"), row, 0)
         grid.addWidget(watch_widget, row, 1, 1, 3)
         row += 1
 
         self.spin_cooldown = QSpinBox()
+        self.spin_cooldown.setFixedHeight(30)
         self.spin_cooldown.setRange(1, 3600)
         self.spin_cooldown.setValue(8)
-        grid.addWidget(_form_label("扫描间隔(秒)"), row, 0)
+        self.spin_cooldown.setSuffix(" 秒")
+        self.spin_cooldown.setToolTip("两次扫描之间的间隔")
+        grid.addWidget(_form_label("扫描间隔"), row, 0)
         grid.addWidget(self.spin_cooldown, row, 1)
 
         self.spin_settle = QSpinBox()
+        self.spin_settle.setFixedHeight(30)
         self.spin_settle.setRange(0, 3600)
         self.spin_settle.setValue(15)
-        grid.addWidget(_form_label("延迟触发(秒)"), row, 2)
+        self.spin_settle.setSuffix(" 秒")
+        self.spin_settle.setToolTip("检测到变动后等待文件稳定的时间")
+        grid.addWidget(_form_label("延迟触发"), row, 2)
         grid.addWidget(self.spin_settle, row, 3)
         row += 1
 
         content_layout.addLayout(grid)
 
         btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 2, 0, 0)
         btn_layout.addStretch()
         self.btn_save = QPushButton("保存配置")
+        self.btn_save.setObjectName("primaryRect")
+        self.btn_save.setFixedSize(96, 32)
+        self.btn_save.setToolTip("保存当前工作流配置")
+        self.btn_save.setAccessibleName("保存配置")
         self.btn_save.clicked.connect(self.save_config)
         btn_layout.addWidget(self.btn_save)
         content_layout.addLayout(btn_layout)
 
-        layout.addWidget(self.group)
+        layout.addWidget(self.group, alignment=Qt.AlignTop)
 
     def refresh_theme(self, dark: bool):
         self._dark = dark
         colors = get_colors(dark)
         self.group.refresh_theme(dark)
         self._template_hint.setStyleSheet(f"color: {colors['text_tertiary']}; font-size: 11px;")
+        self.setStyleSheet(f"""
+            QLabel#ConfigSectionTitle {{
+                color: {colors['text_primary']};
+                font-size: 13px;
+                font-weight: 700;
+                padding-top: 8px;
+                padding-bottom: 2px;
+            }}
+        """)
 
     def set_edit_enabled(self, enabled: bool):
         self._edit_enabled = enabled
         self._apply_enabled_state()
 
     def _apply_enabled_state(self):
-        # 折叠按钮始终可用
         self.group.body.setEnabled(self._edit_enabled)
+        self.group.set_collapsed(False)
+        self.group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self.btn_save.setEnabled(self._edit_enabled)
+        self.btn_save.setToolTip("保存当前工作流配置" if self._edit_enabled else "保存配置（需要先开启编辑）")
+        self.btn_add_watch_folder.setToolTip("添加一个监听目录" if self._edit_enabled else "添加监听目录（需要先开启编辑）")
 
     def _load_webhook_list(self):
         """加载 Webhook 列表"""
@@ -389,7 +446,7 @@ class WorkflowConfigPanel(QWidget):
         path_label = QLabel(path)
         path_label.setToolTip(path)
         path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        path_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         layout.addWidget(path_label, stretch=1)
 
         btn_delete = QToolButton()

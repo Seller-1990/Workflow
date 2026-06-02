@@ -7,6 +7,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent
 EXPORT_FILE = ROOT / "workflows_export.json"
@@ -16,6 +18,11 @@ EXPECTED_WATCH_FOLDERS = [
     "D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/月度接收/1账务信息"
 ]
 OUTPUT_SEGMENT = "/基础文件/"
+
+pytestmark = pytest.mark.skipif(
+    not EXPORT_FILE.exists() or not DB_FILE.exists(),
+    reason="local workflow export/database not available",
+)
 
 
 def _normalize_path(path: str) -> str:

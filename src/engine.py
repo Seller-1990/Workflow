@@ -934,13 +934,13 @@ class WorkflowEngine(QObject):
             if len(groups) == 1:
                 group = groups[0]
                 names = ", ".join(s.name for s in group)
-                mode = "并行" if len(group) > 1 else ("前置(Gate)" if group[0].is_gate else "串行")
+                mode = "并行" if len(group) > 1 else ("检查点" if group[0].is_gate else "串行")
                 self._emit_log(f"  {mode}：{names}")
             else:
                 total = len(groups)
                 for i, group in enumerate(groups, 1):
                     names = ", ".join(s.name for s in group)
-                    mode = "并行" if len(group) > 1 else ("前置(Gate)" if group[0].is_gate else "串行")
+                    mode = "并行" if len(group) > 1 else ("检查点" if group[0].is_gate else "串行")
                     self._emit_log(f"执行组 {i}/{total}（{mode}）：{names}")
 
         self._emit_log(
@@ -961,7 +961,7 @@ class WorkflowEngine(QObject):
 
         依赖与并行规则：
         - 依赖（depends_on）必须先完成
-        - Gate 步骤（is_gate=True）优先单独执行
+        - 检查点步骤（is_gate=True）优先单独执行
         - 自动并行：仅需 workflow.parallel_enabled=True，同依赖层步骤默认并行
         """
         total_steps = len(steps)
@@ -1023,7 +1023,7 @@ class WorkflowEngine(QObject):
             if batch and stage_uid in stage_uid_to_group_total:
                 group_total = stage_uid_to_group_total.get(stage_uid, 1)
                 names = ", ".join(s.name for s in batch)
-                mode = "并行" if len(batch) > 1 else ("前置(Gate)" if batch[0].is_gate else "串行")
+                mode = "并行" if len(batch) > 1 else ("检查点" if batch[0].is_gate else "串行")
                 if group_total > 1:
                     stage_uid_to_group_index[stage_uid] = stage_uid_to_group_index.get(stage_uid, 0) + 1
                     idx = stage_uid_to_group_index[stage_uid]

@@ -31,7 +31,7 @@ from database import (
     init_db, import_from_json, list_workflows, get_workflow_by_id,
     get_workflow_by_name, get_run_histories_by_workflow, get_step_logs_by_run
 )
-from engine_core import WorkflowEngine, RunMode, RunSignalPolicy
+from engine import WorkflowEngine, RunMode, RunSignalPolicy
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
@@ -145,23 +145,25 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    parser.add_argument("--auto", action="store_true", help="导入后自动运行月度数据处理")
+    sub = parser.add_subparsers(dest="cmd")
 
     p_import = sub.add_parser("import", help="从 workflows_export.json 导入工作流")
     p_run = sub.add_parser("run", help="运行工作流")
     p_run.add_argument("name", help="工作流名称或 ID")
-    p_auto = sub.add_parser("--auto", help="导入后自动运行月度数据处理")
 
     args = parser.parse_args()
 
-    if args.cmd == "import":
-        cmd_import()
-    elif args.cmd == "run":
-        cmd_run(args.name)
-    elif args.cmd == "--auto":
+    if args.auto:
         cmd_import()
         print("\n" + "="*60, flush=True)
         cmd_run("月度数据处理")
+    elif args.cmd == "import":
+        cmd_import()
+    elif args.cmd == "run":
+        cmd_run(args.name)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

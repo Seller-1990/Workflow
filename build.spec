@@ -37,6 +37,7 @@ a = Analysis(
         'pywintypes',
         'pythoncom',
         'pywinauto',
+        'requests',
         'watchdog',
         'watchdog.observers',
         'watchdog.events',

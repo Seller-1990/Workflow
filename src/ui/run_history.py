@@ -5,7 +5,8 @@ import logging
 import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMenu, QMessageBox, QComboBox, QLineEdit, QLabel
+    QHeaderView, QMenu, QMessageBox, QComboBox, QLineEdit, QLabel,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor
@@ -68,6 +69,7 @@ class RunHistoryPanel(QWidget):
             "运行历史", collapsed=False, header_height=44,
             title_font_size=15, title_weight=700
         )
+        self.section.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         group_layout = self.section.body_layout
 
         # 筛选行：状态下拉 + 搜索框
@@ -146,8 +148,8 @@ class RunHistoryPanel(QWidget):
 
         self.table.cellDoubleClicked.connect(self._on_row_double_clicked)
 
-        group_layout.addWidget(self.table)
-        layout.addWidget(self.section)
+        group_layout.addWidget(self.table, stretch=1)
+        layout.addWidget(self.section, stretch=1)
 
     def load_history(self, workflow_id: int):
         """加载运行历史"""

@@ -87,6 +87,24 @@ def _stream_pipe(pipe, file_obj, stream, log_errors: bool = True):
             print(f"[PythonExecutor] 输出流处理异常: {e}", file=sys.stderr)
 
 
+def _read_stderr_excerpt(stderr_path: Path, max_lines: int = 8, max_chars: int = 400) -> str:
+    """读取 stderr 末尾摘要，用于把真实错误回传到 UI/CLI。"""
+    try:
+        if not stderr_path.exists() or stderr_path.stat().st_size == 0:
+            return ""
+        content = stderr_path.read_text(encoding="utf-8-sig", errors="replace")
+    except Exception:
+        return ""
+
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    excerpt = "\n".join(lines[-max_lines:]).strip()
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[-max_chars:].lstrip()
+    return excerpt
+
+
 class PythonExecutor(BaseExecutor):
     """Python 脚本执行器"""
 
@@ -250,7 +268,7 @@ class PythonExecutor(BaseExecutor):
                             proc, timeout or 0, cancel_event, check_interval=0.5
                         )
                         if cancelled:
-                            proc.kill()
+                            self.kill_process_tree(proc)
                             try:
                                 proc.communicate(timeout=3)
                             except subprocess.TimeoutExpired:
@@ -276,8 +294,7 @@ class PythonExecutor(BaseExecutor):
                         else:
                             proc.wait()
                 except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
+                    self.kill_process_tree(proc)
                     end_time = datetime.now()
                     return ExecutorResult(
                         success=False,
@@ -302,7 +319,13 @@ class PythonExecutor(BaseExecutor):
                 end_time=end_time,
                 stdout_path=str(stdout_path),
                 stderr_path=str(stderr_path),
-                error_message=None if exit_code == 0 else f"退出码: {exit_code}"
+                error_message=None
+                if exit_code == 0
+                else (
+                    f"退出码: {exit_code}\n{stderr_excerpt}"
+                    if (stderr_excerpt := _read_stderr_excerpt(stderr_path))
+                    else f"退出码: {exit_code}"
+                )
             )
             
         except Exception as e:

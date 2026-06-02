@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QHeaderView, QMenu, QMessageBox, QGroupBox,
     QCheckBox, QComboBox, QAbstractItemView, QLabel, QInputDialog,
-    QToolButton, QStyle, QFrame
+    QToolButton, QStyle, QFrame, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal, Slot, QRectF, QSize, QSettings, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPalette
@@ -51,23 +51,34 @@ from ui.step_table.reorderable_table import ReorderableTable, STAGE_COLORS
 class StepTablePanel(QWidget):
     """步骤列表表格面板
 
-    列：顺序 / 类型 / 名称 / 脚本 / 依赖 / 是否前置 / 操作
+    列：顺序 / 类型 / 名称 / 脚本 / 上游依赖 / 检查点 / 操作
     """
 
     # 信号
     step_selected = Signal(int)  # step_id
+    step_deleted = Signal(int)  # step_id
     steps_changed = Signal()
 
     # 列定义
     COLUMNS = [
-        ("顺序", 48),
-        ("类型", 72),
-        ("名称", 120),
-        ("脚本", 448),
-        ("依赖", 64),
-        ("前置", 44),
-        ("操作", 80),
+        ("顺序", 56),
+        ("类型", 76),
+        ("名称", 136),
+        ("脚本", 220),
+        ("上游依赖", 104),
+        ("检查点", 78),
+        ("操作", 84),
     ]
+    COLUMN_MIN_WIDTHS = [56, 72, 120, 160, 96, 78, 82]
+    FIXED_VISIBLE_COLUMNS = {
+        0: 56,
+        1: 76,
+        4: 104,
+        5: 78,
+        6: 84,
+    }
+    NAME_MIN_WIDTH = 132
+    SCRIPT_MIN_WIDTH = 180
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -77,6 +88,7 @@ class StepTablePanel(QWidget):
         self._edit_enabled = True
         self._parallel_available = True
         self._selected_step_id = None
+        self._selected_stage_uid = None
 
         # UI 状态持久化（列宽等）
         self._settings = QSettings(APP_NAME, "ui")
@@ -119,6 +131,8 @@ class StepTablePanel(QWidget):
         self.btn_add.setObjectName("primaryHeaderBtn")
         self.btn_add.setFixedSize(86, 28)
         self.btn_add.clicked.connect(self._add_step)
+        self.btn_add.setAccessibleName("添加步骤")
+        self.btn_add.setToolTip("添加步骤到当前阶段")
         self.section.header_actions_layout.addWidget(self.btn_add)
 
         # 拖拽提示（新手可发现）
@@ -126,6 +140,11 @@ class StepTablePanel(QWidget):
         self.drag_hint_label.setWordWrap(True)
         self.drag_hint_label.setStyleSheet("color:#6B7280; font-size:11px;")
         group_layout.addWidget(self.drag_hint_label)
+
+        self.stage_context_label = QLabel("")
+        self.stage_context_label.setWordWrap(True)
+        self.stage_context_label.setStyleSheet("color:#6B7280; font-size:11px;")
+        group_layout.addWidget(self.stage_context_label)
 
         # 提示条（用于展示阶段计算/依赖错误等，不再静默吞错）
         self.hint_label = QLabel("")
@@ -150,6 +169,7 @@ class StepTablePanel(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
+        header.setDefaultAlignment(Qt.AlignCenter)
         header.setContextMenuPolicy(Qt.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_header_menu)
         header.sectionResized.connect(self._on_header_section_resized)
@@ -174,6 +194,7 @@ class StepTablePanel(QWidget):
         self.table.cellPressed.connect(self._on_cell_pressed)
 
         group_layout.addWidget(self.table)
+        QTimer.singleShot(0, self._fit_columns_to_viewport)
 
         layout.addWidget(self.section)
 
@@ -193,7 +214,7 @@ class StepTablePanel(QWidget):
                 color: {colors["text_secondary"]};
                 font-weight: 600;
                 border: none;
-                padding: 6px 8px;
+                padding: 6px 6px;
             }}
             QTableView::item {{
                 background: transparent;
@@ -290,10 +311,19 @@ class StepTablePanel(QWidget):
         self.table.setStyleSheet(self._build_table_stylesheet(colors))
         self.table.refresh_theme(dark)
         self.drag_hint_label.setStyleSheet(f"color:{colors['text_tertiary']}; font-size:11px;")
+        self.stage_context_label.setStyleSheet(f"color:{colors['text_secondary']}; font-size:11px;")
         self.hint_label.setStyleSheet(f"color:{colors['text_tertiary']}; font-size:11px;")
+        self._update_stage_context_ui()
 
     def _default_column_widths(self) -> list[int]:
         return [int(w) for _, w in self.COLUMNS]
+
+    def _sanitize_column_widths(self, widths: list[int]) -> list[int]:
+        safe = []
+        for i, width in enumerate(widths):
+            min_width = self.COLUMN_MIN_WIDTHS[i] if i < len(self.COLUMN_MIN_WIDTHS) else 48
+            safe.append(max(int(min_width), int(width)))
+        return safe
 
     def _load_column_widths(self) -> list[int] | None:
         raw = self._settings.value(self._column_widths_key, None)
@@ -315,10 +345,42 @@ class StepTablePanel(QWidget):
 
     def _apply_column_widths(self):
         widths = self._load_column_widths() or self._default_column_widths()
+        widths = self._sanitize_column_widths(widths)
         self._suspend_width_save = True
         try:
             for i, w in enumerate(widths):
-                self.table.setColumnWidth(i, int(max(40, w)))
+                self.table.setColumnWidth(i, int(w))
+        finally:
+            self._suspend_width_save = False
+
+    def _fit_columns_to_viewport(self):
+        """让关键列默认可见，把宽度波动留给名称/脚本两列。"""
+        if not hasattr(self, "table") or self.table.columnCount() < len(self.COLUMNS):
+            return
+        viewport_width = int(self.table.viewport().width())
+        if viewport_width <= 0:
+            return
+
+        fixed_total = sum(self.FIXED_VISIBLE_COLUMNS.values())
+        flex_available = viewport_width - fixed_total - 6
+        min_flex = self.NAME_MIN_WIDTH + self.SCRIPT_MIN_WIDTH
+        if flex_available >= min_flex:
+            name_width = max(self.NAME_MIN_WIDTH, min(220, int(flex_available * 0.38)))
+            script_width = max(self.SCRIPT_MIN_WIDTH, flex_available - name_width)
+        else:
+            name_width = self.NAME_MIN_WIDTH
+            script_width = self.SCRIPT_MIN_WIDTH
+
+        widths = self._sanitize_column_widths(self._default_column_widths())
+        for col, width in self.FIXED_VISIBLE_COLUMNS.items():
+            widths[col] = int(width)
+        widths[2] = int(name_width)
+        widths[3] = int(script_width)
+
+        self._suspend_width_save = True
+        try:
+            for col, width in enumerate(widths):
+                self.table.setColumnWidth(col, int(width))
         finally:
             self._suspend_width_save = False
 
@@ -338,6 +400,7 @@ class StepTablePanel(QWidget):
     def _reset_column_widths(self):
         self._settings.remove(self._column_widths_key)
         self._apply_column_widths()
+        self._fit_columns_to_viewport()
         try:
             win = self.window()
             if win and hasattr(win, "statusBar"):
@@ -346,6 +409,10 @@ class StepTablePanel(QWidget):
                     sb.showMessage("已重置步骤列表列宽", 4000)
         except Exception:
             return
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._fit_columns_to_viewport)
 
     def _show_header_menu(self, pos):
         menu = QMenu(self)
@@ -364,12 +431,13 @@ class StepTablePanel(QWidget):
 
     def _apply_enabled_state(self):
         can_edit = self._edit_enabled and (not self._single_script_mode)
-        self.btn_add.setEnabled(can_edit)
+        self.btn_add.setEnabled(can_edit and self._workflow_id is not None)
+        self._update_stage_context_ui()
 
         self.drag_hint_label.setText(
-            '拖拽：请先开启左侧"编辑"，从"顺序(Sx-y)"列拖拽排序；拖到其他用途阶段即改变归类。'
+            '拖拽：请先开启左侧"编辑"，从"顺序(Sx-y)"列拖拽排序；拖到其他阶段即改变归属。'
             if not can_edit
-            else '拖拽：从"顺序(Sx-y)"列拖拽排序；拖到其他用途阶段可改变归类。右键步骤：移动阶段/新建阶段。'
+            else '拖拽：从"顺序(Sx-y)"列拖拽排序；拖到其他阶段可改变归属。右键步骤：移动阶段/新建阶段。'
         )
 
         # 拖拽排序与编辑模式联动（编辑关闭必须禁止拖拽）
@@ -388,7 +456,7 @@ class StepTablePanel(QWidget):
             self.load_steps(self._workflow_id)
 
     def load_steps(self, workflow_id: int):
-        """加载步骤列表（按"用途阶段"分组展示；批次(Bx)由 compute_batches 自动计算）"""
+        """加载步骤列表（按执行阶段分组展示；批次(Bx)由 compute_batches 自动计算）"""
         self._workflow_id = workflow_id
         self._selected_step_id = None
         self.table.setRowCount(0)
@@ -402,7 +470,7 @@ class StepTablePanel(QWidget):
         if self._single_script_mode:
             steps = [s for s in steps if s.uid == "single_script"]
 
-        # 用途阶段（人为归类）：始终展示阶段标题条（即使为空）
+        # 执行阶段（固定顺序屏障）：始终展示阶段标题条（即使为空）
         self._stages = []
         self._stage_uid_to_index = {}
         if not self._single_script_mode:
@@ -420,6 +488,12 @@ class StepTablePanel(QWidget):
                     }
                 )
                 self._stage_uid_to_index[st.uid] = i
+
+        stage_uids = {st["uid"] for st in self._stages}
+        if self._single_script_mode:
+            self._selected_stage_uid = None
+        elif self._selected_stage_uid not in stage_uids:
+            self._selected_stage_uid = None
 
         # 执行批次（自动）：用于展示 Bx（与 DAG/预演一致）
         self._step_batch_map = {}
@@ -589,6 +663,8 @@ class StepTablePanel(QWidget):
                 self._render_stage_header_row(header_row, stage_uid, stage_idx, stage_info.get("name", "阶段"), len(steps_in_stage))
 
         self._update_table_height()
+        self._update_stage_context_ui()
+        QTimer.singleShot(0, self._fit_columns_to_viewport)
 
     def _update_group_ranges(self):
         """把用途阶段的行范围同步给表格，用于"框住阶段"的卡片绘制"""
@@ -622,6 +698,68 @@ class StepTablePanel(QWidget):
         desired = header_h + visible_rows * row_h + padding
         self.table.setMinimumHeight(desired)
 
+    def _stage_label_for_uid(self, stage_uid: str | None) -> str:
+        if not stage_uid:
+            return ""
+        stage = next((s for s in self._stages if s["uid"] == stage_uid), None)
+        if not stage:
+            return ""
+        stage_idx = self._stage_uid_to_index.get(stage_uid, 0)
+        return f"S{stage_idx + 1} {stage.get('name', '阶段')}"
+
+    def _set_stage_context(self, stage_uid: str | None):
+        if self._single_script_mode:
+            stage_uid = None
+        if self._selected_stage_uid == stage_uid:
+            self._update_stage_context_ui()
+            return
+        self._selected_stage_uid = stage_uid
+        self._update_stage_context_ui()
+        self._refresh_stage_headers()
+
+    def _update_stage_context_ui(self):
+        if not self._workflow_id:
+            self.stage_context_label.setText("")
+            self.btn_add.setToolTip("添加步骤")
+            return
+        can_edit = self._edit_enabled and (not self._single_script_mode)
+        stage_label = self._stage_label_for_uid(self._selected_stage_uid)
+        if self._single_script_mode:
+            text = "当前为单脚本模式：步骤由右侧配置生成。"
+            add_tip = "单脚本模式下不能新增步骤"
+        elif stage_label:
+            text = f"当前阶段：{stage_label} · 点击「添加步骤」会加入此阶段。"
+            add_tip = f"添加步骤到当前阶段：{stage_label}"
+        else:
+            text = "当前阶段：未选择 · 新增步骤默认进入第一个阶段。"
+            add_tip = "添加步骤到第一个阶段"
+        self.stage_context_label.setText(text)
+        if can_edit:
+            self.btn_add.setToolTip(add_tip)
+        else:
+            self.btn_add.setToolTip(f"{add_tip}\n（需要先开启编辑）")
+
+    def _refresh_stage_headers(self):
+        if self._single_script_mode or not self._stage_header_rows:
+            return
+        counts = {}
+        for meta in self._row_meta:
+            if meta.get("kind") == "step":
+                suid = meta.get("stage_uid")
+                counts[suid] = counts.get(suid, 0) + 1
+        for stage in self._stages:
+            stage_uid = stage["uid"]
+            row = self._stage_header_rows.get(stage_uid)
+            if row is None:
+                continue
+            self._render_stage_header_row(
+                row=row,
+                stage_uid=stage_uid,
+                stage_idx=self._stage_uid_to_index.get(stage_uid, 0),
+                stage_name=stage.get("name", "阶段"),
+                step_count=counts.get(stage_uid, 0),
+            )
+
     def _render_stage_header_row(
         self,
         row: int,
@@ -648,6 +786,7 @@ class StepTablePanel(QWidget):
         self.table.setRowHeight(row, 40)
 
         header_widget = QWidget()
+        header_widget.setObjectName("stageHeader")
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(10, 4, 10, 4)
         header_layout.setSpacing(8)
@@ -660,16 +799,22 @@ class StepTablePanel(QWidget):
         header_layout.addWidget(accent)
 
         is_collapsed = self._stage_collapsed.get(stage_uid, False)
-        chevron_text = "▶" if is_collapsed else "▼"
-        chevron = QLabel(chevron_text)
-        chevron.setObjectName("stageChevron")
-        chevron.setStyleSheet(f"color:{colors['text_secondary']}; font-size:12px;")
-        chevron.setFixedWidth(14)
-        header_layout.addWidget(chevron)
+        collapse_btn = QToolButton()
+        collapse_btn.setObjectName("stagePillBtn")
+        collapse_btn.setAutoRaise(True)
+        collapse_btn.setText("▶" if is_collapsed else "▼")
+        collapse_btn.setFixedSize(24, 24)
+        collapse_btn.setToolTip("展开阶段" if is_collapsed else "折叠阶段")
+        collapse_btn.setAccessibleName("展开阶段" if is_collapsed else "折叠阶段")
+        collapse_btn.clicked.connect(lambda _=False, su=stage_uid: self._toggle_stage_collapse(su))
+        header_layout.addWidget(collapse_btn)
 
         title = QLabel(f"S{stage_idx + 1}  {stage_name}  ·  {step_count} 步")
         title.setStyleSheet(f"color:{colors['text_primary']}; font-size:13px; font-weight:600;")
-        header_layout.addWidget(title)
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        title.setToolTip(f"S{stage_idx + 1} {stage_name}\n点击阶段可作为新增步骤的默认归属")
+        header_layout.addWidget(title, stretch=1)
         header_layout.addStretch()
 
         # 阶段顺序调整（A 方案：上移/下移按钮）
@@ -695,6 +840,7 @@ class StepTablePanel(QWidget):
                 btn.setToolTip(f"{tip}\n（需要先开启编辑）")
             else:
                 btn.setToolTip(tip)
+            btn.setAccessibleName(tip)
             btn.setEnabled(enabled)
             btn.clicked.connect(on_click)
             return btn
@@ -734,9 +880,18 @@ class StepTablePanel(QWidget):
 
         header_layout.addWidget(pill)
 
+        selected = stage_uid == self._selected_stage_uid
+        header_widget.setCursor(Qt.PointingHandCursor)
         header_widget.setStyleSheet(
-            f"background:transparent; border:none; border-radius:{CORNER_RADIUS['large']}px;"
+            f"""
+            QWidget#stageHeader {{
+                background: {colors['selected_bg'] if selected else 'transparent'};
+                border: 1px solid {colors['primary'] if selected else 'transparent'};
+                border-radius: {CORNER_RADIUS['large']}px;
+            }}
+            """
         )
+        header_widget.setToolTip("点击整行可选中阶段，新增步骤将默认进入该阶段")
 
         # 使用一个空 item 作为占位（避免 selection/drag 误触发）
         item = QTableWidgetItem("")
@@ -749,7 +904,7 @@ class StepTablePanel(QWidget):
             return
         meta = self._row_meta[row]
         if meta.get("kind") == "stage_header":
-            self._toggle_stage_collapse(meta["stage_uid"])
+            self._set_stage_context(meta.get("stage_uid"))
 
     def _toggle_stage_collapse(self, stage_uid: str):
         is_collapsed = self._stage_collapsed.get(stage_uid, False)
@@ -780,7 +935,7 @@ class StepTablePanel(QWidget):
         batch_idx: int = 0,
     ):
         """设置行数据"""
-        # 顺序：用途阶段序号 + 阶段内序号 + 执行批次(Bx)
+        # 顺序：执行阶段序号 + 阶段内序号 + 执行批次(Bx)
         order_text = f"S{stage_idx + 1}-{within_idx + 1}"
         if batch_idx is not None:
             order_text += f"  B{int(batch_idx) + 1}"
@@ -794,7 +949,7 @@ class StepTablePanel(QWidget):
         except Exception:
             stage_name = ""
         batch_tip = f"执行批次 B{int(batch_idx) + 1}" if batch_idx is not None else "执行批次未知"
-        order_item.setToolTip(f"用途阶段 S{stage_idx + 1} {stage_name}\n{batch_tip}")
+        order_item.setToolTip(f"执行阶段 S{stage_idx + 1} {stage_name}\n{batch_tip}")
         self.table.setItem(row, 0, order_item)
 
         # 类型（带类型特有颜色）
@@ -843,34 +998,37 @@ class StepTablePanel(QWidget):
         c = get_colors(self._dark)
         dep_item.setForeground(QColor(c["primary"]) if dep_text else QColor(c["text_tertiary"]))
         if dep_tool_lines:
-            dep_item.setToolTip("依赖：\n" + "\n".join(dep_tool_lines))
+            dep_item.setToolTip("上游依赖：\n" + "\n".join(dep_tool_lines))
         else:
-            dep_item.setToolTip("（无显式依赖）")
+            dep_item.setToolTip("（无显式上游依赖）")
         self.table.setItem(row, 4, dep_item)
 
-        # 前置（开关）
+        # 检查点（开关）
         gate_widget = QWidget()
+        gate_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         gate_layout = QHBoxLayout(gate_widget)
         gate_layout.setContentsMargins(0, 0, 0, 0)
-        gate_layout.setAlignment(Qt.AlignCenter)
+        gate_layout.setSpacing(0)
         gate_check = QCheckBox()
         gate_check.setChecked(step.is_gate)
-        gate_check.setToolTip("前置步骤：启用后会阻塞后续并行步骤（确保关键步骤先完成）。")
+        gate_check.setToolTip("检查点：启用后会让本阶段的普通步骤等待它先完成。")
         gate_check.setEnabled(self._edit_enabled and (not self._single_script_mode))
         # 使用默认参数捕获当前值，避免闭包问题
         def _make_gate_handler(r, sid):
             return lambda state: self._on_gate_changed_with_select(r, sid, state)
         gate_check.stateChanged.connect(_make_gate_handler(row, step.id))
+        gate_layout.addStretch(1)
         gate_layout.addWidget(gate_check)
+        gate_layout.addStretch(1)
         self.table.setCellWidget(row, 5, gate_widget)
 
         # 操作（减法：去掉行内 ↑↓，使用拖拽排序）
         can_edit = self._edit_enabled and (not self._single_script_mode)
         action_widget = QWidget()
+        action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         action_layout = QHBoxLayout(action_widget)
-        action_layout.setContentsMargins(2, 0, 2, 0)
-        action_layout.setSpacing(4)
-        action_layout.setAlignment(Qt.AlignCenter)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(0)
 
         btn_delete = QToolButton()
         btn_delete.setObjectName("tableDangerIcon")
@@ -895,16 +1053,21 @@ class StepTablePanel(QWidget):
         def _make_delete_handler(r, sid):
             return lambda _: self._delete_step_with_select(r, sid)
         btn_delete.clicked.connect(_make_delete_handler(row, step.id))
+        action_layout.addStretch(1)
         action_layout.addWidget(btn_delete)
+        action_layout.addStretch(1)
 
         self.table.setCellWidget(row, 6, action_widget)
 
     def clear(self):
         """清空表格"""
         self._workflow_id = None
+        self._selected_step_id = None
+        self._selected_stage_uid = None
         self.table.setRowCount(0)
         self.hint_label.setVisible(False)
         self.hint_label.setText("")
+        self.stage_context_label.setText("")
         self._stages = []
         self._stage_uid_to_index = {}
         self._row_meta = []
@@ -913,6 +1076,7 @@ class StepTablePanel(QWidget):
         self._row_by_step_id = {}  # R4-#5
         self._step_batch_map = {}
         self._batch_deps_map = {}
+        self._update_stage_context_ui()
 
     def _notify_status(self, message: str):
         """在主窗口状态栏显示提示（失败时静默降级）"""
@@ -943,6 +1107,12 @@ class StepTablePanel(QWidget):
         except (TypeError, ValueError):
             return
         if row is not None and 0 <= row < self.table.rowCount():
+            meta = self._row_meta[row] if row < len(self._row_meta) else {}
+            if meta.get("kind") == "step":
+                stage_uid = meta.get("stage_uid")
+                if self._stage_collapsed.get(stage_uid):
+                    self._toggle_stage_collapse(stage_uid)
+                self._set_stage_context(meta.get("stage_uid"))
             self.table.setCurrentCell(row, 0)
 
     def update_step_status(self, step_id: int, status: str):
@@ -985,7 +1155,7 @@ class StepTablePanel(QWidget):
         if not self._workflow_id:
             return
 
-        target_stage_uid = ""
+        target_stage_uid = self._selected_stage_uid or ""
         if self._selected_step_id:
             for meta in self._row_meta:
                 if meta.get("kind") == "step" and meta.get("step_id") == self._selected_step_id:
@@ -1016,13 +1186,15 @@ class StepTablePanel(QWidget):
 
         self.load_steps(self._workflow_id)
         self.steps_changed.emit()
+        QTimer.singleShot(0, lambda sid=step.id: self.select_step(sid))
 
     def _delete_step(self, step_id: int):
         """删除步骤"""
-        reply = msg_question(self, self._dark, "确认删除", "确定要删除这个步骤吗？")
+        reply = msg_question(self, self._dark, "确认删除", "确定要删除这个步骤吗？\n此操作不可撤销，相关未保存编辑会丢失。")
         if reply == QMessageBox.Yes:
             delete_step(step_id)
             self.load_steps(self._workflow_id)
+            self.step_deleted.emit(step_id)
             self.steps_changed.emit()
 
     def _copy_step(self, step_id: int):
@@ -1070,7 +1242,7 @@ class StepTablePanel(QWidget):
         self.steps_changed.emit()
 
     def _on_gate_changed(self, step_id: int, state: int):
-        """前置开关变化"""
+        """检查点开关变化"""
         is_gate = state == Qt.Checked
         if is_gate:
             update_step(step_id, is_gate=True)
@@ -1100,11 +1272,18 @@ class StepTablePanel(QWidget):
             self._selected_step_id = None
             return
 
+        meta = self._row_meta[row] if row < len(self._row_meta) else {}
+        if meta.get("kind") == "stage_header":
+            self._selected_step_id = None
+            self._set_stage_context(meta.get("stage_uid"))
+            return
+
         item = self.table.item(row, 0)
         if item:
             step_id = item.data(Qt.UserRole)
             if step_id:
                 self._selected_step_id = step_id
+                self._set_stage_context(meta.get("stage_uid"))
                 self.step_selected.emit(step_id)
             else:
                 self._selected_step_id = None
@@ -1115,6 +1294,11 @@ class StepTablePanel(QWidget):
         if row < 0:
             self._selected_step_id = None
             return
+        meta = self._row_meta[row] if row < len(self._row_meta) else {}
+        if meta.get("kind") == "stage_header":
+            self._selected_step_id = None
+            self._set_stage_context(meta.get("stage_uid"))
+            return
         item = self.table.item(row, 0)
         if not item:
             self._selected_step_id = None
@@ -1122,6 +1306,7 @@ class StepTablePanel(QWidget):
         step_id = item.data(Qt.UserRole)
         if step_id:
             self._selected_step_id = step_id
+            self._set_stage_context(meta.get("stage_uid"))
             self.step_selected.emit(step_id)
         else:
             self._selected_step_id = None
@@ -1165,7 +1350,7 @@ class StepTablePanel(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(get_menu_stylesheet(self._dark))
 
-        # 用途阶段：移动
+        # 执行阶段：移动
         current_stage_uid = ""
         try:
             if 0 <= row < len(self._row_meta):
@@ -1179,7 +1364,7 @@ class StepTablePanel(QWidget):
         if not can_edit:
             action_move_prev.setToolTip('需要先开启左侧"编辑"。')
         elif current_stage_index <= 0:
-            action_move_prev.setToolTip("已在第一用途阶段。")
+            action_move_prev.setToolTip("已在第一个阶段。")
         if current_stage_index > 0:
             prev_stage_uid = self._stages[current_stage_index - 1]["uid"]
             action_move_prev.triggered.connect(lambda: self._move_step_to_stage(step_id, prev_stage_uid))
@@ -1277,7 +1462,7 @@ class StepTablePanel(QWidget):
                 # 迁移向导：把该阶段的所有步骤移动到目标阶段后删除
                 other_stages = [s for s in self._stages if s.get("uid") != stage_uid]
                 if not other_stages:
-                    msg_information(self, self._dark, "无法删除", "至少需要保留一个用途阶段。")
+                    msg_information(self, self._dark, "无法删除", "至少需要保留一个执行阶段。")
                     return
                 names = [s.get("name", "阶段") for s in other_stages]
                 default_idx = 0
@@ -1398,7 +1583,7 @@ class StepTablePanel(QWidget):
                 session.commit()
                 return True
         except DependencyError as e:
-            msg_warning(self, self._dark, "操作无效", f"{e}\n\n建议：检查依赖是否指向未来阶段；或调整用途阶段顺序/归类后再试。")
+            msg_warning(self, self._dark, "操作无效", f"{e}\n\n建议：检查依赖是否指向未来阶段；或调整执行阶段顺序/归属后再试。")
             return False
         except WorkflowError as e:
             msg_warning(self, self._dark, "保存失败", str(e))
@@ -1455,12 +1640,12 @@ class StepTablePanel(QWidget):
                 session.commit()
             self.load_steps(self._workflow_id)
             self.steps_changed.emit()
-            self._notify_status("已调整用途阶段顺序。")
+            self._notify_status("已调整执行阶段顺序。")
         except DependencyError as e:
             msg_warning(
                 self, self._dark,
                 "无法调整阶段顺序",
-                f'{e}\n\n说明：调整用途阶段顺序会影响"禁止依赖未来阶段"的校验。\n建议：先调整步骤依赖或步骤归类后再试。',
+                f'{e}\n\n说明：调整执行阶段顺序会影响"禁止依赖未来阶段"的校验。\n建议：先调整步骤依赖或步骤归类后再试。',
             )
         except WorkflowError as e:
             msg_warning(self, self._dark, "保存失败", str(e))
@@ -1548,7 +1733,7 @@ class StepTablePanel(QWidget):
         if ok:
             self.steps_changed.emit()
             self.select_step(step_id)
-            self._notify_status("已移动到目标阶段。")
+            self._notify_status("已移动到目标执行阶段。")
 
     def _on_rows_dragged(self, from_row: int, to_row: int):
         """自定义拖拽：默认只改"用途阶段归类+顺序"，不改依赖"""

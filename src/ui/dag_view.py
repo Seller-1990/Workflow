@@ -144,7 +144,7 @@ class NodeCard(QFrame):
     def _refresh_type_label(self):
         parts = [self._type_label_text]
         if self._is_gate:
-            parts.append("Gate")
+            parts.append("检查点")
         if self._dep_count > 0:
             parts.append(f"{self._dep_count} 个依赖")
         self.type_label.setText(" · ".join(parts))
