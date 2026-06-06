@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """Webhook 管理对话框"""
 
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFormLayout,
-    QHeaderView, QMessageBox, QFrame
+    QHeaderView, QMessageBox, QFrame, QToolButton
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -121,8 +121,20 @@ class WebhookManagerDialog(QDialog):
         self.edit_url = QLineEdit()
         self.edit_url.setPlaceholderText("https://oapi.dingtalk.com/robot/send?access_token=...")
         self.edit_url.setFixedHeight(30)
+        self.edit_url.setEchoMode(QLineEdit.Password)
         self.edit_url.setToolTip("钉钉机器人的 Webhook 地址")
-        form_layout.addRow(_label("URL"), self.edit_url)
+        url_layout = QHBoxLayout()
+        url_layout.setContentsMargins(0, 0, 0, 0)
+        url_layout.setSpacing(6)
+        url_layout.addWidget(self.edit_url, stretch=1)
+        self.btn_toggle_url = QToolButton()
+        self.btn_toggle_url.setText("显示")
+        self.btn_toggle_url.setCheckable(True)
+        self.btn_toggle_url.setFixedHeight(30)
+        self.btn_toggle_url.setToolTip("显示或隐藏 Webhook URL")
+        self.btn_toggle_url.toggled.connect(self._toggle_url_visibility)
+        url_layout.addWidget(self.btn_toggle_url)
+        form_layout.addRow(_label("URL"), url_layout)
         
         self.edit_keyword = QLineEdit()
         self.edit_keyword.setPlaceholderText("钉钉安全设置中的关键字")
@@ -245,6 +257,17 @@ class WebhookManagerDialog(QDialog):
             QPushButton#primaryRect:hover {{
                 background: {colors['primary_hover']};
             }}
+            QToolButton {{
+                background: {colors['surface']};
+                border: 1px solid {colors['border']};
+                border-radius: 10px;
+                padding: 0px 10px;
+                color: {colors['text_primary']};
+                font-weight: 600;
+            }}
+            QToolButton:hover {{
+                background: {colors['hover']};
+            }}
         """
     
     def _load_webhooks(self):
@@ -293,18 +316,28 @@ class WebhookManagerDialog(QDialog):
         self._current_webhook_id = None
         self.edit_name.clear()
         self.edit_url.clear()
+        self.btn_toggle_url.setChecked(False)
         self.edit_keyword.clear()
         self.edit_desc.clear()
 
     def _validate_webhook_url(self, url: str) -> bool:
-        """验证 Webhook URL 格式"""
+        """验证钉钉机器人 Webhook URL 格式"""
         if not url.startswith("https://"):
             return False
         try:
             result = urlparse(url)
-            return all([result.scheme, result.netloc])
+            if result.scheme != "https" or result.netloc.lower() != "oapi.dingtalk.com":
+                return False
+            if result.path.rstrip("/") != "/robot/send":
+                return False
+            token_values = parse_qs(result.query).get("access_token", [])
+            return any(token.strip() for token in token_values)
         except Exception:
             return False
+
+    def _toggle_url_visibility(self, visible: bool) -> None:
+        self.edit_url.setEchoMode(QLineEdit.Normal if visible else QLineEdit.Password)
+        self.btn_toggle_url.setText("隐藏" if visible else "显示")
     
     def _on_add(self):
         """新增"""
@@ -354,7 +387,7 @@ class WebhookManagerDialog(QDialog):
             return
         
         if not self._validate_webhook_url(url):
-            msg_warning(self, self._dark, "提示", "Webhook URL 格式无效，必须以 https:// 开头且为有效的 URL")
+            msg_warning(self, self._dark, "提示", "Webhook URL 格式无效，请使用钉钉机器人 HTTPS URL")
             return
         
         if self._current_webhook_id:

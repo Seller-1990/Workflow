@@ -6,20 +6,18 @@ import traceback
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QHeaderView, QMenu, QMessageBox, QGroupBox,
-    QCheckBox, QComboBox, QAbstractItemView, QLabel, QInputDialog,
-    QToolButton, QStyle, QFrame, QSizePolicy
+    QPushButton, QHeaderView, QMenu, QMessageBox,
+    QAbstractItemView, QLabel, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, Slot, QRectF, QSize, QSettings, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPalette
+from PySide6.QtCore import Qt, Signal, Slot, QSettings, QTimer
+from PySide6.QtGui import QColor, QBrush
 
-from config import StepType, APP_NAME
+from config import APP_NAME
 from database import (
     get_steps_by_workflow,
     create_step,
     delete_step,
     update_step,
-    reorder_steps,
     get_workflow_uid_name_map,
     copy_step,
     list_stages,
@@ -30,12 +28,40 @@ from database import (
     get_workflow_by_id,
     get_session,
 )
+from exceptions import DependencyError, WorkflowError
+from stage_mutation_service import (
+    apply_orders_and_stage_updates as apply_stage_order_updates,
+    migrate_stage_steps as migrate_stage_steps_service,
+    move_stage_order as move_stage_order_service,
+    move_step_to_stage as move_step_to_stage_service,
+)
+from ui.step_table.view_model import (
+    build_prev_by_id,
+    build_row_meta,
+    build_stage_records,
+    build_stage_render_context,
+    build_single_script_uid_display_map,
+    ensure_default_stage_records,
+    sort_steps_by_stage,
+)
+from ui.step_table.stage_header import (
+    StageHeaderActions,
+    StageHeaderState,
+    render_stage_header_row,
+)
+from ui.step_table.row_cells import (
+    create_delete_action_widget,
+    create_dependency_item,
+    create_gate_widget,
+    create_order_item,
+    create_script_item,
+    create_type_item,
+)
 from ui.theme import (
     COLORS,
     CORNER_RADIUS,
     get_colors,
     get_status_tokens,
-    get_type_tokens,
     get_menu_stylesheet,
     msg_information,
     msg_warning,
@@ -475,19 +501,9 @@ class StepTablePanel(QWidget):
         self._stage_uid_to_index = {}
         if not self._single_script_mode:
             try:
-                stages = list_stages(workflow_id)
+                self._stages, self._stage_uid_to_index = build_stage_records(list_stages(workflow_id))
             except Exception:
-                stages = []
-            for i, st in enumerate(stages):
-                self._stages.append(
-                    {
-                        "uid": st.uid,
-                        "name": st.name,
-                        "order": int(st.order or 0),
-                        "color": getattr(st, "color", None),
-                    }
-                )
-                self._stage_uid_to_index[st.uid] = i
+                self._stages, self._stage_uid_to_index = [], {}
 
         stage_uids = {st["uid"] for st in self._stages}
         if self._single_script_mode:
@@ -521,30 +537,16 @@ class StepTablePanel(QWidget):
                 self.hint_label.setToolTip(traceback.format_exc())
                 self.hint_label.setVisible(True)
 
-        # 计算"展示顺序"：按用途阶段 order + step.order
-        def _purpose_stage_order(s):
-            return int(stage_map.get(getattr(s, "stage_uid", None), 0) or 0)
-
-        steps_sorted = list(sorted(steps, key=lambda s: (_purpose_stage_order(s), s.order)))
-        prev_by_id = {}
-        for i, s in enumerate(steps_sorted):
-            prev_by_id[s.id] = steps_sorted[i - 1] if i > 0 else None
+        steps_sorted = sort_steps_by_stage(steps, stage_map)
+        prev_by_id = build_prev_by_id(steps_sorted)
 
         # 构建视觉行模型（阶段标题条 + 该阶段步骤）
-        self._row_meta = []
         if self._single_script_mode:
-            for s in steps_sorted:
-                self._row_meta.append({"kind": "step", "step_id": s.id, "stage_uid": getattr(s, "stage_uid", None)})
+            self._row_meta = build_row_meta(steps_sorted, self._stages, single_script_mode=True)
         else:
             # 确保至少一个阶段（防御：极端情况下 list_stages 失败）
-            if not self._stages:
-                self._stages = [{"uid": "", "name": "默认阶段", "order": 0, "color": None}]
-                self._stage_uid_to_index = {"": 0}
-            for st in self._stages:
-                self._row_meta.append({"kind": "stage_header", "stage_uid": st["uid"]})
-                for s in steps_sorted:
-                    if getattr(s, "stage_uid", None) == st["uid"]:
-                        self._row_meta.append({"kind": "step", "step_id": s.id, "stage_uid": st["uid"]})
+            self._stages, self._stage_uid_to_index = ensure_default_stage_records(self._stages)
+            self._row_meta = build_row_meta(steps_sorted, self._stages, single_script_mode=False)
 
         self.table.setRowCount(len(self._row_meta))
         self._update_group_ranges()
@@ -562,17 +564,7 @@ class StepTablePanel(QWidget):
         step_by_id = {s.id: s for s in steps_sorted}
         if self._single_script_mode:
             # 依赖展示映射（单脚本模式下仍给出稳定编码，避免 tooltip/依赖列空白）
-            self._uid_display_map = {}
-            for i, s in enumerate(steps_sorted, start=1):
-                try:
-                    self._uid_display_map[s.uid] = {
-                        "code": f"S1-{i}",
-                        "stage_name": "默认阶段",
-                        "step_name": s.name,
-                        "step_id": s.id,
-                    }
-                except Exception:
-                    continue
+            self._uid_display_map = build_single_script_uid_display_map(steps_sorted)
             for row, meta in enumerate(self._row_meta):
                 step = step_by_id.get(meta["step_id"])
                 if not step:
@@ -580,33 +572,12 @@ class StepTablePanel(QWidget):
                 prev_step = prev_by_id.get(step.id)
                 self._set_row_data(row, step, prev_step, workflow_map, stage_idx=0)
         else:
-            stage_uid_to_steps = {}
-            for s in steps_sorted:
-                stage_uid_to_steps.setdefault(getattr(s, "stage_uid", None), []).append(s)
-
-            stage_display_index = {st["uid"]: i for i, st in enumerate(self._stages)}
-            # R3-#8: 阶段名映射 + 阶段内 step_id→within_idx 映射，O(1) 取值
-            stage_name_by_uid = {st["uid"]: st["name"] for st in self._stages}
-            within_idx_by_step: dict = {}
-            for st_uid, st_steps in stage_uid_to_steps.items():
-                for idx, s in enumerate(st_steps):
-                    within_idx_by_step[(st_uid, s.id)] = idx
-
-            # uid -> Sx-y(阶段名) 映射（用于依赖列/tooltip），需在渲染前一次性建立，避免顺序依赖
-            self._uid_display_map = {}
-            for st_uid, st_idx in stage_display_index.items():
-                st_name = stage_name_by_uid.get(st_uid, "")
-                st_steps = stage_uid_to_steps.get(st_uid, [])
-                for within, s in enumerate(st_steps, start=1):
-                    try:
-                        self._uid_display_map[s.uid] = {
-                            "code": f"S{st_idx + 1}-{within}",
-                            "stage_name": st_name,
-                            "step_name": s.name,
-                            "step_id": s.id,
-                        }
-                    except Exception:
-                        continue
+            render_context = build_stage_render_context(steps_sorted, self._stages)
+            stage_uid_to_steps = render_context["stage_uid_to_steps"]
+            stage_display_index = render_context["stage_display_index"]
+            stage_name_by_uid = render_context["stage_name_by_uid"]
+            within_idx_by_step = render_context["within_idx_by_step"]
+            self._uid_display_map = render_context["uid_display_map"]
 
             for row, meta in enumerate(self._row_meta):
                 if meta["kind"] == "stage_header":
@@ -770,134 +741,33 @@ class StepTablePanel(QWidget):
     ):
         """渲染用途阶段标题条（iOS grouped list 风格）"""
         colors = get_colors(self._dark)
-        # 清理旧内容
-        for col in range(self.table.columnCount()):
-            try:
-                self.table.takeItem(row, col)
-            except Exception:
-                pass
-            try:
-                self.table.setCellWidget(row, col, None)
-            except Exception:
-                pass
-
-        self.table.setSpan(row, 0, 1, self.table.columnCount())
-        # 标题条行高（按定稿：40）
-        self.table.setRowHeight(row, 40)
-
-        header_widget = QWidget()
-        header_widget.setObjectName("stageHeader")
-        header_layout = QHBoxLayout(header_widget)
-        header_layout.setContentsMargins(10, 4, 10, 4)
-        header_layout.setSpacing(8)
-        header_layout.setAlignment(Qt.AlignVCenter)
-
-        # 左侧强调条：增强"这是阶段标题"的辨识度
-        accent = QFrame()
-        accent.setFixedSize(3, 18)
-        accent.setStyleSheet(f"background:{colors['primary']}; border-radius:2px;")
-        header_layout.addWidget(accent)
-
-        is_collapsed = self._stage_collapsed.get(stage_uid, False)
-        collapse_btn = QToolButton()
-        collapse_btn.setObjectName("stagePillBtn")
-        collapse_btn.setAutoRaise(True)
-        collapse_btn.setText("▶" if is_collapsed else "▼")
-        collapse_btn.setFixedSize(24, 24)
-        collapse_btn.setToolTip("展开阶段" if is_collapsed else "折叠阶段")
-        collapse_btn.setAccessibleName("展开阶段" if is_collapsed else "折叠阶段")
-        collapse_btn.clicked.connect(lambda _=False, su=stage_uid: self._toggle_stage_collapse(su))
-        header_layout.addWidget(collapse_btn)
-
-        title = QLabel(f"S{stage_idx + 1}  {stage_name}  ·  {step_count} 步")
-        title.setStyleSheet(f"color:{colors['text_primary']}; font-size:13px; font-weight:600;")
-        title.setMinimumWidth(0)
-        title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        title.setToolTip(f"S{stage_idx + 1} {stage_name}\n点击阶段可作为新增步骤的默认归属")
-        header_layout.addWidget(title, stretch=1)
-        header_layout.addStretch()
-
-        # 阶段顺序调整（A 方案：上移/下移按钮）
         can_edit = self._edit_enabled and (not self._single_script_mode)
         is_first = stage_idx <= 0
         is_last = stage_idx >= max(0, len(self._stages) - 1)
-
-        pill = QFrame()
-        pill.setObjectName("stagePill")
-        pill_layout = QHBoxLayout(pill)
-        pill_layout.setContentsMargins(6, 2, 6, 2)
-        pill_layout.setSpacing(4)
-
-        def _mk_btn(icon: QStyle.StandardPixmap, tip: str, enabled: bool, on_click):
-            btn = QToolButton()
-            btn.setObjectName("stagePillBtn")
-            btn.setAutoRaise(True)
-            # 行高 40 + header margins 下，32px 按钮容易被裁切（尤其 125% DPI）
-            btn.setFixedSize(28, 28)
-            btn.setIconSize(QSize(16, 16))
-            btn.setIcon(self.style().standardIcon(icon))
-            if (not can_edit) and (not enabled):
-                btn.setToolTip(f"{tip}\n（需要先开启编辑）")
-            else:
-                btn.setToolTip(tip)
-            btn.setAccessibleName(tip)
-            btn.setEnabled(enabled)
-            btn.clicked.connect(on_click)
-            return btn
-
-        pill_layout.addWidget(
-            _mk_btn(
-                QStyle.StandardPixmap.SP_ArrowUp,
-                "上移阶段",
-                can_edit and (not is_first),
-                lambda: self._move_stage_order(stage_uid, -1),
-            )
+        render_stage_header_row(
+            table=self.table,
+            style=self.style(),
+            state=StageHeaderState(
+                row=row,
+                column_count=self.table.columnCount(),
+                stage_uid=stage_uid,
+                stage_idx=stage_idx,
+                stage_name=stage_name,
+                step_count=step_count,
+                selected=stage_uid == self._selected_stage_uid,
+                can_edit=can_edit,
+                is_first=is_first,
+                is_last=is_last,
+                is_collapsed=self._stage_collapsed.get(stage_uid, False),
+                colors=colors,
+            ),
+            actions=StageHeaderActions(
+                toggle_collapse=self._toggle_stage_collapse,
+                move_stage_order=self._move_stage_order,
+                insert_stage_after=self._insert_stage_after,
+                show_stage_menu=self._show_stage_menu,
+            ),
         )
-        pill_layout.addWidget(
-            _mk_btn(
-                QStyle.StandardPixmap.SP_ArrowDown,
-                "下移阶段",
-                can_edit and (not is_last),
-                lambda: self._move_stage_order(stage_uid, +1),
-            )
-        )
-        pill_layout.addWidget(
-            _mk_btn(
-                QStyle.StandardPixmap.SP_FileDialogNewFolder,
-                "在此阶段后插入新阶段",
-                can_edit,
-                lambda: self._insert_stage_after(stage_uid),
-            )
-        )
-        pill_layout.addWidget(
-            _mk_btn(
-                QStyle.StandardPixmap.SP_TitleBarMenuButton,
-                "阶段操作",
-                can_edit,
-                lambda: self._show_stage_menu(stage_uid, pill.mapToGlobal(pill.rect().bottomLeft())),
-            )
-        )
-
-        header_layout.addWidget(pill)
-
-        selected = stage_uid == self._selected_stage_uid
-        header_widget.setCursor(Qt.PointingHandCursor)
-        header_widget.setStyleSheet(
-            f"""
-            QWidget#stageHeader {{
-                background: {colors['selected_bg'] if selected else 'transparent'};
-                border: 1px solid {colors['primary'] if selected else 'transparent'};
-                border-radius: {CORNER_RADIUS['large']}px;
-            }}
-            """
-        )
-        header_widget.setToolTip("点击整行可选中阶段，新增步骤将默认进入该阶段")
-
-        # 使用一个空 item 作为占位（避免 selection/drag 误触发）
-        item = QTableWidgetItem("")
-        item.setFlags(Qt.ItemIsEnabled)
-        self.table.setItem(row, 0, item)
-        self.table.setCellWidget(row, 0, header_widget)
 
     def _on_cell_pressed(self, row: int, col: int):
         if row < 0 or row >= len(self._row_meta):
@@ -935,129 +805,33 @@ class StepTablePanel(QWidget):
         batch_idx: int = 0,
     ):
         """设置行数据"""
-        # 顺序：执行阶段序号 + 阶段内序号 + 执行批次(Bx)
-        order_text = f"S{stage_idx + 1}-{within_idx + 1}"
-        if batch_idx is not None:
-            order_text += f"  B{int(batch_idx) + 1}"
-        order_item = QTableWidgetItem(order_text)
-        order_item.setData(Qt.UserRole, step.id)
-        order_item.setTextAlignment(Qt.AlignCenter)
-        stage_name = ""
-        try:
-            stage_uid = getattr(step, "stage_uid", None)
-            stage_name = next((s["name"] for s in self._stages if s["uid"] == stage_uid), "")
-        except Exception:
-            stage_name = ""
-        batch_tip = f"执行批次 B{int(batch_idx) + 1}" if batch_idx is not None else "执行批次未知"
-        order_item.setToolTip(f"执行阶段 S{stage_idx + 1} {stage_name}\n{batch_tip}")
-        self.table.setItem(row, 0, order_item)
-
-        # 类型（带类型特有颜色）
-        type_name = StepType.display_name(step.step_type)
-        type_item = QTableWidgetItem(type_name)
-        type_tokens = get_type_tokens(self._dark)
-        token = type_tokens.get(step.step_type)
-        if token:
-            type_item.setBackground(QColor(token["bg"]))
-            type_item.setForeground(QColor(token["fg"]))
-        type_item.setTextAlignment(Qt.AlignCenter)
-        self.table.setItem(row, 1, type_item)
-
-        # 名称（含阶段前缀标签）
-        name_item = QTableWidgetItem(step.name)
-        self.table.setItem(row, 2, name_item)
-
-        # 脚本
-        script_text = step.script_path or ""
-        if step.step_type == "sub_workflow" and workflow_map:
-            script_text = workflow_map.get(step.script_path, step.script_path or "")
-        script_item = QTableWidgetItem(script_text)
-        script_item.setToolTip(script_text)
-        self.table.setItem(row, 3, script_item)
-
-        # 依赖：显示 Sx-y 编码（不在表格内直接编辑，避免拥挤；编辑在步骤编辑器中完成）
-        dep_displays = []
-        dep_tool_lines = []
-        try:
-            for uid in (step.get_depends_on() or []):
-                info = self._uid_display_map.get(uid)
-                if not info:
-                    continue
-                code = info.get("code") or ""
-                stn = info.get("stage_name") or ""
-                display = f"{code}({stn})" if (code and stn) else code
-                if display:
-                    dep_displays.append(display)
-                    dep_tool_lines.append(f"{display}  ·  {info.get('step_name') or ''}".rstrip())
-        except Exception:
-            dep_displays = []
-            dep_tool_lines = []
-        dep_text = ", ".join(dep_displays) if dep_displays else ""
-        dep_item = QTableWidgetItem(dep_text)
-        dep_item.setTextAlignment(Qt.AlignCenter)
-        c = get_colors(self._dark)
-        dep_item.setForeground(QColor(c["primary"]) if dep_text else QColor(c["text_tertiary"]))
-        if dep_tool_lines:
-            dep_item.setToolTip("上游依赖：\n" + "\n".join(dep_tool_lines))
-        else:
-            dep_item.setToolTip("（无显式上游依赖）")
-        self.table.setItem(row, 4, dep_item)
-
-        # 检查点（开关）
-        gate_widget = QWidget()
-        gate_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        gate_layout = QHBoxLayout(gate_widget)
-        gate_layout.setContentsMargins(0, 0, 0, 0)
-        gate_layout.setSpacing(0)
-        gate_check = QCheckBox()
-        gate_check.setChecked(step.is_gate)
-        gate_check.setToolTip("检查点：启用后会让本阶段的普通步骤等待它先完成。")
-        gate_check.setEnabled(self._edit_enabled and (not self._single_script_mode))
-        # 使用默认参数捕获当前值，避免闭包问题
-        def _make_gate_handler(r, sid):
-            return lambda state: self._on_gate_changed_with_select(r, sid, state)
-        gate_check.stateChanged.connect(_make_gate_handler(row, step.id))
-        gate_layout.addStretch(1)
-        gate_layout.addWidget(gate_check)
-        gate_layout.addStretch(1)
-        self.table.setCellWidget(row, 5, gate_widget)
-
-        # 操作（减法：去掉行内 ↑↓，使用拖拽排序）
         can_edit = self._edit_enabled and (not self._single_script_mode)
-        action_widget = QWidget()
-        action_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        action_layout = QHBoxLayout(action_widget)
-        action_layout.setContentsMargins(0, 0, 0, 0)
-        action_layout.setSpacing(0)
-
-        btn_delete = QToolButton()
-        btn_delete.setObjectName("tableDangerIcon")
-        btn_delete.setAutoRaise(True)
-        btn_delete.setText("")
-        btn_delete.setFixedSize(32, 32)
-        btn_delete.setIconSize(QSize(16, 16))
-        # 图标：优先使用垃圾桶，若不可用则降级为关闭图标
-        icon = self.style().standardIcon(getattr(QStyle.StandardPixmap, "SP_TrashIcon", QStyle.StandardPixmap.SP_DialogCloseButton))
-        btn_delete.setIcon(icon)
-        # 确保图标在深色模式下可见：用 danger 色着色
-        row_colors = get_colors(self._dark)
-        danger_color = row_colors["danger"]
-        pal = btn_delete.palette()
-        pal.setColor(QPalette.ButtonText, QColor(danger_color))
-        pal.setColor(QPalette.Text, QColor(danger_color))
-        btn_delete.setPalette(pal)
-        btn_delete.setToolTip("删除步骤" if can_edit else "删除步骤（需要先开启编辑）")
-        btn_delete.setAccessibleName("删除步骤")
-        btn_delete.setEnabled(can_edit)
-        # 使用工厂函数避免闭包变量捕获问题
-        def _make_delete_handler(r, sid):
-            return lambda _: self._delete_step_with_select(r, sid)
-        btn_delete.clicked.connect(_make_delete_handler(row, step.id))
-        action_layout.addStretch(1)
-        action_layout.addWidget(btn_delete)
-        action_layout.addStretch(1)
-
-        self.table.setCellWidget(row, 6, action_widget)
+        self.table.setItem(row, 0, create_order_item(step, self._stages, stage_idx, within_idx, batch_idx))
+        self.table.setItem(row, 1, create_type_item(step.step_type, self._dark))
+        self.table.setItem(row, 2, QTableWidgetItem(step.name))
+        self.table.setItem(row, 3, create_script_item(step, workflow_map))
+        self.table.setItem(row, 4, create_dependency_item(step, self._uid_display_map, get_colors(self._dark)))
+        self.table.setCellWidget(
+            row,
+            5,
+            create_gate_widget(
+                step,
+                enabled=can_edit,
+                on_state_changed=lambda state, r=row, sid=step.id: self._on_gate_changed_with_select(
+                    r, sid, state
+                ),
+            ),
+        )
+        self.table.setCellWidget(
+            row,
+            6,
+            create_delete_action_widget(
+                style=self.style(),
+                dark=self._dark,
+                enabled=can_edit,
+                on_delete=lambda _=False, r=row, sid=step.id: self._delete_step_with_select(r, sid),
+            ),
+        )
 
     def clear(self):
         """清空表格"""
@@ -1231,11 +1005,15 @@ class StepTablePanel(QWidget):
         step_id1 = item1.data(Qt.UserRole)
         step_id2 = item2.data(Qt.UserRole)
 
-        # 交换顺序
-        reorder_steps(self._workflow_id, {
-            step_id1: row2,
-            step_id2: row1
-        })
+        step_ids = self._get_step_ids_in_visual_order()
+        try:
+            idx1 = step_ids.index(step_id1)
+            idx2 = step_ids.index(step_id2)
+        except ValueError:
+            return
+        step_ids[idx1], step_ids[idx2] = step_ids[idx2], step_ids[idx1]
+        if not self._apply_orders_and_stage_updates({}, step_ids):
+            return
 
         self.load_steps(self._workflow_id)
         self.table.setCurrentCell(row2, 0)
@@ -1498,44 +1276,30 @@ class StepTablePanel(QWidget):
 
         menu.exec_(global_pos)
 
+    def _run_stage_mutation(self, action, dependency_title: str, dependency_detail: str, unknown_message: str) -> bool:
+        try:
+            return bool(action())
+        except DependencyError as e:
+            detail = f"{e}\n\n{dependency_detail}" if dependency_detail else str(e)
+            msg_warning(self, self._dark, dependency_title, detail)
+            return False
+        except WorkflowError as e:
+            msg_warning(self, self._dark, "保存失败", str(e))
+            return False
+        except Exception as e:
+            msg_critical(self, self._dark, "保存失败", f"{unknown_message}：{e}")
+            return False
+
     def _migrate_stage_steps(self, from_stage_uid: str, to_stage_uid: str) -> bool:
         """把某用途阶段的所有步骤迁移到目标阶段（带预校验与回滚）"""
         if not self._workflow_id or self._single_script_mode:
             return False
-        if from_stage_uid == to_stage_uid:
-            return True
-
-        steps = get_steps_by_workflow(self._workflow_id)
-        stage_map = get_stage_order_map(self._workflow_id)
-        steps_sorted = sorted(
-            steps,
-            key=lambda s: (int(stage_map.get(getattr(s, "stage_uid", None), 0) or 0), s.order),
+        ok = self._run_stage_mutation(
+            lambda: migrate_stage_steps_service(self._workflow_id, from_stage_uid, to_stage_uid),
+            "操作无效",
+            "建议：检查依赖是否指向未来阶段；或调整执行阶段顺序/归属后再试。",
+            "迁移阶段内步骤时发生未知错误",
         )
-        moving = [s for s in steps_sorted if getattr(s, "stage_uid", None) == from_stage_uid]
-        if not moving:
-            return True
-
-        keep_ids = [s.id for s in steps_sorted if getattr(s, "stage_uid", None) != from_stage_uid]
-        moving_ids = [s.id for s in moving]
-
-        # 插入到目标阶段末尾
-        insert_at = 0
-        for i, s in enumerate(steps_sorted):
-            if getattr(s, "stage_uid", None) == to_stage_uid:
-                # 注意：steps_sorted 含 moving，故先基于 keep_ids 计算插入点
-                try:
-                    sid = s.id
-                    if sid in keep_ids:
-                        insert_at = keep_ids.index(sid) + 1
-                except Exception:
-                    pass
-        insert_at = max(0, min(insert_at, len(keep_ids)))
-        new_order = keep_ids[:insert_at] + moving_ids + keep_ids[insert_at:]
-
-        # 多步 stage_uid 覆盖
-        overrides = {sid: to_stage_uid for sid in moving_ids}
-
-        ok = self._apply_orders_and_stage_updates(overrides, new_order)
         if ok:
             self.load_steps(self._workflow_id)
             self.steps_changed.emit()
@@ -1544,53 +1308,12 @@ class StepTablePanel(QWidget):
 
     def _apply_orders_and_stage_updates(self, stage_overrides: dict[int, str], step_ids_in_order: list[int]) -> bool:
         """通用写库：全量 order + 多步 stage_uid 覆盖（带预校验与回滚）"""
-        from models import Workflow as WorkflowModel, WorkflowStage as StageModel, Step as StepModel
-        from engine import WorkflowEngine
-        from exceptions import DependencyError, WorkflowError
-
-        if not self._workflow_id:
-            return False
-
-        try:
-            with get_session() as session:
-                wf = session.query(WorkflowModel).filter(WorkflowModel.id == self._workflow_id).first()
-                if not wf:
-                    raise WorkflowError("工作流不存在")
-
-                steps = session.query(StepModel).filter(StepModel.workflow_id == self._workflow_id).all()
-                steps_by_id = {s.id: s for s in steps}
-
-                for idx, sid in enumerate(step_ids_in_order):
-                    st = steps_by_id.get(sid)
-                    if st:
-                        st.order = idx
-                for sid, suid in (stage_overrides or {}).items():
-                    st = steps_by_id.get(sid)
-                    if st:
-                        st.stage_uid = suid
-
-                session.flush()
-
-                stages = (
-                    session.query(StageModel)
-                    .filter(StageModel.workflow_id == self._workflow_id)
-                    .order_by(StageModel.order.asc())
-                    .all()
-                )
-                stage_map = {s.uid: int(s.order or 0) for s in stages}
-                WorkflowEngine.compute_batches(wf, steps, stage_map)
-
-                session.commit()
-                return True
-        except DependencyError as e:
-            msg_warning(self, self._dark, "操作无效", f"{e}\n\n建议：检查依赖是否指向未来阶段；或调整执行阶段顺序/归属后再试。")
-            return False
-        except WorkflowError as e:
-            msg_warning(self, self._dark, "保存失败", str(e))
-            return False
-        except Exception as e:
-            msg_critical(self, self._dark, "保存失败", f"保存阶段/顺序时发生未知错误：{e}")
-            return False
+        return self._run_stage_mutation(
+            lambda: apply_stage_order_updates(self._workflow_id, stage_overrides, step_ids_in_order),
+            "操作无效",
+            "建议：检查依赖是否指向未来阶段；或调整执行阶段顺序/归属后再试。",
+            "保存阶段/顺序时发生未知错误",
+        )
 
     def _move_stage_order(self, stage_uid: str, delta: int):
         """调整用途阶段顺序（带预校验与回滚）"""
@@ -1602,55 +1325,16 @@ class StepTablePanel(QWidget):
         if delta not in (-1, 1):
             return
 
-        from models import Workflow as WorkflowModel, WorkflowStage as StageModel, Step as StepModel
-        from engine import WorkflowEngine
-        from exceptions import DependencyError, WorkflowError
-
-        try:
-            with get_session() as session:
-                wf = session.query(WorkflowModel).filter(WorkflowModel.id == self._workflow_id).first()
-                if not wf:
-                    raise WorkflowError("工作流不存在")
-
-                stage = session.query(StageModel).filter(StageModel.uid == stage_uid).first()
-                if not stage:
-                    return
-
-                stages = (
-                    session.query(StageModel)
-                    .filter(StageModel.workflow_id == self._workflow_id)
-                    .order_by(StageModel.order.asc(), StageModel.created_at.asc())
-                    .all()
-                )
-                idx = next((i for i, s in enumerate(stages) if s.uid == stage_uid), None)
-                if idx is None:
-                    return
-                target_idx = idx + delta
-                if target_idx < 0 or target_idx >= len(stages):
-                    return
-                other = stages[target_idx]
-
-                stage.order, other.order = int(other.order or 0), int(stage.order or 0)
-                session.flush()
-
-                steps = session.query(StepModel).filter(StepModel.workflow_id == self._workflow_id).all()
-                stage_map = {s.uid: int(s.order or 0) for s in stages}
-                WorkflowEngine.compute_batches(wf, steps, stage_map)
-
-                session.commit()
+        ok = self._run_stage_mutation(
+            lambda: move_stage_order_service(self._workflow_id, stage_uid, delta),
+            "无法调整阶段顺序",
+            '说明：调整执行阶段顺序会影响"禁止依赖未来阶段"的校验。\n建议：先调整步骤依赖或步骤归类后再试。',
+            "调整阶段顺序时发生未知错误",
+        )
+        if ok:
             self.load_steps(self._workflow_id)
             self.steps_changed.emit()
             self._notify_status("已调整执行阶段顺序。")
-        except DependencyError as e:
-            msg_warning(
-                self, self._dark,
-                "无法调整阶段顺序",
-                f'{e}\n\n说明：调整执行阶段顺序会影响"禁止依赖未来阶段"的校验。\n建议：先调整步骤依赖或步骤归类后再试。',
-            )
-        except WorkflowError as e:
-            msg_warning(self, self._dark, "保存失败", str(e))
-        except Exception as e:
-            msg_critical(self, self._dark, "保存失败", f"调整阶段顺序时发生未知错误：{e}")
 
     def _insert_stage_before(self, stage_uid: str):
         """在指定阶段之前插入一个新阶段"""
@@ -1711,24 +1395,12 @@ class StepTablePanel(QWidget):
             self._notify_status('需要先开启左侧"编辑"开关。')
             return
 
-        # 当前展示顺序
-        steps = get_steps_by_workflow(self._workflow_id)
-        stage_map = get_stage_order_map(self._workflow_id)
-        steps_sorted = sorted(steps, key=lambda s: (int(stage_map.get(getattr(s, "stage_uid", None), 0) or 0), s.order))
-        step_ids = [s.id for s in steps_sorted]
-        if step_id not in step_ids:
-            return
-        step_ids.remove(step_id)
-
-        # 插入到目标阶段末尾
-        insert_at = 0
-        for i, s in enumerate(steps_sorted):
-            if getattr(s, "stage_uid", None) == target_stage_uid:
-                insert_at = i + 1
-        insert_at = max(0, min(insert_at, len(step_ids)))
-        step_ids.insert(insert_at, step_id)
-
-        ok = self._apply_orders_and_stage_update(step_id, target_stage_uid, step_ids)
+        ok = self._run_stage_mutation(
+            lambda: move_step_to_stage_service(self._workflow_id, step_id, target_stage_uid),
+            "操作无效",
+            "建议：检查依赖是否指向未来阶段；或调整执行阶段顺序/归属后再试。",
+            "移动步骤阶段时发生未知错误",
+        )
         self.load_steps(self._workflow_id)
         if ok:
             self.steps_changed.emit()
@@ -1807,12 +1479,7 @@ class StepTablePanel(QWidget):
             to_idx = len(step_ids)
         step_ids.insert(to_idx, moved_step_id)
 
-        try:
-            step_orders = {sid: idx for idx, sid in enumerate(step_ids)}
-            reorder_steps(self._workflow_id, step_orders)
-            update_step(moved_step_id, stage_uid=target_stage_uid)
-        except Exception as e:
-            msg_critical(self, self._dark, "保存失败", f"拖拽排序时发生错误：{e}")
+        if not self._apply_orders_and_stage_update(moved_step_id, target_stage_uid, step_ids):
             return
 
         QTimer.singleShot(0, lambda: self._refresh_after_drag(moved_step_id))

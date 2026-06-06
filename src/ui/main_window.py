@@ -49,6 +49,17 @@ from ui.webhook_manager import WebhookManagerDialog
 from ui.error_summary import ErrorSummaryDialog
 from ui.ios_switch import IosSwitch
 from ui.workbench_board import WorkbenchBoardPanel
+from ui.json_actions import export_json_action, import_json_action
+from ui.main_window_theme import (
+    build_shell_theme_tokens,
+    center_panel_stylesheet,
+    left_panel_stylesheet,
+    mode_tabs_stylesheet,
+    right_panel_stylesheet,
+)
+from ui.panel_layout import expanded_splitter_sizes, panel_toggle_text, run_splitter_sizes
+from ui.run_actions import run_engine_mode
+from ui.run_state import compute_run_lock_state
 
 
 class MainWindow(QMainWindow):
@@ -113,91 +124,7 @@ class MainWindow(QMainWindow):
         self.main_splitter.setChildrenCollapsible(False)
         main_layout.addWidget(self.main_splitter)
 
-        # ===== 左侧：工作流与资产 =====
-        self.left_panel = QFrame()
-        self.left_panel.setObjectName("LeftPanel")
-        self.left_panel.setMinimumWidth(240)
-        self.left_panel.setMaximumWidth(320)
-        left_layout = QVBoxLayout(self.left_panel)
-        left_layout.setContentsMargins(14, 18, 14, 14)
-        left_layout.setSpacing(14)
-
-        brand_row = QWidget()
-        brand_layout = QHBoxLayout(brand_row)
-        brand_layout.setContentsMargins(2, 0, 2, 0)
-        brand_layout.setSpacing(10)
-        self.lbl_brand_icon = QLabel()
-        self.lbl_brand_icon.setObjectName("BrandMark")
-        self.lbl_brand_icon.setFixedSize(36, 36)
-        if ICON_PATH.exists():
-            pix = QIcon(str(ICON_PATH)).pixmap(36, 36)
-            self.lbl_brand_icon.setPixmap(pix)
-        brand_layout.addWidget(self.lbl_brand_icon)
-        brand_text = QVBoxLayout()
-        brand_text.setContentsMargins(0, 0, 0, 0)
-        brand_text.setSpacing(2)
-        self.lbl_brand_name = QLabel("Workflow")
-        self.lbl_brand_name.setObjectName("BrandName")
-        brand_text.addWidget(self.lbl_brand_name)
-        self.lbl_brand_subtitle = QLabel("本地自动化工作台")
-        self.lbl_brand_subtitle.setObjectName("BrandSubtitle")
-        brand_text.addWidget(self.lbl_brand_subtitle)
-        brand_layout.addLayout(brand_text, stretch=1)
-        left_layout.addWidget(brand_row)
-
-        self.workflow_list = WorkflowListPanel()
-        left_layout.addWidget(self.workflow_list, stretch=1)
-
-        asset_label = QLabel("资产")
-        asset_label.setObjectName("SidebarLabel")
-        left_layout.addWidget(asset_label)
-
-        self.btn_asset_import = QPushButton("导入 JSON")
-        self.btn_asset_import.setObjectName("SidebarNav")
-        self.btn_asset_import.setToolTip("导入工作流 JSON")
-        self.btn_asset_import.setAccessibleName("导入 JSON")
-        left_layout.addWidget(self.btn_asset_import)
-
-        self.btn_asset_export = QPushButton("导出 JSON")
-        self.btn_asset_export.setObjectName("SidebarNav")
-        self.btn_asset_export.setToolTip("导出当前工作流为 JSON")
-        self.btn_asset_export.setAccessibleName("导出 JSON")
-        left_layout.addWidget(self.btn_asset_export)
-
-        self.btn_asset_webhook = QPushButton("Webhook")
-        self.btn_asset_webhook.setObjectName("SidebarNav")
-        self.btn_asset_webhook.setToolTip("配置运行通知 Webhook")
-        self.btn_asset_webhook.setAccessibleName("Webhook 管理")
-        left_layout.addWidget(self.btn_asset_webhook)
-
-        edit_bar = QWidget()
-        edit_bar.setObjectName("foldBar")
-        edit_bar_layout = QHBoxLayout(edit_bar)
-        edit_bar_layout.setContentsMargins(4, 0, 4, 0)
-        edit_bar_layout.setSpacing(10)
-        edit_bar_layout.addWidget(QLabel("编辑模式"))
-        edit_bar_layout.addStretch()
-
-        self.check_edit_mode = IosSwitch()
-        self.check_edit_mode.setChecked(False)
-        self.check_edit_mode.toggled.connect(self._set_edit_mode)
-        self.check_edit_mode.setToolTip("开启后可以编辑工作流、阶段和步骤")
-        edit_bar_layout.addWidget(self.check_edit_mode)
-
-        self.btn_left_save = QPushButton("保存")
-        self.btn_left_save.setObjectName("primarySmall")
-        self.btn_left_save.setFixedSize(78, 26)
-        self.btn_left_save.clicked.connect(self._action_save)
-        self.btn_left_save.setToolTip("保存当前工作流和步骤修改")
-        edit_bar_layout.addWidget(self.btn_left_save)
-        left_layout.addWidget(edit_bar)
-
-        # 保留 RunControlPanel 作为运行信号与快捷键兼容层；新 UI 的入口在顶部命令栏。
-        self.run_control = RunControlPanel()
-        self.run_control.setVisible(False)
-        left_layout.addWidget(self.run_control)
-
-        self.main_splitter.addWidget(self.left_panel)
+        self.main_splitter.addWidget(self._create_left_panel())
 
         # ===== 中间：工作台 =====
         self.center_container = QFrame()
@@ -208,179 +135,21 @@ class MainWindow(QMainWindow):
         center_layout.setSizeConstraint(QLayout.SetMinimumSize)
         self.center_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        command_bar = QWidget()
-        command_bar.setObjectName("CommandBar")
-        command_layout = QHBoxLayout(command_bar)
-        command_layout.setContentsMargins(0, 0, 0, 0)
-        command_layout.setSpacing(20)
-
-        title_block = QVBoxLayout()
-        title_block.setContentsMargins(0, 0, 0, 0)
-        title_block.setSpacing(4)
-        self.lbl_workflow_eyebrow = QLabel("当前工作流")
-        self.lbl_workflow_eyebrow.setObjectName("Eyebrow")
-        title_block.addWidget(self.lbl_workflow_eyebrow)
-        self.lbl_workflow_title = QLabel("请选择工作流")
-        self.lbl_workflow_title.setObjectName("WorkflowTitle")
-        title_block.addWidget(self.lbl_workflow_title)
-        self.lbl_workflow_meta = QLabel("0 阶段 · 0 步 · 未运行")
-        self.lbl_workflow_meta.setObjectName("WorkflowMeta")
-        title_block.addWidget(self.lbl_workflow_meta)
-        command_layout.addLayout(title_block, stretch=1)
-
-        run_cluster = QWidget()
-        run_cluster.setObjectName("RunCluster")
-        run_layout = QHBoxLayout(run_cluster)
-        run_layout.setContentsMargins(0, 0, 0, 0)
-        run_layout.setSpacing(8)
-        self.lbl_run_state = QLabel("● 就绪")
-        self.lbl_run_state.setObjectName("RunStateChip")
-        self.lbl_run_state.setToolTip("当前运行状态")
-        run_layout.addWidget(self.lbl_run_state)
-        self.btn_header_run = QPushButton("▶ 运行全流程")
-        self.btn_header_run.setObjectName("PrimaryAction")
-        self.btn_header_run.setToolTip("运行当前工作流的全流程（F5）")
-        self.btn_header_run.setAccessibleName("运行全流程")
-        self.btn_header_run.clicked.connect(lambda: self._on_run_requested("full", None))
-        run_layout.addWidget(self.btn_header_run)
-        self.btn_header_stop = QToolButton()
-        self.btn_header_stop.setObjectName("DangerIconButton")
-        self.btn_header_stop.setText("■")
-        self.btn_header_stop.setToolTip("停止当前运行（Shift+F5）")
-        self.btn_header_stop.setAccessibleName("停止运行")
-        self.btn_header_stop.clicked.connect(self._stop_workflow)
-        self.btn_header_stop.setEnabled(False)
-        run_layout.addWidget(self.btn_header_stop)
-        command_layout.addWidget(run_cluster)
-        center_layout.addWidget(command_bar)
+        center_layout.addWidget(self._create_command_bar())
 
         self.mode_tabs = QTabWidget()
         self.mode_tabs.setObjectName("ModeTabs")
         self.mode_tabs.setDocumentMode(True)
 
-        plan_page = QWidget()
-        plan_layout = QVBoxLayout(plan_page)
-        plan_layout.setContentsMargins(0, 0, 0, 0)
-        plan_layout.setSpacing(12)
+        self._add_plan_tab()
 
-        plan_switch = QWidget()
-        switch_layout = QHBoxLayout(plan_switch)
-        switch_layout.setContentsMargins(0, 0, 0, 0)
-        switch_layout.setSpacing(8)
-        self.btn_view_board = QPushButton("阶段")
-        self.btn_view_board.setObjectName("ViewSwitchActive")
-        self.btn_view_board.setToolTip("阶段泳道编排视图")
-        self.btn_view_board.setAccessibleName("阶段视图")
-        self.btn_view_dag = QPushButton("批次")
-        self.btn_view_dag.setObjectName("ViewSwitch")
-        self.btn_view_dag.setToolTip("查看自动计算的批次与依赖图")
-        self.btn_view_dag.setAccessibleName("批次视图")
-        self.btn_view_table = QPushButton("列表")
-        self.btn_view_table.setObjectName("ViewSwitch")
-        self.btn_view_table.setToolTip("使用表格查看和批量调整步骤")
-        self.btn_view_table.setAccessibleName("列表视图")
-        self._view_buttons = [(self.btn_view_board, 0), (self.btn_view_table, 2)]
-        switch_layout.addWidget(self.btn_view_board)
-        switch_layout.addWidget(self.btn_view_table)
-        switch_layout.addStretch(1)
-        plan_layout.addWidget(plan_switch)
-
-        self.plan_stack = QStackedWidget()
-        self.plan_stack.setObjectName("PlanStack")
-        self.workbench_board = WorkbenchBoardPanel()
-        self.plan_stack.addWidget(self.workbench_board)
-
-        self.dag_view = DAGViewPanel()
-        self.dag_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.plan_stack.addWidget(self.dag_view)
-
-        self.step_table = StepTablePanel()
-        self.step_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.plan_stack.addWidget(self.step_table)
-        plan_layout.addWidget(self.plan_stack, stretch=1)
-
-        self.plan_scroll = QScrollArea()
-        self.plan_scroll.setWidgetResizable(True)
-        self.plan_scroll.setFrameShape(QFrame.NoFrame)
-        self.plan_scroll.setWidget(plan_page)
-        self.center_scroll = self.plan_scroll
-        self.mode_tabs.addTab(self.plan_scroll, "编排")
-
-        run_page = QWidget()
-        run_page_layout = QVBoxLayout(run_page)
-        run_page_layout.setContentsMargins(0, 0, 0, 0)
-        run_page_layout.setSpacing(0)
-        self.run_splitter = QSplitter(Qt.Vertical)
-        self.run_splitter.setObjectName("RunSplitter")
-        self.run_splitter.setChildrenCollapsible(False)
-        self.run_splitter.setHandleWidth(5)
-        self.log_panel = LogPanel()
-        self.log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.run_history = RunHistoryPanel()
-        self.run_history.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.run_history.setMinimumHeight(240)
-        self.log_panel.setMinimumHeight(300)
-        self.run_splitter.addWidget(self.run_history)
-        self.run_splitter.addWidget(self.log_panel)
-        self.run_splitter.setSizes([360, 560])
-        self.run_splitter.splitterMoved.connect(self._on_run_splitter_moved)
-        run_page_layout.addWidget(self.run_splitter)
-        self.mode_tabs.addTab(run_page, "运行")
-
-        self.workflow_config = WorkflowConfigPanel()
-        self.workflow_config.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        config_scroll = QScrollArea()
-        config_scroll.setWidgetResizable(True)
-        config_scroll.setFrameShape(QFrame.NoFrame)
-        config_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        config_scroll.setWidget(self.workflow_config)
-        self.mode_tabs.addTab(config_scroll, "配置")
+        self._add_run_tab()
+        self._add_config_tab()
         center_layout.addWidget(self.mode_tabs, stretch=1)
 
         self.main_splitter.addWidget(self.center_container)
 
-        # ===== 右侧：Inspector =====
-        self.right_panel = QFrame()
-        self.right_panel.setObjectName("RightPanel")
-        self.right_panel.setMinimumWidth(320)
-        self.right_panel.setMaximumWidth(390)
-        right_layout = QVBoxLayout(self.right_panel)
-        right_layout.setContentsMargins(14, 18, 14, 16)
-        right_layout.setSpacing(10)
-
-        inspector_head = QWidget()
-        inspector_head_layout = QHBoxLayout(inspector_head)
-        inspector_head_layout.setContentsMargins(0, 0, 0, 0)
-        inspector_head_layout.setSpacing(10)
-        inspector_title_box = QVBoxLayout()
-        inspector_title_box.setContentsMargins(0, 0, 0, 0)
-        inspector_title_box.setSpacing(4)
-        self.lbl_inspector_kind = QLabel("Inspector")
-        self.lbl_inspector_kind.setObjectName("Eyebrow")
-        inspector_title_box.addWidget(self.lbl_inspector_kind)
-        self.lbl_inspector_title = QLabel("选择步骤或阶段")
-        self.lbl_inspector_title.setObjectName("InspectorTitle")
-        inspector_title_box.addWidget(self.lbl_inspector_title)
-        inspector_head_layout.addLayout(inspector_title_box, stretch=1)
-        self.btn_inspector_copy = QToolButton()
-        self.btn_inspector_copy.setObjectName("IconButton")
-        self.btn_inspector_copy.setText("⧉")
-        self.btn_inspector_copy.setToolTip("复制当前步骤（在列表视图右键也可操作）")
-        self.btn_inspector_copy.setAccessibleName("复制步骤")
-        inspector_head_layout.addWidget(self.btn_inspector_copy)
-        right_layout.addWidget(inspector_head)
-
-        self.step_editor = StepEditorPanel()
-        self.step_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        inspector_scroll = QScrollArea()
-        inspector_scroll.setObjectName("InspectorScroll")
-        inspector_scroll.setWidgetResizable(True)
-        inspector_scroll.setFrameShape(QFrame.NoFrame)
-        inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        inspector_scroll.setWidget(self.step_editor)
-        right_layout.addWidget(inspector_scroll, stretch=1)
-
-        self.main_splitter.addWidget(self.right_panel)
+        self.main_splitter.addWidget(self._create_right_panel())
 
         self.main_splitter.setSizes([280, 840, 340])
 
@@ -405,6 +174,268 @@ class MainWindow(QMainWindow):
 
         self.btn_view_board.clicked.connect(lambda: self._set_plan_view(0))
         self.btn_view_table.clicked.connect(lambda: self._set_plan_view(2))
+
+    def _create_left_panel(self) -> QFrame:
+        self.left_panel = QFrame()
+        self.left_panel.setObjectName("LeftPanel")
+        self.left_panel.setMinimumWidth(240)
+        self.left_panel.setMaximumWidth(320)
+        left_layout = QVBoxLayout(self.left_panel)
+        left_layout.setContentsMargins(14, 18, 14, 14)
+        left_layout.setSpacing(14)
+        left_layout.addWidget(self._create_brand_row())
+
+        self.workflow_list = WorkflowListPanel()
+        left_layout.addWidget(self.workflow_list, stretch=1)
+
+        asset_label = QLabel("资产")
+        asset_label.setObjectName("SidebarLabel")
+        left_layout.addWidget(asset_label)
+        self.btn_asset_import = self._create_sidebar_button("导入 JSON", "导入工作流 JSON", "导入 JSON")
+        self.btn_asset_export = self._create_sidebar_button("导出 JSON", "导出当前工作流为 JSON", "导出 JSON")
+        self.btn_asset_webhook = self._create_sidebar_button("Webhook", "配置运行通知 Webhook", "Webhook 管理")
+        left_layout.addWidget(self.btn_asset_import)
+        left_layout.addWidget(self.btn_asset_export)
+        left_layout.addWidget(self.btn_asset_webhook)
+        left_layout.addWidget(self._create_edit_bar())
+
+        self.run_control = RunControlPanel()
+        self.run_control.setVisible(False)
+        left_layout.addWidget(self.run_control)
+        return self.left_panel
+
+    def _create_brand_row(self) -> QWidget:
+        brand_row = QWidget()
+        brand_layout = QHBoxLayout(brand_row)
+        brand_layout.setContentsMargins(2, 0, 2, 0)
+        brand_layout.setSpacing(10)
+        self.lbl_brand_icon = QLabel()
+        self.lbl_brand_icon.setObjectName("BrandMark")
+        self.lbl_brand_icon.setFixedSize(36, 36)
+        if ICON_PATH.exists():
+            pix = QIcon(str(ICON_PATH)).pixmap(36, 36)
+            self.lbl_brand_icon.setPixmap(pix)
+        brand_layout.addWidget(self.lbl_brand_icon)
+
+        brand_text = QVBoxLayout()
+        brand_text.setContentsMargins(0, 0, 0, 0)
+        brand_text.setSpacing(2)
+        self.lbl_brand_name = QLabel("Workflow")
+        self.lbl_brand_name.setObjectName("BrandName")
+        brand_text.addWidget(self.lbl_brand_name)
+        self.lbl_brand_subtitle = QLabel("本地自动化工作台")
+        self.lbl_brand_subtitle.setObjectName("BrandSubtitle")
+        brand_text.addWidget(self.lbl_brand_subtitle)
+        brand_layout.addLayout(brand_text, stretch=1)
+        return brand_row
+
+    def _create_sidebar_button(self, text: str, tooltip: str, accessible_name: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("SidebarNav")
+        button.setToolTip(tooltip)
+        button.setAccessibleName(accessible_name)
+        return button
+
+    def _create_edit_bar(self) -> QWidget:
+        edit_bar = QWidget()
+        edit_bar.setObjectName("foldBar")
+        edit_bar_layout = QHBoxLayout(edit_bar)
+        edit_bar_layout.setContentsMargins(4, 0, 4, 0)
+        edit_bar_layout.setSpacing(10)
+        edit_bar_layout.addWidget(QLabel("编辑模式"))
+        edit_bar_layout.addStretch()
+
+        self.check_edit_mode = IosSwitch()
+        self.check_edit_mode.setChecked(False)
+        self.check_edit_mode.toggled.connect(self._set_edit_mode)
+        self.check_edit_mode.setToolTip("开启后可以编辑工作流、阶段和步骤")
+        edit_bar_layout.addWidget(self.check_edit_mode)
+
+        self.btn_left_save = QPushButton("保存")
+        self.btn_left_save.setObjectName("primarySmall")
+        self.btn_left_save.setFixedSize(78, 26)
+        self.btn_left_save.clicked.connect(self._action_save)
+        self.btn_left_save.setToolTip("保存当前工作流和步骤修改")
+        edit_bar_layout.addWidget(self.btn_left_save)
+        return edit_bar
+
+    def _create_command_bar(self) -> QWidget:
+        command_bar = QWidget()
+        command_bar.setObjectName("CommandBar")
+        command_layout = QHBoxLayout(command_bar)
+        command_layout.setContentsMargins(0, 0, 0, 0)
+        command_layout.setSpacing(20)
+        command_layout.addLayout(self._create_title_block(), stretch=1)
+        command_layout.addWidget(self._create_run_cluster())
+        return command_bar
+
+    def _create_title_block(self) -> QVBoxLayout:
+        title_block = QVBoxLayout()
+        title_block.setContentsMargins(0, 0, 0, 0)
+        title_block.setSpacing(4)
+        self.lbl_workflow_eyebrow = QLabel("当前工作流")
+        self.lbl_workflow_eyebrow.setObjectName("Eyebrow")
+        title_block.addWidget(self.lbl_workflow_eyebrow)
+        self.lbl_workflow_title = QLabel("请选择工作流")
+        self.lbl_workflow_title.setObjectName("WorkflowTitle")
+        title_block.addWidget(self.lbl_workflow_title)
+        self.lbl_workflow_meta = QLabel("0 阶段 · 0 步 · 未运行")
+        self.lbl_workflow_meta.setObjectName("WorkflowMeta")
+        title_block.addWidget(self.lbl_workflow_meta)
+        return title_block
+
+    def _create_run_cluster(self) -> QWidget:
+        run_cluster = QWidget()
+        run_cluster.setObjectName("RunCluster")
+        run_layout = QHBoxLayout(run_cluster)
+        run_layout.setContentsMargins(0, 0, 0, 0)
+        run_layout.setSpacing(8)
+        self.lbl_run_state = QLabel("● 就绪")
+        self.lbl_run_state.setObjectName("RunStateChip")
+        self.lbl_run_state.setToolTip("当前运行状态")
+        run_layout.addWidget(self.lbl_run_state)
+        self.btn_header_run = QPushButton("▶ 运行全流程")
+        self.btn_header_run.setObjectName("PrimaryAction")
+        self.btn_header_run.setToolTip("运行当前工作流的全流程（F5）")
+        self.btn_header_run.setAccessibleName("运行全流程")
+        self.btn_header_run.clicked.connect(lambda: self._on_run_requested("full", None))
+        run_layout.addWidget(self.btn_header_run)
+        self.btn_header_stop = QToolButton()
+        self.btn_header_stop.setObjectName("DangerIconButton")
+        self.btn_header_stop.setText("■")
+        self.btn_header_stop.setToolTip("停止当前运行（Shift+F5）")
+        self.btn_header_stop.setAccessibleName("停止运行")
+        self.btn_header_stop.clicked.connect(self._stop_workflow)
+        self.btn_header_stop.setEnabled(False)
+        run_layout.addWidget(self.btn_header_stop)
+        return run_cluster
+
+    def _add_plan_tab(self) -> None:
+        plan_page = QWidget()
+        plan_layout = QVBoxLayout(plan_page)
+        plan_layout.setContentsMargins(0, 0, 0, 0)
+        plan_layout.setSpacing(12)
+        plan_layout.addWidget(self._create_plan_switch())
+        plan_layout.addWidget(self._create_plan_stack(), stretch=1)
+
+        self.plan_scroll = QScrollArea()
+        self.plan_scroll.setWidgetResizable(True)
+        self.plan_scroll.setFrameShape(QFrame.NoFrame)
+        self.plan_scroll.setWidget(plan_page)
+        self.center_scroll = self.plan_scroll
+        self.mode_tabs.addTab(self.plan_scroll, "编排")
+
+    def _create_plan_switch(self) -> QWidget:
+        plan_switch = QWidget()
+        switch_layout = QHBoxLayout(plan_switch)
+        switch_layout.setContentsMargins(0, 0, 0, 0)
+        switch_layout.setSpacing(8)
+        self.btn_view_board = QPushButton("阶段")
+        self.btn_view_board.setObjectName("ViewSwitchActive")
+        self.btn_view_board.setToolTip("阶段泳道编排视图")
+        self.btn_view_board.setAccessibleName("阶段视图")
+        self.btn_view_dag = QPushButton("批次")
+        self.btn_view_dag.setObjectName("ViewSwitch")
+        self.btn_view_dag.setToolTip("查看自动计算的批次与依赖图")
+        self.btn_view_dag.setAccessibleName("批次视图")
+        self.btn_view_table = QPushButton("列表")
+        self.btn_view_table.setObjectName("ViewSwitch")
+        self.btn_view_table.setToolTip("使用表格查看和批量调整步骤")
+        self.btn_view_table.setAccessibleName("列表视图")
+        self._view_buttons = [(self.btn_view_board, 0), (self.btn_view_table, 2)]
+        switch_layout.addWidget(self.btn_view_board)
+        switch_layout.addWidget(self.btn_view_table)
+        switch_layout.addStretch(1)
+        return plan_switch
+
+    def _create_plan_stack(self) -> QStackedWidget:
+        self.plan_stack = QStackedWidget()
+        self.plan_stack.setObjectName("PlanStack")
+        self.workbench_board = WorkbenchBoardPanel()
+        self.plan_stack.addWidget(self.workbench_board)
+        self.dag_view = DAGViewPanel()
+        self.dag_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.plan_stack.addWidget(self.dag_view)
+        self.step_table = StepTablePanel()
+        self.step_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.plan_stack.addWidget(self.step_table)
+        return self.plan_stack
+
+    def _add_run_tab(self) -> None:
+        run_page = QWidget()
+        run_page_layout = QVBoxLayout(run_page)
+        run_page_layout.setContentsMargins(0, 0, 0, 0)
+        run_page_layout.setSpacing(0)
+        self.run_splitter = QSplitter(Qt.Vertical)
+        self.run_splitter.setObjectName("RunSplitter")
+        self.run_splitter.setChildrenCollapsible(False)
+        self.run_splitter.setHandleWidth(5)
+        self.log_panel = LogPanel()
+        self.log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.run_history = RunHistoryPanel()
+        self.run_history.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.run_history.setMinimumHeight(240)
+        self.log_panel.setMinimumHeight(300)
+        self.run_splitter.addWidget(self.run_history)
+        self.run_splitter.addWidget(self.log_panel)
+        self.run_splitter.setSizes([360, 560])
+        self.run_splitter.splitterMoved.connect(self._on_run_splitter_moved)
+        run_page_layout.addWidget(self.run_splitter)
+        self.mode_tabs.addTab(run_page, "运行")
+
+    def _add_config_tab(self) -> None:
+        self.workflow_config = WorkflowConfigPanel()
+        self.workflow_config.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        config_scroll = QScrollArea()
+        config_scroll.setWidgetResizable(True)
+        config_scroll.setFrameShape(QFrame.NoFrame)
+        config_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        config_scroll.setWidget(self.workflow_config)
+        self.mode_tabs.addTab(config_scroll, "配置")
+
+    def _create_right_panel(self) -> QFrame:
+        self.right_panel = QFrame()
+        self.right_panel.setObjectName("RightPanel")
+        self.right_panel.setMinimumWidth(320)
+        self.right_panel.setMaximumWidth(390)
+        right_layout = QVBoxLayout(self.right_panel)
+        right_layout.setContentsMargins(14, 18, 14, 16)
+        right_layout.setSpacing(10)
+        right_layout.addWidget(self._create_inspector_header())
+
+        self.step_editor = StepEditorPanel()
+        self.step_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        inspector_scroll = QScrollArea()
+        inspector_scroll.setObjectName("InspectorScroll")
+        inspector_scroll.setWidgetResizable(True)
+        inspector_scroll.setFrameShape(QFrame.NoFrame)
+        inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inspector_scroll.setWidget(self.step_editor)
+        right_layout.addWidget(inspector_scroll, stretch=1)
+        return self.right_panel
+
+    def _create_inspector_header(self) -> QWidget:
+        inspector_head = QWidget()
+        inspector_head_layout = QHBoxLayout(inspector_head)
+        inspector_head_layout.setContentsMargins(0, 0, 0, 0)
+        inspector_head_layout.setSpacing(10)
+        inspector_title_box = QVBoxLayout()
+        inspector_title_box.setContentsMargins(0, 0, 0, 0)
+        inspector_title_box.setSpacing(4)
+        self.lbl_inspector_kind = QLabel("Inspector")
+        self.lbl_inspector_kind.setObjectName("Eyebrow")
+        inspector_title_box.addWidget(self.lbl_inspector_kind)
+        self.lbl_inspector_title = QLabel("选择步骤或阶段")
+        self.lbl_inspector_title.setObjectName("InspectorTitle")
+        inspector_title_box.addWidget(self.lbl_inspector_title)
+        inspector_head_layout.addLayout(inspector_title_box, stretch=1)
+        self.btn_inspector_copy = QToolButton()
+        self.btn_inspector_copy.setObjectName("IconButton")
+        self.btn_inspector_copy.setText("⧉")
+        self.btn_inspector_copy.setToolTip("复制当前步骤（在列表视图右键也可操作）")
+        self.btn_inspector_copy.setAccessibleName("复制步骤")
+        inspector_head_layout.addWidget(self.btn_inspector_copy)
+        return inspector_head
 
     def _setup_border_fold_buttons(self):
         """在面板边框上放置浮动折叠按钮"""
@@ -547,7 +578,7 @@ class MainWindow(QMainWindow):
             return
         if self._run_splitter_user_adjusted and not force:
             return
-        sizes = [320, 620] if profile == "running" else [360, 560]
+        sizes = run_splitter_sizes(profile)
         self.run_splitter.blockSignals(True)
         try:
             self.run_splitter.setSizes(sizes)
@@ -569,226 +600,11 @@ class MainWindow(QMainWindow):
         if app:
             app.setStyleSheet(get_stylesheet(dark=self._dark_mode))
 
-        if self._dark_mode:
-            W = {
-                "bg": C["background"],
-                "paper": C["surface_primary"],
-                "workspace": C["surface_secondary"],
-                "panel": C["surface_card"],
-                "panel_soft": C["surface_secondary"],
-                "ink": C["text_primary"],
-                "muted": C["text_secondary"],
-                "faint": C["text_tertiary"],
-                "line": C["border"],
-                "line_strong": "#636366",
-                "blue": C["primary"],
-                "blue_hover": C["primary_hover"],
-                "blue_weak": "#1A3A5C",
-                "green": C["success"],
-                "green_weak": "#1F3A24",
-                "red": C["danger"],
-                "red_weak": "#3A1515",
-            }
-        else:
-            W = {
-                "bg": "#f6f4ef",
-                "paper": "#fbfaf6",
-                "workspace": "#f6f4ef",
-                "panel": "#ffffff",
-                "panel_soft": "#f1eee7",
-                "ink": "#20242a",
-                "muted": "#6c7077",
-                "faint": "#8b9098",
-                "line": "#ddd8cf",
-                "line_strong": "#c9c1b6",
-                "blue": "#2458d3",
-                "blue_hover": "#1d49b6",
-                "blue_weak": "#e9eefc",
-                "green": "#247145",
-                "green_weak": "#e7f3ea",
-                "red": "#b3312a",
-                "red_weak": "#f8e4e1",
-            }
-
-        self.left_panel.setStyleSheet(f"""
-            QFrame#LeftPanel {{
-                background: {W["paper"]};
-                border-right: 1px solid {W["line"]};
-            }}
-            QLabel#BrandName {{
-                color: {W["ink"]};
-                font-size: 18px;
-                font-weight: 760;
-            }}
-            QLabel#BrandSubtitle {{
-                color: {W["muted"]};
-                font-size: 12px;
-            }}
-            QLabel#SidebarLabel {{
-                color: {W["muted"]};
-                font-size: 11px;
-                font-weight: 760;
-            }}
-            QWidget#foldBar {{
-                background: transparent;
-            }}
-            QPushButton#SidebarNav {{
-                min-height: 34px;
-                padding: 0 8px;
-                color: {W["muted"]};
-                background: transparent;
-                border: none;
-                border-radius: 8px;
-                text-align: left;
-            }}
-            QPushButton#SidebarNav:hover {{
-                color: {W["ink"]};
-                background: {W["panel_soft"]};
-            }}
-        """)
-        self.center_container.setStyleSheet(f"""
-            QFrame#CenterPanel {{
-                background: {W["workspace"]};
-            }}
-            QLabel#Eyebrow {{
-                color: {W["muted"]};
-                font-size: 11px;
-                font-weight: 760;
-            }}
-            QLabel#WorkflowTitle {{
-                color: {W["ink"]};
-                font-size: 28px;
-                font-weight: 780;
-            }}
-            QLabel#WorkflowMeta {{
-                color: {W["muted"]};
-                font-size: 12px;
-            }}
-            QLabel#RunStateChip {{
-                min-height: 24px;
-                padding: 0 4px;
-                color: {W["green"]};
-                background: transparent;
-                font-weight: 700;
-            }}
-            QPushButton#PrimaryAction {{
-                min-height: 38px;
-                padding: 0 15px;
-                color: #fffdfa;
-                background: {W["blue"]};
-                border: none;
-                border-radius: 8px;
-                font-weight: 720;
-            }}
-            QPushButton#PrimaryAction:hover {{
-                background: {W["blue_hover"]};
-            }}
-            QToolButton#IconButton {{
-                min-width: 36px;
-                min-height: 36px;
-                color: {W["muted"]};
-                background: {W["panel"]};
-                border: 1px solid {W["line"]};
-                border-radius: 8px;
-                font-weight: 700;
-            }}
-            QToolButton#IconButton:hover {{
-                border-color: {W["line_strong"]};
-            }}
-            QToolButton#DangerIconButton {{
-                min-width: 36px;
-                min-height: 36px;
-                color: {W["red"]};
-                background: {W["red_weak"]};
-                border: none;
-                border-radius: 8px;
-                font-weight: 800;
-            }}
-            QPushButton#ViewSwitch, QPushButton#ViewSwitchActive {{
-                min-height: 30px;
-                padding: 0 12px;
-                border-radius: 8px;
-                font-weight: 700;
-            }}
-            QPushButton#ViewSwitch {{
-                color: {W["muted"]};
-                background: transparent;
-                border: 1px solid transparent;
-            }}
-            QPushButton#ViewSwitch:hover {{
-                border-color: {W["line"]};
-            }}
-            QPushButton#ViewSwitchActive {{
-                color: {W["ink"]};
-                background: {W["panel"]};
-                border: 1px solid {W["line"]};
-            }}
-        """)
-        self.mode_tabs.setStyleSheet(f"""
-            QTabWidget::pane {{
-                border: none;
-                background: transparent;
-            }}
-            QTabBar::tab {{
-                height: 38px;
-                padding: 0 15px;
-                margin-right: 6px;
-                color: {W["muted"]};
-                background: transparent;
-                border: 1px solid transparent;
-                border-bottom: 1px solid {W["line"]};
-                border-top-left-radius: 7px;
-                border-top-right-radius: 7px;
-                font-weight: 700;
-            }}
-            QTabBar::tab:selected {{
-                color: {W["blue"]};
-                background: {W["panel"]};
-                border: 1px solid {W["line"]};
-                border-bottom-color: {W["panel"]};
-            }}
-            QScrollArea {{
-                background: transparent;
-                border: none;
-            }}
-            QSplitter#RunSplitter::handle {{
-                background: {W["line"]};
-                border-radius: 2px;
-                margin: 2px 160px;
-            }}
-            QSplitter#RunSplitter::handle:hover {{
-                background: {W["line_strong"]};
-            }}
-        """)
-        self.right_panel.setStyleSheet(f"""
-            QFrame#RightPanel {{
-                background: {W["paper"]};
-                border-left: 1px solid {W["line"]};
-            }}
-            QLabel#Eyebrow {{
-                color: {W["muted"]};
-                font-size: 11px;
-                font-weight: 760;
-            }}
-            QLabel#InspectorTitle {{
-                color: {W["ink"]};
-                font-size: 18px;
-                font-weight: 760;
-            }}
-            QScrollArea#InspectorScroll {{
-                background: transparent;
-                border: none;
-            }}
-            QToolButton#IconButton {{
-                min-width: 36px;
-                min-height: 36px;
-                color: {W["muted"]};
-                background: {W["panel"]};
-                border: 1px solid {W["line"]};
-                border-radius: 8px;
-                font-weight: 700;
-            }}
-        """)
+        tokens = build_shell_theme_tokens(C, self._dark_mode)
+        self.left_panel.setStyleSheet(left_panel_stylesheet(tokens))
+        self.center_container.setStyleSheet(center_panel_stylesheet(tokens))
+        self.mode_tabs.setStyleSheet(mode_tabs_stylesheet(tokens))
+        self.right_panel.setStyleSheet(right_panel_stylesheet(tokens))
 
         self._refresh_border_fold_buttons()
 
@@ -1300,14 +1116,22 @@ class MainWindow(QMainWindow):
         """
         running_id = getattr(self, "_running_workflow_id", None)
         current_id = self._current_workflow_id
+        stopping = getattr(self, "_stopping_in_progress", False)
+        state = compute_run_lock_state(
+            running_id=running_id,
+            current_id=current_id,
+            engine_running=bool(getattr(self.engine, "is_running", False)),
+            stopping=stopping,
+            running_name=getattr(self, "_running_workflow_name", None),
+        )
         # R6-#4: 兜底——若 engine.is_running 已为 False 但 _running_workflow_id 还非空
         # （理论上 finished 信号一定会清；这里防御未来 signal_policy 不对称导致永久卡住）
-        if running_id is not None and not getattr(self.engine, "is_running", False):
+        if state.clear_stale_running:
             self._running_workflow_id = None
             self._running_workflow_name = None
             self._stopping_in_progress = False
             running_id = None
-        lock_panels = running_id is not None and running_id == current_id
+        lock_panels = state.lock_panels
         try:
             self.workflow_config.setEnabled(not lock_panels)
             self.step_table.setEnabled(not lock_panels)
@@ -1317,10 +1141,8 @@ class MainWindow(QMainWindow):
         # R6-#1: 后台运行（运行中但用户切走了）→ 持久指示器；同步可见性
         # R6-#3: stop 请求已发出但 finished 信号未到的窗口，暂不显示"后台运行"标签
         try:
-            stopping = getattr(self, "_stopping_in_progress", False)
-            if running_id is not None and running_id != current_id and not stopping:
-                name = getattr(self, "_running_workflow_name", None) or f"#{running_id}"
-                self._bg_running_label.setText(f"↻ 后台运行：{name}")
+            if state.show_background_label:
+                self._bg_running_label.setText(state.background_label_text)
                 self._bg_running_label.setVisible(True)
             else:
                 self._bg_running_label.setVisible(False)
@@ -1704,20 +1526,12 @@ class MainWindow(QMainWindow):
         
         def run_in_thread():
             try:
-                if mode == "full":
-                    result = self.engine.run_all(workflow_id)
-                elif mode == "from_step":
-                    result = self.engine.run_from(workflow_id, param)
-                elif mode == "only_step":
-                    result = self.engine.run_only(workflow_id, param)
-                elif mode == "only_stage":
-                    result = self.engine.run_stage(workflow_id, param)
-                elif mode == "from_stage":
-                    result = self.engine.run_from_stage(workflow_id, param)
-                elif mode == "retry_failed":
-                    result = self.engine.retry_failed(workflow_id)
-                else:
-                    result = False
+                run_engine_mode(
+                    self.engine,
+                    workflow_id=workflow_id,
+                    mode=mode,
+                    param=param,
+                )
             except Exception as e:
                 from PySide6.QtCore import QMetaObject, Qt, Q_ARG
                 QMetaObject.invokeMethod(
@@ -1963,48 +1777,18 @@ class MainWindow(QMainWindow):
     
     def _import_json(self):
         """导入 JSON"""
-        from PySide6.QtWidgets import QFileDialog
-        
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "导入工作流 JSON",
-            "", "JSON Files (*.json)"
+        import_json_action(
+            parent=self,
+            dark_mode=self._dark_mode,
+            reload_workflows=self.workflow_list.load_workflows,
         )
-        
-        if file_path:
-            from pathlib import Path
-            from database import import_from_json
-            
-            try:
-                count = import_from_json(Path(file_path))
-                msg_information(
-                    self, self._dark_mode, "导入成功",
-                    f"已导入 {count} 个工作流"
-                )
-                self.workflow_list.load_workflows()
-            except Exception as e:
-                msg_critical(self, self._dark_mode, "导入失败", str(e))
     
     def _export_json(self):
         """导出 JSON"""
-        from PySide6.QtWidgets import QFileDialog
-        
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "导出工作流 JSON",
-            "workflows_export.json", "JSON Files (*.json)"
+        export_json_action(
+            parent=self,
+            dark_mode=self._dark_mode,
         )
-        
-        if file_path:
-            from pathlib import Path
-            from database import export_to_json
-            
-            try:
-                export_to_json(Path(file_path))
-                msg_information(
-                    self, self._dark_mode, "导出成功",
-                    f"已导出到 {file_path}"
-                )
-            except Exception as e:
-                msg_critical(self, self._dark_mode, "导出失败", str(e))
 
     def _open_webhook_manager(self):
         """打开 Webhook 管理对话框"""
@@ -2016,15 +1800,19 @@ class MainWindow(QMainWindow):
         if self.left_panel.isVisible():
             self._left_last_size = self.left_panel.width()
             self.left_panel.setVisible(False)
-            self.btn_toggle_left.setText("▶")
+            self.btn_toggle_left.setText(panel_toggle_text("left", visible=False))
         else:
             self.left_panel.setVisible(True)
             self.left_panel.setMinimumWidth(200)
-            sizes = self.main_splitter.sizes()
-            if len(sizes) >= 3:
-                sizes[0] = max(self._left_last_size, 200)
+            sizes = expanded_splitter_sizes(
+                self.main_splitter.sizes(),
+                panel_index=0,
+                last_size=self._left_last_size,
+                minimum_size=200,
+            )
+            if sizes:
                 self.main_splitter.setSizes(sizes)
-            self.btn_toggle_left.setText("◀")
+            self.btn_toggle_left.setText(panel_toggle_text("left", visible=True))
         QTimer.singleShot(50, self._update_border_widget_positions)
 
     def _toggle_right_panel(self):
@@ -2032,15 +1820,19 @@ class MainWindow(QMainWindow):
         if self.right_panel.isVisible():
             self._right_last_size = self.right_panel.width()
             self.right_panel.setVisible(False)
-            self.btn_toggle_right.setText("◀")
+            self.btn_toggle_right.setText(panel_toggle_text("right", visible=False))
         else:
             self.right_panel.setVisible(True)
             self.right_panel.setMinimumWidth(320)
-            sizes = self.main_splitter.sizes()
-            if len(sizes) >= 2:
-                sizes[-1] = max(self._right_last_size, 320)
+            sizes = expanded_splitter_sizes(
+                self.main_splitter.sizes(),
+                panel_index=-1,
+                last_size=self._right_last_size,
+                minimum_size=320,
+            )
+            if sizes:
                 self.main_splitter.setSizes(sizes)
-            self.btn_toggle_right.setText("▶")
+            self.btn_toggle_right.setText(panel_toggle_text("right", visible=True))
         QTimer.singleShot(50, self._update_border_widget_positions)
 
     def resizeEvent(self, event):

@@ -1,26 +1,24 @@
 # -*- coding: utf-8 -*-
 """步骤详情编辑器"""
 
+import logging
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLineEdit,
-    QTextEdit,
     QComboBox,
     QCheckBox,
     QPushButton,
     QToolButton,
     QFileDialog,
     QMessageBox,
-    QListWidget,
     QListWidgetItem,
-    QGridLayout,
     QLabel,
     QMenu,
     QStyle,
     QScrollArea,
-    QSpinBox,
     QSizePolicy,
 )
 import json
@@ -35,6 +33,10 @@ from database import (
 )
 from models import Step
 from ui.collapsible_section import CollapsibleSection
+from ui.step_editor_sections import (
+    create_advanced_settings_section,
+    create_dependency_summary_section,
+)
 from ui.theme import (
     COLORS,
     get_colors,
@@ -42,7 +44,11 @@ from ui.theme import (
     get_danger_button_stylesheet,
     msg_warning,
     msg_critical,
+    msg_question,
 )
+
+logger = logging.getLogger(__name__)
+
 
 class StepEditorPanel(QWidget):
     """步骤详情编辑器"""
@@ -312,254 +318,38 @@ class StepEditorPanel(QWidget):
         group_layout.addWidget(basic_widget)
 
         # ── 依赖摘要（可理解 + 可定位，不改变依赖配置本身） ──
-        self.dep_summary = CollapsibleSection("依赖摘要（只读）", collapsed=True)
-        dep_sum_layout = self.dep_summary.body_layout
-
-        self.dep_warning = QLabel("")
-        self.dep_warning.setVisible(False)
-        self.dep_warning.setWordWrap(True)
-        self.dep_warning.setStyleSheet(f"color:{COLORS['warning']}; font-size:11px;")
-        dep_sum_layout.addWidget(self.dep_warning)
-
-        dep_lists = QWidget()
-        dep_lists_layout = QHBoxLayout(dep_lists)
-        dep_lists_layout.setContentsMargins(0, 0, 0, 0)
-        dep_lists_layout.setSpacing(12)
-
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
-        left_layout.addWidget(QLabel("我的上游依赖"))
-        self.list_depends_on = QListWidget()
-        self.list_depends_on.setMaximumHeight(92)
-        self.list_depends_on.itemDoubleClicked.connect(lambda item: self._emit_navigate_from_item(item))
-        left_layout.addWidget(self.list_depends_on)
-        dep_lists_layout.addWidget(left, stretch=1)
-
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(6)
-        right_layout.addWidget(QLabel("依赖此步骤的步骤"))
-        self.list_dependents = QListWidget()
-        self.list_dependents.setMaximumHeight(92)
-        self.list_dependents.itemDoubleClicked.connect(lambda item: self._emit_navigate_from_item(item))
-        right_layout.addWidget(self.list_dependents)
-        dep_lists_layout.addWidget(right, stretch=1)
-
-        self._dep_lists = dep_lists
-        self._dep_lists.setStyleSheet(f"""
-            QLabel {{ color:{COLORS['text_secondary']}; font-size:11px; font-weight:600; }}
-            QListWidget {{
-                background: {COLORS['surface']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 8px;
-            }}
-            /* 依赖预览列表不需要 indicator，但统一定义，避免某些全局样式导致「黑块」 */
-            QListWidget::indicator {{
-                width: 14px;
-                height: 14px;
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-                background: {COLORS['surface']};
-            }}
-            QListWidget::indicator:checked {{
-                background: {COLORS['primary']};
-                border: 1px solid {COLORS['primary']};
-            }}
-            QListWidget::item {{ padding: 6px 8px; }}
-            QListWidget::item:selected {{ background: {COLORS['selected_bg']}; }}
-        """)
-        dep_sum_layout.addWidget(self._dep_lists)
-
-        self._dep_summary_hint = QLabel("提示：双击条目可定位到对应步骤（列表选中 + 打开编辑器）。")
-        self._dep_summary_hint.setStyleSheet(f"color:{COLORS['text_tertiary']}; font-size:11px;")
-        dep_sum_layout.addWidget(self._dep_summary_hint)
-
+        dep_section = create_dependency_summary_section(COLORS, self._emit_navigate_from_item)
+        self.dep_summary = dep_section.section
+        self.dep_warning = dep_section.warning
+        self.list_depends_on = dep_section.depends_on_list
+        self.list_dependents = dep_section.dependents_list
+        self._dep_lists = dep_section.lists_container
+        self._dep_summary_hint = dep_section.hint
         group_layout.addWidget(self.dep_summary)
-        self.dep_summary.setVisible(False)
 
         # ── 高级设置（默认折叠） ──
-        self.advanced = CollapsibleSection("高级设置", collapsed=True)
-        adv_layout = self.advanced.body_layout
-
-        adv_widget = QWidget()
-        adv_widget.setMinimumWidth(0)
-        adv_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        grid = QGridLayout(adv_widget)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(8)
-        grid.setColumnStretch(1, 1)
-
-        row = 0
-        # 工作目录
-        cwd_layout = QHBoxLayout()
-        cwd_layout.setContentsMargins(0, 0, 0, 0)
-        self.edit_cwd = QLineEdit()
-        self.edit_cwd.setFixedHeight(30)
-        self.edit_cwd.setMinimumWidth(0)
-        self.edit_cwd.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.edit_cwd.setPlaceholderText("留空使用脚本所在目录")
-        self.edit_cwd.setToolTip("留空时使用脚本所在目录；需要指定相对路径基准时再填写")
-        cwd_layout.addWidget(self.edit_cwd)
-        self.btn_browse_cwd = QPushButton("浏览")
-        self.btn_browse_cwd.setFixedSize(56, 30)
-        self.btn_browse_cwd.setAccessibleName("浏览工作目录")
-        self.btn_browse_cwd.setToolTip("浏览并选择工作目录")
-        self.btn_browse_cwd.clicked.connect(self._browse_cwd)
-        cwd_layout.addWidget(self.btn_browse_cwd)
-        self.cwd_row = QWidget()
-        self.cwd_row.setLayout(cwd_layout)
-        self.label_cwd = QLabel("工作目录")
-        self.label_cwd.setFixedWidth(56)
-        grid.addWidget(self.label_cwd, row, 0)
-        grid.addWidget(self.cwd_row, row, 1)
-        row += 1
-
-        # 子工作流搜索过滤行（仅子工作流类型显示）
-        self.sub_workflow_filter_widget = QWidget()
-        sub_filter_layout = QVBoxLayout(self.sub_workflow_filter_widget)
-        sub_filter_layout.setContentsMargins(0, 0, 0, 0)
-        sub_filter_layout.setSpacing(8)
-
-        target_search_row = QWidget()
-        target_search_layout = QHBoxLayout(target_search_row)
-        target_search_layout.setContentsMargins(0, 0, 0, 0)
-        target_search_layout.setSpacing(8)
-        label_target_search = QLabel("搜索")
-        label_target_search.setFixedWidth(56)
-        target_search_layout.addWidget(label_target_search)
-        self.edit_target_search = QLineEdit()
-        self.edit_target_search.setFixedHeight(30)
-        self.edit_target_search.setMinimumWidth(0)
-        self.edit_target_search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.edit_target_search.setPlaceholderText("输入关键词过滤...")
-        self.edit_target_search.setToolTip("按名称过滤目标工作流")
-        self.edit_target_search.textChanged.connect(lambda t: self._refresh_target_options(t))
-        target_search_layout.addWidget(self.edit_target_search, stretch=1)
-        sub_filter_layout.addWidget(target_search_row)
-
-        target_scope_row = QWidget()
-        target_scope_layout = QHBoxLayout(target_scope_row)
-        target_scope_layout.setContentsMargins(0, 0, 0, 0)
-        target_scope_layout.setSpacing(8)
-        label_target_scope = QLabel("范围")
-        label_target_scope.setFixedWidth(56)
-        target_scope_layout.addWidget(label_target_scope)
-        self.combo_target_scope = QComboBox()
-        self.combo_target_scope.addItem("全部", "all")
-        self.combo_target_scope.addItem("最近使用", "recent")
-        self.combo_target_scope.setFixedHeight(30)
-        self.combo_target_scope.setMinimumContentsLength(0)
-        self.combo_target_scope.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.combo_target_scope.setToolTip("选择目标工作流的过滤范围")
-        self.combo_target_scope.currentIndexChanged.connect(
-            lambda: self._refresh_target_options(self.edit_target_search.text())
+        advanced_section = create_advanced_settings_section(
+            COLORS,
+            self._browse_cwd,
+            self._refresh_target_options,
+            self._refresh_dep_quick_text,
+            self._refresh_dependency_preview,
         )
-        self.combo_target_scope.setFixedWidth(88)
-        target_scope_layout.addWidget(self.combo_target_scope)
-        target_scope_layout.addStretch(1)
-        sub_filter_layout.addWidget(target_scope_row)
-
-        self.sub_workflow_filter_widget.setVisible(False)
-        grid.addWidget(self.sub_workflow_filter_widget, row, 0, 1, 2)
-        row += 1
-
-        # 参数（JSON 格式）
-        self.edit_args = QLineEdit()
-        self.edit_args.setFixedHeight(30)
-        self.edit_args.setMinimumWidth(0)
-        self.edit_args.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.edit_args.setPlaceholderText('例如: ["--output", "result.txt"]')
-        self.edit_args.setToolTip("传给脚本或执行器的 JSON 数组参数，例如 [\"--output\", \"result.txt\"]")
-        label_args = QLabel("参数")
-        label_args.setFixedWidth(56)
-        label_args.setToolTip("JSON 数组")
-        grid.addWidget(label_args, row, 0)
-        grid.addWidget(self.edit_args, row, 1)
-        row += 1
-
-        # 图表主题
-        self.edit_theme = QLineEdit()
-        self.edit_theme.setFixedHeight(30)
-        self.edit_theme.setMinimumWidth(0)
-        self.edit_theme.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.edit_theme.setPlaceholderText("留空使用工作流默认主题")
-        self.edit_theme.setToolTip("图表类步骤可覆盖工作流默认主题；留空则继承工作流配置")
-        label_theme = QLabel("主题")
-        label_theme.setFixedWidth(56)
-        grid.addWidget(label_theme, row, 0)
-        grid.addWidget(self.edit_theme, row, 1)
-        row += 1
-
-        # 超时时间
-        # U-P2-5: 改用 QSpinBox，避免字符串解析与非法输入
-        self.edit_timeout = QSpinBox()
-        self.edit_timeout.setFixedHeight(30)
-        self.edit_timeout.setRange(0, 86_400)  # 0..24h
-        self.edit_timeout.setSuffix(" 秒")
-        self.edit_timeout.setSpecialValueText("不限制")  # value=0 显示"不限制"
-        self.edit_timeout.setValue(0)
-        self.edit_timeout.setToolTip("单步骤最长运行时间；0 表示不限制")
-        label_timeout = QLabel("超时")
-        label_timeout.setFixedWidth(56)
-        grid.addWidget(label_timeout, row, 0)
-        grid.addWidget(self.edit_timeout, row, 1)
-        row += 1
-
-        # 重试次数
-        self.edit_retry = QSpinBox()
-        self.edit_retry.setFixedHeight(30)
-        self.edit_retry.setRange(0, 99)
-        self.edit_retry.setSuffix(" 次")
-        self.edit_retry.setValue(0)
-        self.edit_retry.setToolTip("该步骤失败后的自动重试次数")
-        label_retry = QLabel("重试")
-        label_retry.setFixedWidth(56)
-        grid.addWidget(label_retry, row, 0)
-        grid.addWidget(self.edit_retry, row, 1)
-        row += 1
-
-        # 上次成功则跳过
-        self.check_skip_on_success = QCheckBox("启用")
-        self.check_skip_on_success.setToolTip("勾选后，若上次运行该步骤成功，本次将自动跳过")
-        label_skip = QLabel("成功跳过")
-        label_skip.setFixedWidth(56)
-        grid.addWidget(label_skip, row, 0)
-        grid.addWidget(self.check_skip_on_success, row, 1)
-        row += 1
-
-        # 上游依赖（高级多选）
-        self.dep_list = QListWidget()
-        self.dep_list.setMaximumHeight(108)
-        self.dep_list.setToolTip("自定义当前步骤的单独依赖；阶段顺序仍然是大顺序屏障")
-        # 明确 indicator 的未选/已选样式，修复「全是黑色方块看不出是否勾选」
-        self.dep_list.setStyleSheet(
-            f"""
-            QListWidget::indicator {{
-                width: 14px;
-                height: 14px;
-                border: 1px solid #CBD5E1;
-                border-radius: 4px;
-                background: #FFFFFF;
-            }}
-            QListWidget::indicator:checked {{
-                background: {COLORS['primary']};
-                border: 1px solid {COLORS['primary']};
-            }}
-            """
-        )
-        self.dep_list.itemChanged.connect(lambda _it: (self._refresh_dep_quick_text(), self._refresh_dependency_preview()))
-        label_dep_list = QLabel("依赖明细")
-        label_dep_list.setFixedWidth(56)
-        grid.addWidget(label_dep_list, row, 0)
-        grid.addWidget(self.dep_list, row, 1)
-
-        adv_layout.addWidget(adv_widget)
+        self.advanced = advanced_section.section
+        self.cwd_row = advanced_section.cwd_row
+        self.label_cwd = advanced_section.cwd_label
+        self.edit_cwd = advanced_section.cwd_edit
+        self.btn_browse_cwd = advanced_section.browse_cwd_button
+        self.sub_workflow_filter_widget = advanced_section.sub_workflow_filter
+        self.edit_target_search = advanced_section.target_search_edit
+        self.combo_target_scope = advanced_section.target_scope_combo
+        self.edit_args = advanced_section.args_edit
+        self.edit_theme = advanced_section.theme_edit
+        self.edit_timeout = advanced_section.timeout_spin
+        self.edit_retry = advanced_section.retry_spin
+        self.check_skip_on_success = advanced_section.skip_on_success_check
+        self.dep_list = advanced_section.dependency_list
         group_layout.addWidget(self.advanced)
-        self.advanced.setVisible(False)
 
         layout.addWidget(self.section, alignment=Qt.AlignTop)
         layout.addStretch(1)
@@ -674,6 +464,12 @@ class StepEditorPanel(QWidget):
         self._parallel_available = enabled
         self._apply_enabled_state()
 
+    def _safe_update_control_state(self, label: str, update) -> None:
+        try:
+            update()
+        except Exception:
+            logger.warning("更新步骤编辑器控件状态失败: %s", label, exc_info=True)
+
     def _apply_enabled_state(self):
         can_edit = self._edit_enabled and (not self._single_script_mode)
         has_step = self._step_id is not None
@@ -684,57 +480,50 @@ class StepEditorPanel(QWidget):
         self.btn_save.setEnabled(can_edit_step)
 
         # 基础字段：只读/可编辑
-        try:
-            self.edit_name.setReadOnly(not can_edit_step)
-            self.edit_script.setReadOnly(not can_edit_step)
-        except Exception:
-            pass
-        try:
-            self.btn_browse.setEnabled(can_edit_step)
-        except Exception:
-            pass
-        try:
-            self.btn_browse_cwd.setEnabled(can_edit_step)
-        except Exception:
-            pass
-        try:
-            self.btn_dep_quick.setEnabled(can_edit_step)
-        except Exception:
-            pass
-        try:
-            self.combo_stage.setEnabled(can_edit_step)
-        except Exception:
-            pass
+        self._safe_update_control_state(
+            "基础字段",
+            lambda: (
+                self.edit_name.setReadOnly(not can_edit_step),
+                self.edit_script.setReadOnly(not can_edit_step),
+            ),
+        )
+        self._safe_update_control_state("浏览脚本按钮", lambda: self.btn_browse.setEnabled(can_edit_step))
+        self._safe_update_control_state("浏览工作目录按钮", lambda: self.btn_browse_cwd.setEnabled(can_edit_step))
+        self._safe_update_control_state("依赖快捷按钮", lambda: self.btn_dep_quick.setEnabled(can_edit_step))
+        self._safe_update_control_state("阶段下拉框", lambda: self.combo_stage.setEnabled(can_edit_step))
 
         # 高级设置：可见但写操作禁用（避免误操作）
         self.advanced.setEnabled(can_edit_step)
-        try:
-            self.combo_type.setEnabled(can_edit_step)
-            self.edit_args.setReadOnly(not can_edit_step)
-            self.edit_cwd.setReadOnly(not can_edit_step)
-            self.edit_theme.setReadOnly(not can_edit_step)
-            self.edit_timeout.setReadOnly(not can_edit_step)
-            self.edit_retry.setReadOnly(not can_edit_step)
-            self.check_gate.setEnabled(can_edit_step)
-            self.check_skip_on_success.setEnabled(can_edit_step)
-            self.dep_list.setEnabled(can_edit_step)
-            self.combo_target_workflow.setEnabled(can_edit_step)
-        except Exception:
-            pass
-        try:
-            self.btn_more.setEnabled(has_step)
-        except Exception:
-            pass
-        try:
-            self.btn_run_only_step.setEnabled(has_step)
-            self.btn_run_from_step.setEnabled(has_step)
-        except Exception:
-            pass
-        try:
-            self.btn_delete.setVisible(has_step)
-            self.btn_delete.setEnabled(can_edit_step)
-        except Exception:
-            pass
+        self._safe_update_control_state(
+            "高级设置",
+            lambda: (
+                self.combo_type.setEnabled(can_edit_step),
+                self.edit_args.setReadOnly(not can_edit_step),
+                self.edit_cwd.setReadOnly(not can_edit_step),
+                self.edit_theme.setReadOnly(not can_edit_step),
+                self.edit_timeout.setReadOnly(not can_edit_step),
+                self.edit_retry.setReadOnly(not can_edit_step),
+                self.check_gate.setEnabled(can_edit_step),
+                self.check_skip_on_success.setEnabled(can_edit_step),
+                self.dep_list.setEnabled(can_edit_step),
+                self.combo_target_workflow.setEnabled(can_edit_step),
+            ),
+        )
+        self._safe_update_control_state("更多按钮", lambda: self.btn_more.setEnabled(has_step))
+        self._safe_update_control_state(
+            "运行按钮",
+            lambda: (
+                self.btn_run_only_step.setEnabled(has_step),
+                self.btn_run_from_step.setEnabled(has_step),
+            ),
+        )
+        self._safe_update_control_state(
+            "删除按钮",
+            lambda: (
+                self.btn_delete.setVisible(has_step),
+                self.btn_delete.setEnabled(can_edit_step),
+            ),
+        )
         self._update_action_tooltips()
 
     def _on_gate_state_changed(self, _state: int):
@@ -902,8 +691,17 @@ class StepEditorPanel(QWidget):
                 if not step:
                     return
                 self._refresh_dependency_summary(step, override_dep_uids=self._get_selected_dep_uids_from_ui())
+        except Exception as exc:
+            logger.warning("刷新依赖预览失败: step_id=%s", sid, exc_info=True)
+            self._show_dependency_preview_error(f"依赖预览刷新失败：{exc}")
+
+    def _show_dependency_preview_error(self, message: str) -> None:
+        try:
+            self.dep_warning.setText(message)
+            self.dep_summary.setVisible(True)
+            self.dep_summary.set_collapsed(False)
         except Exception:
-            return
+            logger.warning("显示依赖预览错误失败", exc_info=True)
 
     def _ensure_widget_visible(self, widget: QWidget):
         """尽量把某个控件滚动到可见（用于「自定义依赖」后把依赖多选列表带到视口内）。"""
@@ -1215,15 +1013,17 @@ class StepEditorPanel(QWidget):
                 msg_warning(self, self._dark, "输入错误", "请输入脚本路径")
                 return False
 
-        # 验证脚本路径存在性（非阻塞：只提示，不阻断保存）
+        # 验证脚本路径存在性：允许跨机器同步场景，但必须由用户显式确认。
         import os
         if script_path and step_type != "sub_workflow":
             if not os.path.exists(script_path):
-                msg_warning(
+                reply = msg_question(
                     self, self._dark,
                     "路径提示",
-                    f"脚本路径不存在（仍会保存配置）：\n{script_path}\n\n建议：确认文件已同步到本机或修正路径。",
+                    f"脚本路径不存在：\n{script_path}\n\n仍要保存这个配置吗？",
                 )
+                if reply != QMessageBox.Yes:
+                    return False
 
         deps = []
         for i in range(self.dep_list.count()):

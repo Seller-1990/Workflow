@@ -14,12 +14,14 @@ from PySide6.QtWidgets import QApplication, QTableWidgetItem
 from PySide6.QtGui import QColor
 
 import ui.run_history as run_history_module
+import ui.step_editor as step_editor_module
 import ui.workflow_config as workflow_config_module
 import ui.main_window as main_window_module
 from ui.run_history import RunHistoryPanel
 from ui.theme import get_menu_stylesheet, get_status_tokens, get_colors
 from ui.log_panel import LogPanel
 from ui.main_window import MainWindow
+from ui.step_editor import StepEditorPanel
 from ui.workflow_config import WorkflowConfigPanel
 from ui.dag_view import NodeCard
 
@@ -66,6 +68,44 @@ def test_run_history_logs_summary_render_failure(monkeypatch, caplog):
     assert "加载运行历史统计失败" in caplog.text
     assert "workflow_id=99" in caplog.text
     assert app is not None
+
+
+def test_step_editor_logs_dependency_preview_failure(monkeypatch, caplog):
+    app = QApplication.instance() or QApplication([])
+    panel = StepEditorPanel()
+    try:
+        panel._step_id = 123
+        monkeypatch.setattr(
+            step_editor_module,
+            "get_session",
+            lambda: (_ for _ in ()).throw(RuntimeError("db down")),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="ui.step_editor"):
+            panel._do_refresh_dependency_preview()
+
+        assert "刷新依赖预览失败" in caplog.text
+        assert "step_id=123" in caplog.text
+        assert "依赖预览刷新失败" in panel.dep_warning.text()
+    finally:
+        panel.deleteLater()
+        assert app is not None
+
+
+def test_step_editor_logs_control_state_update_failure(caplog):
+    app = QApplication.instance() or QApplication([])
+    panel = StepEditorPanel()
+    try:
+        with caplog.at_level(logging.WARNING, logger="ui.step_editor"):
+            panel._safe_update_control_state(
+                "测试控件",
+                lambda: (_ for _ in ()).throw(RuntimeError("widget down")),
+            )
+
+        assert "更新步骤编辑器控件状态失败: 测试控件" in caplog.text
+    finally:
+        panel.deleteLater()
+        assert app is not None
 
 
 def test_run_history_context_menu_uses_cached_failure_summary(monkeypatch):

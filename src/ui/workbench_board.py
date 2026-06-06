@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -41,6 +42,8 @@ STATUS_LABELS = {
     "cancelled": "已取消",
     "skipped": "跳过",
 }
+
+COMPLETED_STATUSES = {"success", "skipped"}
 
 
 TYPE_CLASSES = {
@@ -247,6 +250,17 @@ class StageLane(QFrame):
         header.addWidget(self.count_label)
         self.layout.addLayout(header)
 
+        self.progress = QProgressBar()
+        self.progress.setObjectName("StageProgress")
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(5)
+        self.progress.setProperty("stageStatus", "idle")
+        self.progress.setToolTip("阶段进度：0/0")
+        self.progress.setAccessibleName(f"阶段进度：S{index + 1} {stage.name}")
+        self.layout.addWidget(self.progress)
+
         self.cards_box = QVBoxLayout()
         self.cards_box.setContentsMargins(0, 0, 0, 0)
         self.cards_box.setSpacing(10)
@@ -260,9 +274,35 @@ class StageLane(QFrame):
         self._cards.append(card)
         self.cards_box.addWidget(card)
         self.count_label.setText(f"{len(self._cards)} 步")
+        self.update_progress()
 
     def ordered_step_ids(self) -> list[int]:
         return [card.step_id for card in self._cards]
+
+    def update_progress(self) -> None:
+        total = len(self._cards)
+        completed = sum(1 for card in self._cards if card._status in COMPLETED_STATUSES)
+        value = round((completed / total) * 100) if total else 0
+        status = self._progress_status(total)
+        self.progress.setValue(value)
+        self.progress.setProperty("stageStatus", status)
+        self.progress.setToolTip(f"阶段进度：{completed}/{total}")
+        self.progress.style().unpolish(self.progress)
+        self.progress.style().polish(self.progress)
+
+    def _progress_status(self, total: int) -> str:
+        if total == 0:
+            return "idle"
+        statuses = {card._status for card in self._cards}
+        if "failure" in statuses:
+            return "failure"
+        if "running" in statuses:
+            return "running"
+        if "cancelled" in statuses:
+            return "cancelled"
+        if all(status in COMPLETED_STATUSES for status in statuses):
+            return "success"
+        return "idle"
 
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", bool(selected))
@@ -342,6 +382,7 @@ class WorkbenchBoardPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
+        self.setFocusPolicy(Qt.StrongFocus)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(12)
@@ -482,6 +523,24 @@ class WorkbenchBoardPanel(QWidget):
                 color: {c["muted"]};
                 font-size: 12px;
             }}
+            QProgressBar#StageProgress {{
+                background: {c["panel_soft"]};
+                border: none;
+                border-radius: 2px;
+            }}
+            QProgressBar#StageProgress::chunk {{
+                background: {c["green"]};
+                border-radius: 2px;
+            }}
+            QProgressBar#StageProgress[stageStatus="running"]::chunk {{
+                background: {c["blue"]};
+            }}
+            QProgressBar#StageProgress[stageStatus="failure"]::chunk {{
+                background: {c["red"]};
+            }}
+            QProgressBar#StageProgress[stageStatus="cancelled"]::chunk {{
+                background: {c["amber"]};
+            }}
             QFrame#StepCard {{
                 background: {c["panel"]};
                 border: 1px solid {c["line"]};
@@ -621,7 +680,7 @@ class WorkbenchBoardPanel(QWidget):
 
         for idx, stage in enumerate(stages):
             lane = StageLane(stage, idx)
-            lane.selected.connect(self.select_stage)
+            lane.selected.connect(self._on_lane_selected)
             lane.step_dropped.connect(self._on_step_dropped)
             self._lanes[stage.uid] = lane
             self.board_layout.addWidget(lane, stretch=1)
@@ -633,7 +692,7 @@ class WorkbenchBoardPanel(QWidget):
                 dep_text = self._dep_summary(step)
                 order_label = f"B{batch_map.get(int(step.id), within_idx)}"
                 card = StepCard(step, order_label, dep_text)
-                card.selected.connect(self.select_step)
+                card.selected.connect(self._on_card_selected)
                 lane.add_card(card)
                 self._cards[int(step.id)] = card
                 self._step_stage[int(step.id)] = stage.uid
@@ -697,10 +756,19 @@ class WorkbenchBoardPanel(QWidget):
     def selected_stage_uid(self) -> str:
         return self._selected_stage_uid or ""
 
+    def _on_lane_selected(self, stage_uid: str) -> None:
+        self.select_stage(stage_uid)
+        self.setFocus(Qt.MouseFocusReason)
+
+    def _on_card_selected(self, step_id: int) -> None:
+        self.select_step(step_id)
+        self.setFocus(Qt.MouseFocusReason)
+
     def reset_all_status(self):
         for card in self._cards.values():
             card.set_status("idle")
             card.set_duration_seconds(None)
+        self._refresh_stage_progress()
 
     def highlight_step(self, step_id: int, status: str, duration_seconds=None):
         card = self._cards.get(int(step_id))
@@ -708,6 +776,21 @@ class WorkbenchBoardPanel(QWidget):
             card.set_status(status or "idle")
             if status != "running":
                 card.set_duration_seconds(duration_seconds)
+            stage_uid = self._step_stage.get(int(step_id), "")
+            lane = self._lanes.get(stage_uid)
+            if lane:
+                lane.update_progress()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Left:
+            if self._select_adjacent_stage(-1):
+                event.accept()
+                return
+        elif event.key() == Qt.Key_Right:
+            if self._select_adjacent_stage(1):
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def _request_add_step(self):
         if not self._workflow_id:
@@ -751,6 +834,21 @@ class WorkbenchBoardPanel(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def _select_adjacent_stage(self, offset: int) -> bool:
+        stage_uids = list(self._lanes.keys())
+        if not stage_uids:
+            return False
+        current = self._selected_stage_uid if self._selected_stage_uid in self._lanes else stage_uids[0]
+        next_index = stage_uids.index(current) + offset
+        if next_index < 0 or next_index >= len(stage_uids):
+            return False
+        self.select_stage(stage_uids[next_index])
+        return True
+
+    def _refresh_stage_progress(self) -> None:
+        for lane in self._lanes.values():
+            lane.update_progress()
 
     def _refresh_button_state(self):
         enabled = bool(self._workflow_id) and self._edit_enabled
