@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
 """数据库连接与 CRUD 操作"""
 
-import json
 import logging
-import os
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Optional, List, Generator
@@ -16,10 +14,33 @@ from sqlalchemy import create_engine, event, text, func
 from sqlalchemy.orm import sessionmaker, Session, joinedload, scoped_session
 
 from config import DATABASE_PATH
+from database_backup import auto_backup_workflows_impl
+from database_clone import clone_workflow_impl
+from database_field_guards import (
+    RUN_HISTORY_UPDATE_FIELDS,
+    STAGE_UPDATE_FIELDS,
+    STEP_LOG_UPDATE_FIELDS,
+    STEP_UPDATE_FIELDS,
+    WEBHOOK_UPDATE_FIELDS,
+    WORKFLOW_UPDATE_FIELDS,
+    validate_update_fields as _validate_update_fields,
+)
+from database_import_export import (
+    export_to_json_impl,
+    import_from_json_impl,
+    is_masked_webhook_url as _is_masked_webhook_url,
+)
+from database_versions import (
+    get_workflow_version_impl,
+    get_workflow_versions_impl,
+    save_workflow_version_impl,
+)
 from models import Base, Workflow, WorkflowStage, Step, RunHistory, StepLog, RecentWorkflow, WebhookConfig, WorkflowVersion
 from watch_rules import sanitize_workflow_watch_config
 
 logger = logging.getLogger(__name__)
+
+MASKED_WEBHOOK_URL = "__WORKFLOW_WEBHOOK_URL_MASKED__"
 
 
 # 循环依赖检测缓存（模块级）
@@ -211,16 +232,14 @@ def _run_pending_migrations(engine):
             continue
         func = globals().get(func_name)
         if not callable(func):
-            logger.warning("schema 迁移函数 %s 未定义，跳过版本 %s", func_name, version)
-            continue
+            raise RuntimeError(f"schema 迁移函数 {func_name} 未定义，无法升级到版本 {version}")
         try:
             func(engine)
             _record_version(engine, version)
             logger.info("schema 迁移完成: v%s (%s)", version, func_name)
         except Exception as e:
             logger.exception("schema 迁移 v%s 失败: %s", version, e)
-            # 不抛出，避免破坏冷启动；后续启动会重试
-            return
+            raise RuntimeError(f"schema 迁移 v{version} 失败，应用已停止启动以避免写入半升级数据库") from e
 
 
 def _repair_legacy_watch_configurations() -> None:
@@ -478,8 +497,8 @@ def _wal_checkpoint(session: Session) -> None:
     """
     try:
         session.execute(text("PRAGMA wal_checkpoint(PASSIVE)"))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("WAL checkpoint 失败（不影响当前事务）: %s", e)
 
 
 def generate_uid() -> str:
@@ -640,12 +659,12 @@ def update_recent_workflow(uid: str):
 
 def update_workflow(workflow_id: int, **kwargs) -> Optional[Workflow]:
     """更新工作流"""
+    _validate_update_fields("Workflow", kwargs, WORKFLOW_UPDATE_FIELDS)
     with get_session() as session:
         workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
         if workflow:
             for key, value in kwargs.items():
-                if hasattr(workflow, key):
-                    setattr(workflow, key, value)
+                setattr(workflow, key, value)
             workflow.updated_at = datetime.now()
             session.commit()
             session.refresh(workflow)
@@ -783,81 +802,11 @@ def delete_workflow(workflow_id: int) -> bool:
 
 
 def copy_workflow(workflow_id: int, new_name: str) -> Optional[Workflow]:
-    """复制工作流"""
-    with get_session() as session:
-        source = session.query(Workflow).filter(Workflow.id == workflow_id).first()
-        if not source:
-            return None
-        
-        # 创建新工作流
-        new_workflow = Workflow(
-            uid=generate_uid(),
-            name=new_name,
-            description=source.description,
-            chart_theme=source.chart_theme,
-            parallel_enabled=source.parallel_enabled,
-            max_workers=source.max_workers,
-            notify_config=source.notify_config,
-            watch_enabled=source.watch_enabled,
-            watch_mode=source.watch_mode,
-            watch_folders=source.watch_folders,
-            cooldown_seconds=source.cooldown_seconds,
-            settle_seconds=source.settle_seconds,
-            log_retention_days=source.log_retention_days
-        )
-        session.add(new_workflow)
-        session.flush()  # 获取新 ID
+    """复制工作流。
 
-        # 复制用途阶段（为稳定：生成新 uid，并建立 old_uid -> new_uid 映射）
-        _ensure_default_stage_in_session(session, source.id)
-        source_stages = (
-            session.query(WorkflowStage)
-            .filter(WorkflowStage.workflow_id == source.id)
-            .order_by(WorkflowStage.order.asc())
-            .all()
-        )
-        stage_uid_map: dict[str, str] = {}
-        for st in source_stages:
-            new_stage_uid = generate_uid()
-            stage_uid_map[st.uid] = new_stage_uid
-            session.add(
-                WorkflowStage(
-                    uid=new_stage_uid,
-                    workflow_id=new_workflow.id,
-                    name=st.name,
-                    order=st.order,
-                    color=st.color,
-                )
-            )
-        session.flush()
-        # 若源工作流没有阶段（理论上不会），确保新工作流至少有默认阶段
-        _ensure_default_stage_in_session(session, new_workflow.id)
-        
-        # 复制步骤
-        for step in source.steps:
-            new_step = Step(
-                workflow_id=new_workflow.id,
-                uid=generate_uid(),
-                order=step.order,
-                name=step.name,
-                stage_uid=stage_uid_map.get(step.stage_uid) if step.stage_uid else None,
-                step_type=step.step_type,
-                script_path=step.script_path,
-                args=step.args,
-                cwd=step.cwd,
-                is_gate=step.is_gate,
-                is_parallel=step.is_parallel,
-                depends_on=step.depends_on,
-                chart_theme=step.chart_theme,
-                timeout_seconds=step.timeout_seconds,
-                retry_count=step.retry_count,
-                skip_on_success=step.skip_on_success
-            )
-            session.add(new_step)
-        
-        session.commit()
-        session.refresh(new_workflow)
-        return new_workflow
+    兼容旧 API；实际实现统一委托给 clone_workflow，确保步骤依赖 UID 会被重映射。
+    """
+    return clone_workflow(workflow_id, new_name)
 
 
 # ============== Stage CRUD ==============
@@ -909,13 +858,13 @@ def create_stage(
 
 def update_stage(stage_uid: str, **kwargs) -> Optional[WorkflowStage]:
     """更新用途阶段"""
+    _validate_update_fields("WorkflowStage", kwargs, STAGE_UPDATE_FIELDS)
     with get_session() as session:
         stage = session.query(WorkflowStage).filter(WorkflowStage.uid == stage_uid).first()
         if not stage:
             return None
         for key, value in kwargs.items():
-            if hasattr(stage, key):
-                setattr(stage, key, value)
+            setattr(stage, key, value)
         stage.updated_at = datetime.now()
         session.commit()
         session.refresh(stage)
@@ -1039,12 +988,12 @@ def get_steps_by_workflow(workflow_id: int) -> List[Step]:
 
 def update_step(step_id: int, **kwargs) -> Optional[Step]:
     """更新步骤"""
+    _validate_update_fields("Step", kwargs, STEP_UPDATE_FIELDS)
     with get_session() as session:
         step = session.query(Step).filter(Step.id == step_id).first()
         if step:
             for key, value in kwargs.items():
-                if hasattr(step, key):
-                    setattr(step, key, value)
+                setattr(step, key, value)
             step.updated_at = datetime.now()
             session.commit()
             session.refresh(step)
@@ -1160,14 +1109,14 @@ def get_latest_run_history(
 
 def update_run_history(run_history_id: int, **kwargs) -> Optional[RunHistory]:
     """更新运行历史"""
+    _validate_update_fields("RunHistory", kwargs, RUN_HISTORY_UPDATE_FIELDS)
     with get_session() as session:
         run_history = session.query(RunHistory).filter(
             RunHistory.id == run_history_id
         ).first()
         if run_history:
             for key, value in kwargs.items():
-                if hasattr(run_history, key):
-                    setattr(run_history, key, value)
+                setattr(run_history, key, value)
             session.commit()
             # 终态写入后触发 WAL checkpoint，保证跨 session 一致性
             if kwargs.get("status") in ("success", "failure", "cancelled"):
@@ -1241,7 +1190,7 @@ def create_step_log(
 def get_step_logs_by_run(run_history_id: int) -> List[StepLog]:
     """获取运行的所有步骤日志"""
     with get_session() as session:
-        return session.query(StepLog).filter(
+        return session.query(StepLog).options(joinedload(StepLog.step)).filter(
             StepLog.run_history_id == run_history_id
         ).order_by(StepLog.order).all()
 
@@ -1340,12 +1289,12 @@ def update_step_log(step_log_id: int, **kwargs) -> Optional[StepLog]:
     (wal_autocheckpoint=1000 pages)；run_history 终结时由 update_run_history 一次性
     checkpoint，足以保证跨进程一致性。
     """
+    _validate_update_fields("StepLog", kwargs, STEP_LOG_UPDATE_FIELDS)
     with get_session() as session:
         step_log = session.query(StepLog).filter(StepLog.id == step_log_id).first()
         if step_log:
             for key, value in kwargs.items():
-                if hasattr(step_log, key):
-                    setattr(step_log, key, value)
+                setattr(step_log, key, value)
             session.commit()
             session.refresh(step_log)
         return step_log
@@ -1353,305 +1302,35 @@ def update_step_log(step_log_id: int, **kwargs) -> Optional[StepLog]:
 
 # ============== JSON 导入导出 ==============
 
+def is_masked_webhook_url(value: str | None) -> bool:
+    """判断导入值是否为脱敏占位符。"""
+    return _is_masked_webhook_url(value, MASKED_WEBHOOK_URL)
+
+
 def import_from_json(json_path: Path) -> int:
-    """从 JSON 文件导入工作流
-    
-    Returns:
-        导入的工作流数量
-    """
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
-    # 先导入/合并 Webhook 配置（以 name 为唯一键），用于跨机器映射 webhook_id
-    webhooks_data = data.get("webhooks", [])
-    workflows_data = data.get('workflows', [])
-    imported_count = 0
-    
-    with get_session() as session:
-        webhook_name_to_id = {}
-        if isinstance(webhooks_data, list) and webhooks_data:
-            for wh in webhooks_data:
-                if not isinstance(wh, dict):
-                    continue
-                name = (wh.get("name") or "").strip()
-                url = (wh.get("webhook_url") or "").strip()
-                if not name or not url:
-                    continue
-                keyword = (wh.get("keyword") or "").strip()
-                desc = (wh.get("description") or "").strip()
-
-                existing = session.query(WebhookConfig).filter(WebhookConfig.name == name).first()
-                if existing:
-                    # L3: 合并更新前提示哪些字段被覆盖，避免静默覆盖造成困惑
-                    overrides = []
-                    if existing.webhook_url != url:
-                        overrides.append("webhook_url")
-                    if (existing.keyword or None) != (keyword or None):
-                        overrides.append("keyword")
-                    if (existing.description or None) != (desc or None):
-                        overrides.append("description")
-                    if overrides:
-                        logger.info(
-                            "导入 webhook 覆盖现有同名记录: name=%r, 覆盖字段=%s",
-                            name, ",".join(overrides),
-                        )
-                    # 合并更新：以导入为准（便于跨设备一致）
-                    existing.webhook_url = url
-                    existing.keyword = keyword or None
-                    existing.description = desc or None
-                    existing.updated_at = datetime.now()
-                    session.flush()
-                    webhook_name_to_id[name] = existing.id
-                else:
-                    item = WebhookConfig(
-                        name=name,
-                        webhook_url=url,
-                        keyword=keyword or None,
-                        description=desc or None,
-                    )
-                    session.add(item)
-                    session.flush()
-                    webhook_name_to_id[name] = item.id
-
-        for wf_data in workflows_data:
-            # 创建工作流
-            single_args = wf_data.get('single_script', {}).get('args')
-            if isinstance(single_args, list):
-                single_args = json.dumps(single_args, ensure_ascii=False)
-            workflow = Workflow(
-                uid=wf_data.get('id', generate_uid()),
-                name=wf_data.get('name', '未命名工作流'),
-                chart_theme=wf_data.get('chart_theme', 'default'),
-                parallel_enabled=wf_data.get('parallel', {}).get('enabled', False),
-                max_workers=wf_data.get('parallel', {}).get('max_workers', 2),
-                watch_enabled=wf_data.get('watch', {}).get('enabled', False),
-                watch_mode=wf_data.get('watch', {}).get('mode', 'any_change'),
-                cooldown_seconds=wf_data.get('watch', {}).get('cooldown_seconds', 8),
-                settle_seconds=wf_data.get('watch', {}).get('settle_seconds', 15),
-                single_script_enabled=wf_data.get('single_script', {}).get('enabled', False),
-                single_script_type=wf_data.get('single_script', {}).get('type', 'python'),
-                single_script_path=wf_data.get('single_script', {}).get('path'),
-                single_script_args=single_args,
-                single_script_cwd=wf_data.get('single_script', {}).get('cwd')
-            )
-            
-            # 设置通知配置
-            if 'notify' in wf_data:
-                notify = wf_data.get("notify") or {}
-                if isinstance(notify, str):
-                    try:
-                        notify = json.loads(notify)
-                    except json.JSONDecodeError:
-                        notify = {}
-                if not isinstance(notify, dict):
-                    notify = {}
-
-                # webhook_id 跨机器不稳定：优先用 webhook_name 映射
-                wh_name = (notify.get("webhook_name") or "").strip()
-                if wh_name and wh_name in webhook_name_to_id:
-                    notify["webhook_id"] = webhook_name_to_id[wh_name]
-                else:
-                    wh_id = notify.get("webhook_id")
-                    if wh_id:
-                        exists = session.query(WebhookConfig).filter(WebhookConfig.id == wh_id).first()
-                        if not exists:
-                            notify["webhook_id"] = None
-
-                workflow.set_notify_config(notify)
-            if 'watch' in wf_data:
-                folders = wf_data.get('watch', {}).get('folders', [])
-                if folders:
-                    workflow.set_watch_folders(folders)
-            
-            session.add(workflow)
-            session.flush()
-
-            # 用途阶段（人为归类）
-            stages_data = wf_data.get("stages", [])
-            stage_uid_set: set[str] = set()
-            stage_uid_map: dict[str, str] = {}
-            if isinstance(stages_data, list) and stages_data:
-                for idx, st in enumerate(stages_data):
-                    if not isinstance(st, dict):
-                        continue
-                    import_uid = (st.get("uid") or "").strip() or generate_uid()
-                    st_uid = import_uid
-                    st_name = (st.get("name") or "").strip() or f"阶段 {idx + 1}"
-                    st_order = int(st.get("order") if st.get("order") is not None else idx)
-                    st_color = (st.get("color") or None) or None
-                    # 避免 uid 冲突（uid 全局唯一）
-                    if session.query(WorkflowStage).filter(WorkflowStage.uid == st_uid).first():
-                        st_uid = generate_uid()
-                    stage_uid_map[import_uid] = st_uid
-                    session.add(
-                        WorkflowStage(
-                            uid=st_uid,
-                            workflow_id=workflow.id,
-                            name=st_name,
-                            order=st_order,
-                            color=st_color,
-                        )
-                    )
-                    stage_uid_set.add(st_uid)
-                session.flush()
-
-            default_stage = _ensure_default_stage_in_session(session, workflow.id)
-            stage_uid_set.add(default_stage.uid)
-            
-            # 创建步骤
-            for idx, step_data in enumerate(wf_data.get('steps', [])):
-                stage_uid_in = (step_data.get("stage_uid") or "").strip()
-                stage_uid = stage_uid_map.get(stage_uid_in, stage_uid_in) if stage_uid_in else default_stage.uid
-                if stage_uid not in stage_uid_set:
-                    stage_uid = default_stage.uid
-                step = Step(
-                    workflow_id=workflow.id,
-                    uid=step_data.get('id', generate_uid()),
-                    order=idx,
-                    name=step_data.get('name', f'步骤 {idx + 1}'),
-                    stage_uid=stage_uid,
-                    step_type=step_data.get('step_type', 'python'),
-                    script_path=step_data.get('script', ''),
-                    cwd=step_data.get('cwd', ''),
-                    is_gate=step_data.get('is_gate', False),
-                    is_parallel=step_data.get('is_parallel', False),
-                    chart_theme=step_data.get('chart_theme', ''),
-                    timeout_seconds=step_data.get('timeout_seconds'),
-                    retry_count=int(step_data.get('retry_count') or 0),
-                    skip_on_success=bool(step_data.get('skip_on_success', False)),
-                )
-                
-                # 设置参数
-                args = step_data.get('args', [])
-                if args:
-                    step.set_args(args)
-                
-                deps = step_data.get('depends_on', [])
-                if deps:
-                    step.set_depends_on(deps)
-                
-                session.add(step)
-            
-            imported_count += 1
-        
-        session.commit()
-    
-    return imported_count
+    """从 JSON 文件导入工作流。"""
+    return import_from_json_impl(
+        json_path,
+        get_session=get_session,
+        generate_uid=generate_uid,
+        ensure_default_stage=_ensure_default_stage_in_session,
+        masked_webhook_url=MASKED_WEBHOOK_URL,
+    )
 
 
-def export_to_json(json_path: Path, workflow_ids: List[int] | None = None):
-    """导出工作流到 JSON 文件（优化：使用批量查询避免N+1问题）
-
-    Args:
-        json_path: 导出目标路径
-        workflow_ids: 若提供，则仅导出这些 workflow_id
-    """
-    from sqlalchemy.orm import selectinload
-
-    data = {
-        "version": 1,
-        "webhooks": [],
-        "workflows": []
-    }
-
-    with get_session() as session:
-        # Webhook 管理配置：完整备份
-        webhooks = session.query(WebhookConfig).order_by(WebhookConfig.name).all()
-        data["webhooks"] = [
-            {
-                "name": wh.name,
-                "webhook_url": wh.webhook_url,
-                "keyword": wh.keyword or "",
-                "description": wh.description or "",
-            }
-            for wh in webhooks
-        ]
-
-        # 构建 webhook ID -> name 映射，避免重复查询
-        webhook_map = {wh.id: wh.name for wh in webhooks}
-
-        # 批量获取所有工作流及其关联数据（使用预加载避免N+1）
-        workflow_query = session.query(Workflow).options(
-            selectinload(Workflow.stages),
-            selectinload(Workflow.steps)
-        )
-        if workflow_ids:
-            workflow_query = workflow_query.filter(Workflow.id.in_(list(workflow_ids)))
-        workflows = workflow_query.order_by(Workflow.created_at.desc()).all()
-
-        for workflow in workflows:
-            notify = workflow.get_notify_config()
-            if not isinstance(notify, dict):
-                notify = {}
-            else:
-                notify = dict(notify)
-            # 跨机器映射：补充 webhook_name（稳定键）
-            wh_id = notify.get("webhook_id")
-            if wh_id and wh_id in webhook_map:
-                notify["webhook_name"] = webhook_map[wh_id]
-
-            wf_data = {
-                "id": workflow.uid,
-                "name": workflow.name,
-                "chart_theme": workflow.chart_theme,
-                "parallel": {
-                    "enabled": workflow.parallel_enabled,
-                    "max_workers": workflow.max_workers
-                },
-                "notify": notify,
-                "watch": {
-                    "enabled": workflow.watch_enabled,
-                    "mode": workflow.watch_mode,
-                    "folders": workflow.get_watch_folders(),
-                    "cooldown_seconds": workflow.cooldown_seconds,
-                    "settle_seconds": workflow.settle_seconds
-                },
-                "single_script": {
-                    "enabled": workflow.single_script_enabled,
-                    "type": workflow.single_script_type,
-                    "path": workflow.single_script_path,
-                    "args": workflow.single_script_args,
-                    "cwd": workflow.single_script_cwd
-                },
-                "stages": [],
-                "steps": []
-            }
-
-            # 用途阶段（已预加载，直接访问）
-            wf_data["stages"] = [
-                {
-                    "uid": st.uid,
-                    "name": st.name,
-                    "order": int(st.order or 0),
-                    "color": st.color or "",
-                }
-                for st in sorted(workflow.stages, key=lambda s: s.order or 0)
-            ]
-
-            # 获取步骤（已预加载，直接访问）
-            for step in sorted(workflow.steps, key=lambda s: s.order):
-                step_data = {
-                    "id": step.uid,
-                    "name": step.name,
-                    "stage_uid": step.stage_uid or "",
-                    "step_type": step.step_type,
-                    "script": step.script_path or "",
-                    "args": step.get_args(),
-                    "cwd": step.cwd or "",
-                    "is_gate": step.is_gate,
-                    "is_parallel": step.is_parallel,
-                    "depends_on": step.get_depends_on(),
-                    "chart_theme": step.chart_theme or "",
-                    "timeout_seconds": step.timeout_seconds,
-                    "retry_count": step.retry_count,
-                    "skip_on_success": step.skip_on_success,
-                }
-                wf_data["steps"].append(step_data)
-
-            data["workflows"].append(wf_data)
-    
-    with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def export_to_json(
+    json_path: Path,
+    workflow_ids: List[int] | None = None,
+    include_secrets: bool = False,
+):
+    """导出工作流到 JSON 文件。"""
+    export_to_json_impl(
+        json_path,
+        workflow_ids=workflow_ids,
+        include_secrets=include_secrets,
+        get_session=get_session,
+        masked_webhook_url=MASKED_WEBHOOK_URL,
+    )
 
 
 # ============== Webhook CRUD ==============
@@ -1703,12 +1382,12 @@ def create_webhook(
 
 def update_webhook(webhook_id: int, **kwargs) -> Optional[WebhookConfig]:
     """更新 Webhook 配置"""
+    _validate_update_fields("WebhookConfig", kwargs, WEBHOOK_UPDATE_FIELDS)
     with get_session() as session:
         webhook = session.query(WebhookConfig).filter(WebhookConfig.id == webhook_id).first()
         if webhook:
             for key, value in kwargs.items():
-                if hasattr(webhook, key):
-                    setattr(webhook, key, value)
+                setattr(webhook, key, value)
             webhook.updated_at = datetime.now()
             session.commit()
             session.refresh(webhook)
@@ -1738,92 +1417,13 @@ def get_webhooks_by_ids(webhook_ids: List[int]) -> List[WebhookConfig]:
 # ============== 工作流克隆 ==============
 
 def clone_workflow(workflow_id: int, new_name: str = None) -> Optional[Workflow]:
-    """克隆工作流（含阶段和步骤）
-
-    Args:
-        workflow_id: 源工作流 ID
-        new_name: 新工作流名称（默认: "{原名} 副本"）
-
-    Returns:
-        新工作流对象
-    """
-    with get_session() as session:
-        source = session.query(Workflow).filter(Workflow.id == workflow_id).first()
-        if not source:
-            return None
-
-        # 创建新工作流
-        cloned = Workflow(
-            uid=generate_uid(),
-            name=new_name or f"{source.name} 副本",
-            description=source.description,
-            chart_theme=source.chart_theme,
-            parallel_enabled=source.parallel_enabled,
-            max_workers=source.max_workers,
-            watch_enabled=source.watch_enabled,
-            watch_mode=source.watch_mode,
-            watch_folders=source.watch_folders,
-            cooldown_seconds=source.cooldown_seconds,
-            settle_seconds=source.settle_seconds,
-            single_script_enabled=source.single_script_enabled,
-            single_script_type=source.single_script_type,
-            single_script_path=source.single_script_path,
-            single_script_args=source.single_script_args,
-            single_script_cwd=source.single_script_cwd,
-            log_retention_days=source.log_retention_days,
-            notify_config=source.notify_config,
-        )
-        session.add(cloned)
-        session.flush()
-
-        # 克隆阶段
-        uid_map = {}
-        for stage in sorted(source.stages, key=lambda s: s.order or 0):
-            new_uid = generate_uid()
-            uid_map[stage.uid] = new_uid
-            cloned_stage = WorkflowStage(
-                uid=new_uid,
-                workflow_id=cloned.id,
-                name=stage.name,
-                order=stage.order,
-                color=stage.color,
-            )
-            session.add(cloned_stage)
-
-        # 克隆步骤：先生成完整 UID 映射，避免依赖排序更靠后的步骤时保留旧 UID。
-        source_steps = sorted(source.steps, key=lambda s: s.order)
-        old_to_new_uid = {step.uid: generate_uid() for step in source_steps}
-        for step in source_steps:
-            new_uid = old_to_new_uid[step.uid]
-            new_stage_uid = uid_map.get(step.stage_uid, step.stage_uid)
-
-            # 更新依赖引用
-            deps = step.get_depends_on()
-            new_deps = [old_to_new_uid.get(d, d) for d in deps]
-
-            cloned_step = Step(
-                uid=new_uid,
-                workflow_id=cloned.id,
-                order=step.order,
-                name=step.name,
-                stage_uid=new_stage_uid,
-                step_type=step.step_type,
-                script_path=step.script_path,
-                cwd=step.cwd,
-                is_gate=step.is_gate,
-                is_parallel=step.is_parallel,
-                chart_theme=step.chart_theme,
-                skip_on_success=step.skip_on_success,
-                retry_count=step.retry_count,
-                timeout_seconds=step.timeout_seconds,
-            )
-            cloned_step.set_args(step.get_args())
-            cloned_step.set_depends_on(new_deps)
-            session.add(cloned_step)
-
-        session.commit()
-        session.refresh(cloned)
-        return cloned
+    """克隆工作流（含阶段和步骤）。"""
+    return clone_workflow_impl(
+        workflow_id,
+        new_name,
+        get_session=get_session,
+        generate_uid=generate_uid,
+    )
 
 
 # ============== 配置版本控制 ==============
@@ -1838,65 +1438,25 @@ def save_workflow_version(workflow_id: int, reason: str = None) -> Optional[int]
     Returns:
         版本号
     """
-    with get_session() as session:
-        workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
-        if not workflow:
-            return None
-
-        # 获取下一个版本号
-        latest = session.query(WorkflowVersion).filter(
-            WorkflowVersion.workflow_id == workflow_id
-        ).order_by(WorkflowVersion.version.desc()).first()
-        next_version = (latest.version + 1) if latest else 1
-
-        # 构建快照
-        stages_data = []
-        for s in sorted(workflow.stages, key=lambda x: x.order or 0):
-            stages_data.append({
-                "uid": s.uid, "name": s.name, "order": s.order, "color": s.color
-            })
-        steps_data = []
-        for s in sorted(workflow.steps, key=lambda x: x.order):
-            steps_data.append({
-                "uid": s.uid, "name": s.name, "stage_uid": s.stage_uid,
-                "step_type": s.step_type, "script_path": s.script_path,
-                "args": s.get_args(), "depends_on": s.get_depends_on(),
-                "is_gate": s.is_gate, "is_parallel": s.is_parallel,
-                "order": s.order, "chart_theme": s.chart_theme,
-                "retry_count": s.retry_count, "timeout_seconds": s.timeout_seconds,
-            })
-
-        snapshot = json.dumps({
-            "name": workflow.name,
-            "stages": stages_data,
-            "steps": steps_data,
-            "parallel_enabled": workflow.parallel_enabled,
-            "watch_enabled": workflow.watch_enabled,
-        }, ensure_ascii=False)
-
-        version = WorkflowVersion(
-            workflow_id=workflow_id,
-            version=next_version,
-            snapshot=snapshot,
-            change_reason=reason
-        )
-        session.add(version)
-        session.commit()
-        return next_version
+    return save_workflow_version_impl(
+        workflow_id,
+        reason=reason,
+        session_factory=get_session,
+    )
 
 
 def get_workflow_versions(workflow_id: int, limit: int = 20) -> List[WorkflowVersion]:
     """获取工作流的版本历史"""
-    with get_session() as session:
-        return session.query(WorkflowVersion).filter(
-            WorkflowVersion.workflow_id == workflow_id
-        ).order_by(WorkflowVersion.version.desc()).limit(limit).all()
+    return get_workflow_versions_impl(
+        workflow_id,
+        limit=limit,
+        session_factory=get_session,
+    )
 
 
 def get_workflow_version(version_id: int) -> Optional[WorkflowVersion]:
     """获取指定版本"""
-    with get_session() as session:
-        return session.query(WorkflowVersion).filter(WorkflowVersion.id == version_id).first()
+    return get_workflow_version_impl(version_id, session_factory=get_session)
 
 
 def get_step_by_id(step_id: int):
@@ -1908,36 +1468,21 @@ def get_step_by_id(step_id: int):
 # ============== 自动备份 ==============
 
 
-def auto_backup_workflows(backup_dir: Path = None) -> Path:
+def auto_backup_workflows(backup_dir: Path = None, include_secrets: bool = False) -> Path:
     """自动备份所有工作流配置到指定目录
 
     Args:
         backup_dir: 备份目录，默认为 APP_DATA_DIR/backups
+        include_secrets: 是否在备份中保留 Webhook URL，默认脱敏以降低同步/共享泄露风险
 
     Returns:
         备份文件路径
     """
-    if backup_dir is None:
-        from config import APP_DATA_DIR
-        backup_dir = APP_DATA_DIR / "backups"
-    backup_dir = Path(backup_dir)
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    from config import APP_DATA_DIR
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = backup_dir / f"workflows_backup_{timestamp}.json"
-
-    # 导出到临时文件
-    export_to_json(backup_path)
-
-    # 清理过期备份（保留最近 30 天）
-    cutoff = datetime.now() - timedelta(days=30)
-    for f in sorted(backup_dir.glob("workflows_backup_*.json")):
-        try:
-            ts_str = f.stem.replace("workflows_backup_", "")
-            ts = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
-            if ts < cutoff:
-                f.unlink(missing_ok=True)
-        except (ValueError, OSError):
-            pass
-
-    return backup_path
+    return auto_backup_workflows_impl(
+        backup_dir=backup_dir,
+        default_backup_dir=APP_DATA_DIR / "backups",
+        include_secrets=include_secrets,
+        export_to_json=export_to_json,
+    )
