@@ -1,0 +1,49 @@
+name: Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec:
+        description: "PyInstaller spec to build"
+        required: true
+        default: "build_slim2.spec"
+
+jobs:
+  package:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-release.txt
+          pip install pyinstaller
+
+      - name: Compile sources
+        run: python -m compileall src tests _import_and_run.py
+
+      - name: Build executable
+        run: pyinstaller ${{ inputs.spec }} --noconfirm
+
+      - name: Verify artifact
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path dist -Filter *.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $exe) {
+            throw "No executable produced in dist"
+          }
+          Get-FileHash -Algorithm SHA256 -Path $exe.FullName | Format-List
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-manager-exe
+          path: dist/*.exe

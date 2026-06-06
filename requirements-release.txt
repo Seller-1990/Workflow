@@ -1,0 +1,9 @@
+# Release build constraints for direct runtime dependencies.
+# Update deliberately after smoke-testing the packaged executable.
+PySide6==6.10.1
+SQLAlchemy==2.0.46
+pywin32==311
+pywinauto==0.6.9
+watchdog==6.0.0
+psutil==7.2.2
+requests==2.32.5
