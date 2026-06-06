@@ -368,9 +368,8 @@ def test_engine_run_sub_workflow_reuses_parent_context_without_lock_conflict(mon
             }
             return True
 
-        monkeypatch.setattr("engine.create_run_history", fake_create_run_history)
         monkeypatch.setattr("engine.update_run_history", lambda *args, **kwargs: None)
-        # CA2: 生命周期 DB 调用现在通过 engine_core.lifecycle，monkeypatch 需要补 patch
+        # CA2: 生命周期 DB 调用现在通过 engine_core.lifecycle。
         monkeypatch.setattr("engine_core.lifecycle.create_run_history", fake_create_run_history)
         monkeypatch.setattr("engine_core.lifecycle.update_run_history", lambda *args, **kwargs: None)
         monkeypatch.setattr(engine, "_cleanup_old_logs", lambda current_workflow: None)
@@ -427,7 +426,6 @@ def test_engine_run_sub_workflow_forwards_nested_cancel_event(monkeypatch, tmp_p
             calls["run_cancel_event"] = run_cancel_event
             return False
 
-        monkeypatch.setattr("engine.create_run_history", fake_create_run_history)
         monkeypatch.setattr("engine.update_run_history", lambda *args, **kwargs: None)
         monkeypatch.setattr("engine_core.lifecycle.create_run_history", fake_create_run_history)
         monkeypatch.setattr("engine_core.lifecycle.update_run_history", lambda *args, **kwargs: None)
