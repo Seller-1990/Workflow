@@ -22,9 +22,10 @@ def test_cmd_export_only_exports_requested_workflow(tmp_path, monkeypatch, capsy
         lambda workflow_id: type("WorkflowStub", (), {"id": 5, "name": "月度数据处理"})() if workflow_id == 5 else None,
     )
 
-    def fake_export(output: Path, workflow_ids=None):
+    def fake_export(output: Path, workflow_ids=None, include_secrets=False):
         exported["path"] = Path(output)
         exported["workflow_ids"] = workflow_ids
+        exported["include_secrets"] = include_secrets
         exported["path"].write_text(
             json.dumps({"workflows": [{"name": "月度数据处理"}]}, ensure_ascii=False),
             encoding="utf-8",
@@ -36,8 +37,11 @@ def test_cmd_export_only_exports_requested_workflow(tmp_path, monkeypatch, capsy
     cli_module.cmd_export(args)
 
     assert exported["workflow_ids"] == [5]
+    assert exported["include_secrets"] is False
     assert exported["path"].exists()
-    assert "工作流已导出到" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "工作流已导出到" in output
+    assert "Webhook URL 已脱敏" in output
 
 
 def test_import_and_run_help_starts_without_import_error():
@@ -52,3 +56,42 @@ def test_import_and_run_help_starts_without_import_error():
 
     assert result.returncode == 0
     assert "--auto" in result.stdout
+
+
+def test_cmd_backup_masks_webhook_secrets_by_default(tmp_path, monkeypatch, capsys):
+    calls = {}
+
+    monkeypatch.setattr(cli_module, "init_db", lambda: None)
+
+    def fake_backup(backup_dir=None, include_secrets=False):
+        calls["backup_dir"] = backup_dir
+        calls["include_secrets"] = include_secrets
+        return tmp_path / "backup.json"
+
+    monkeypatch.setattr(cli_module, "auto_backup_workflows", fake_backup)
+
+    args = type("Args", (), {"dir": str(tmp_path), "include_secrets": False, "without_secrets": False})()
+    cli_module.cmd_backup(args)
+
+    assert calls == {"backup_dir": tmp_path, "include_secrets": False}
+    output = capsys.readouterr().out
+    assert "Webhook URL 已脱敏" in output
+
+
+def test_cmd_backup_warns_when_secrets_are_included(tmp_path, monkeypatch, capsys):
+    calls = {}
+
+    monkeypatch.setattr(cli_module, "init_db", lambda: None)
+
+    def fake_backup(backup_dir=None, include_secrets=False):
+        calls["include_secrets"] = include_secrets
+        return tmp_path / "backup.json"
+
+    monkeypatch.setattr(cli_module, "auto_backup_workflows", fake_backup)
+
+    args = type("Args", (), {"dir": None, "include_secrets": True, "without_secrets": False})()
+    cli_module.cmd_backup(args)
+
+    assert calls["include_secrets"] is True
+    output = capsys.readouterr().out
+    assert "包含完整 Webhook URL" in output

@@ -13,7 +13,7 @@ Workflow CLI - 无需 GUI 即可操作工作流
     python cli.py history "月度报表"            # 查看运行历史
     python cli.py steps "月度报表"              # 查看工作流步骤
     python cli.py stages "月度报表"             # 查看工作流阶段
-    python cli.py export "月度报表" [path]      # 导出工作流
+    python cli.py export "月度报表" [path]      # 导出工作流（默认脱敏 Webhook URL）
     python cli.py import <json_path>            # 导入工作流
     python cli.py backup                        # 自动备份所有工作流
     python cli.py clone "月度报表" [name]       # 克隆工作流
@@ -22,9 +22,7 @@ Workflow CLI - 无需 GUI 即可操作工作流
 """
 
 import sys
-import os
 import argparse
-import signal
 from datetime import datetime
 from pathlib import Path
 
@@ -55,11 +53,10 @@ from database import (
     get_workflow_by_name, search_workflows,
     get_step_by_name, search_steps,
     get_stage_by_name, search_stages, list_stages,
-    create_workflow, delete_workflow, clone_workflow,
+    delete_workflow, clone_workflow,
     export_to_json, import_from_json,
     get_run_histories_by_workflow, get_step_logs_by_run,
     get_steps_by_workflow, auto_backup_workflows,
-    get_workflow_versions, save_workflow_version,
 )
 from engine import WorkflowEngine, RunStatus, RunMode, RunSignalPolicy
 
@@ -550,6 +547,22 @@ def cmd_retry(args):
     sys.exit(0 if success else 1)
 
 
+def _step_log_name(log) -> str:
+    step = getattr(log, "step", None)
+    name = getattr(step, "name", None) if step is not None else None
+    return name or getattr(log, "step_name", None) or f"步骤#{getattr(log, 'step_id', '?')}"
+
+
+def _step_log_duration(log) -> str:
+    duration = getattr(log, "duration_seconds", None)
+    if duration is None:
+        start_time = getattr(log, "start_time", None)
+        end_time = getattr(log, "end_time", None)
+        if start_time and end_time:
+            duration = (end_time - start_time).total_seconds()
+    return format_duration_short(duration)
+
+
 def cmd_history(args):
     """查看运行历史"""
     init_db()
@@ -585,10 +598,18 @@ def cmd_history(args):
             print(f"  {'步骤':<25} {'状态':<8} {'耗时':<10} {'错误信息'}")
             print(f"  {'-'*70}")
             for log in logs:
-                st = "OK" if log.status == "success" else "FAIL"
-                dur = f"{log.duration:.1f}s" if log.duration else ""
+                status_map = {
+                    "success": "OK",
+                    "failure": "FAIL",
+                    "running": "RUN",
+                    "cancelled": "CANCEL",
+                    "skipped": "SKIP",
+                    "pending": "WAIT",
+                }
+                st = status_map.get(log.status, log.status or "UNKNOWN")
+                dur = _step_log_duration(log)
                 err = (log.error_message or "")[:40]
-                print(f"  {log.step_name:<25} {st:<8} {dur:<10} {err}")
+                print(f"  {_step_log_name(log):<25} {st:<8} {dur:<10} {err}")
     print()
 
 
@@ -648,8 +669,11 @@ def cmd_export(args):
         return
 
     output = Path(args.output) if args.output else Path(f"{workflow.name}.json")
-    export_to_json(output, workflow_ids=[workflow_id])
+    include_secrets = bool(getattr(args, "include_secrets", False))
+    export_to_json(output, workflow_ids=[workflow_id], include_secrets=include_secrets)
     print(f"工作流已导出到: {output.resolve()}")
+    if not include_secrets:
+        print("提示: Webhook URL 已脱敏；如需完整密钥导出，请显式使用 --include-secrets")
 
 
 def cmd_import(args):
@@ -668,8 +692,13 @@ def cmd_backup(args):
     """备份所有工作流"""
     init_db()
     backup_dir = Path(args.dir) if args.dir else None
-    result = auto_backup_workflows(backup_dir)
+    include_secrets = bool(getattr(args, "include_secrets", False))
+    result = auto_backup_workflows(backup_dir, include_secrets=include_secrets)
     print(f"备份完成: {result}")
+    if include_secrets:
+        print("警告: 本次备份包含完整 Webhook URL，请勿同步或共享该文件")
+    else:
+        print("提示: Webhook URL 已脱敏；如需完整恢复备份，请显式使用 --include-secrets")
 
 
 def cmd_clone(args):
@@ -756,6 +785,11 @@ def main():
     export_parser = subparsers.add_parser("export", help="导出工作流")
     export_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
     export_parser.add_argument("output", nargs="?", help="输出路径 (默认: 工作流名.json)")
+    export_parser.add_argument(
+        "--include-secrets",
+        action="store_true",
+        help="导出完整 Webhook URL；默认会脱敏，避免共享文件泄露 token",
+    )
 
     # import
     import_parser = subparsers.add_parser("import", aliases=["load"], help="导入工作流")
@@ -764,6 +798,16 @@ def main():
     # backup
     backup_parser = subparsers.add_parser("backup", aliases=["bak"], help="备份所有工作流")
     backup_parser.add_argument("--dir", "-d", help="备份目录 (默认: 自动)")
+    backup_parser.add_argument(
+        "--include-secrets",
+        action="store_true",
+        help="备份完整 Webhook URL；默认会脱敏，避免同步或共享备份时泄露 token",
+    )
+    backup_parser.add_argument(
+        "--without-secrets",
+        action="store_true",
+        help="兼容旧参数；当前默认已脱敏",
+    )
 
     # clone
     clone_parser = subparsers.add_parser("clone", aliases=["cp"], help="克隆工作流")

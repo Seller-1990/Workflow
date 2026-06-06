@@ -105,6 +105,14 @@ def format_message(
     return result
 
 
+def _response_excerpt(text: str, limit: int = 200) -> str:
+    """生成可记录的短响应摘要，避免日志塞入整段 HTML。"""
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit] + "..."
+
+
 def send_dingtalk_message(
     webhook_url: str,
     message: str,
@@ -151,8 +159,19 @@ def send_dingtalk_message(
             timeout=timeout,
             headers={"Content-Type": "application/json"}
         )
-        
-        result = response.json()
+
+        status_code = getattr(response, "status_code", None)
+        try:
+            result = response.json()
+        except ValueError:
+            excerpt = _response_excerpt(getattr(response, "text", ""))
+            status = f"HTTP {status_code}" if status_code is not None else "HTTP 状态未知"
+            return False, f"发送失败: {status}, 响应不是 JSON: {excerpt or '空响应'}"
+
+        if status_code is not None and status_code >= 400:
+            excerpt = _response_excerpt(getattr(response, "text", ""))
+            message_text = result.get("errmsg") or excerpt or "未知错误"
+            return False, f"发送失败: HTTP {status_code}: {message_text}"
         
         if result.get("errcode") == 0:
             return True, "发送成功"

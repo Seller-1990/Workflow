@@ -4,7 +4,10 @@
 import os
 import sys
 import json
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # 判断是否为打包后的 exe
 if getattr(sys, 'frozen', False):
@@ -23,17 +26,20 @@ if not ICON_PATH.exists():
 
 # 数据目录
 DATA_DIR = APP_DATA_DIR / "data"
-try:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-except OSError:
-    pass
+
+
+def _ensure_directory(path: Path, label: str) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(f"无法创建{label}: {path}") from e
+
+
+_ensure_directory(DATA_DIR, "数据目录")
 
 # 日志目录
 LOG_DIR = APP_DATA_DIR / "logs"
-try:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-except OSError:
-    pass
+_ensure_directory(LOG_DIR, "日志目录")
 
 # 数据库路径
 DATABASE_PATH = DATA_DIR / "workflows.db"
@@ -69,8 +75,8 @@ def load_user_config() -> dict:
         try:
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("加载用户配置失败，已使用默认配置: path=%s, error=%s", CONFIG_PATH, e)
     return {}
 
 

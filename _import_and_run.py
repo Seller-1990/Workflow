@@ -5,6 +5,7 @@
 用法:
     # 导入最新工作流（从 workflows_export.json）
     python _import_and_run.py import
+    python _import_and_run.py --workflows-json D:/path/workflows_export.json import
 
     # 运行指定工作流（默认：月度数据处理），启用钉钉通知
     python _import_and_run.py run "月度数据处理"
@@ -35,11 +36,15 @@ from engine import WorkflowEngine, RunMode, RunSignalPolicy
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
-WORKFLOWS_JSON = Path(r"D:\OneDrive - PowerBI学谦\Data Analysis\workflows_export.json")
+DEFAULT_WORKFLOWS_JSON = Path(__file__).resolve().parent / "workflows_export.json"
 
 
-def cmd_import():
-    with open(WORKFLOWS_JSON, 'r', encoding='utf-8') as f:
+def cmd_import(workflows_json: Path):
+    workflows_json = Path(workflows_json)
+    if not workflows_json.exists():
+        raise FileNotFoundError(f"工作流导入文件不存在: {workflows_json}")
+
+    with open(workflows_json, 'r', encoding='utf-8') as f:
         import json
         data = json.load(f)
 
@@ -48,7 +53,7 @@ def cmd_import():
         name = wf.get("name", "")
         print(f"  [{uid}] {name}", flush=True)
 
-    count = import_from_json(WORKFLOWS_JSON)
+    count = import_from_json(workflows_json)
     print(f"导入完成: {count} 个工作流\n", flush=True)
     list_workflows()
 
@@ -146,6 +151,12 @@ def main():
         epilog=__doc__
     )
     parser.add_argument("--auto", action="store_true", help="导入后自动运行月度数据处理")
+    parser.add_argument(
+        "--workflows-json",
+        type=Path,
+        default=DEFAULT_WORKFLOWS_JSON,
+        help=f"工作流导入 JSON 路径（默认: {DEFAULT_WORKFLOWS_JSON}）",
+    )
     sub = parser.add_subparsers(dest="cmd")
 
     p_import = sub.add_parser("import", help="从 workflows_export.json 导入工作流")
@@ -155,11 +166,11 @@ def main():
     args = parser.parse_args()
 
     if args.auto:
-        cmd_import()
+        cmd_import(args.workflows_json)
         print("\n" + "="*60, flush=True)
         cmd_run("月度数据处理")
     elif args.cmd == "import":
-        cmd_import()
+        cmd_import(args.workflows_json)
     elif args.cmd == "run":
         cmd_run(args.name)
     else:
