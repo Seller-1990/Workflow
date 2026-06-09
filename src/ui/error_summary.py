@@ -163,21 +163,19 @@ class ErrorSummaryDialog(QDialog):
             from database import get_latest_run_history, get_step_logs_by_run
 
             workflow_id = self._workflow_id
-            if not workflow_id:
-                return
-            latest = get_latest_run_history(workflow_id)
-            if not latest:
-                return
-            logs = get_step_logs_by_run(latest.id)
-            target = next((l for l in logs if l.step_id == step_id), None)
-            if not target:
-                return
-            for path in [getattr(target, "stdout_path", None), getattr(target, "stderr_path", None)]:
-                if path and os.path.exists(path):
-                    os.startfile(path)
-                    return
+            if workflow_id:
+                latest = get_latest_run_history(workflow_id)
+                if latest:
+                    logs = get_step_logs_by_run(latest.id)
+                    target = next((l for l in logs if l.step_id == step_id), None)
+                    if target:
+                        for path in [getattr(target, "stdout_path", None), getattr(target, "stderr_path", None)]:
+                            if path and os.path.exists(path):
+                                os.startfile(path)
+                                return
         except Exception:
-            return
+            pass
+        msg_information(self, self._dark, "提示", "未找到该步骤可打开的日志文件。")
 
     def _copy_to_clipboard(self):
         """复制错误列表到剪贴板"""

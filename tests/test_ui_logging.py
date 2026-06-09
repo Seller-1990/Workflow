@@ -17,6 +17,8 @@ import ui.run_history as run_history_module
 import ui.step_editor as step_editor_module
 import ui.workflow_config as workflow_config_module
 import ui.main_window as main_window_module
+import ui.error_summary as error_summary_module
+import database as database_module
 from ui.run_history import RunHistoryPanel
 from ui.theme import get_menu_stylesheet, get_status_tokens, get_colors
 from ui.log_panel import LogPanel
@@ -353,6 +355,28 @@ def test_error_summary_open_step_log_emits_connected_handler():
         dialog._open_selected_log()
 
         assert seen == [7]
+    finally:
+        dialog.close()
+        assert app is not None
+
+
+def test_error_summary_open_step_log_shows_message_when_log_missing(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    dialog = ErrorSummaryDialog(
+        [{"step_id": 7, "step_name": "失败步骤", "error_message": "boom"}],
+        workflow_id=1,
+    )
+
+    try:
+        dialog.table.selectRow(0)
+        messages = []
+        monkeypatch.setattr(error_summary_module, "msg_information", lambda *args: messages.append(args))
+        monkeypatch.setattr(database_module, "get_latest_run_history", lambda _workflow_id: None)
+
+        dialog._open_selected_log()
+
+        assert len(messages) == 1
+        assert messages[0][2:] == ("提示", "未找到该步骤可打开的日志文件。")
     finally:
         dialog.close()
         assert app is not None
