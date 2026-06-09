@@ -377,9 +377,27 @@ class FileWatcher:
                         pending_since = time.time()
                     elif time.time() - pending_since >= settle:
                         if self._is_running():
-                            if not queued_while_running:
-                                self._log("检测到变更，但当前正在运行，待本轮结束后自动补触发")
-                                queued_while_running = True
+                            # 工作流运行期间产生的文件事件，通常来自本轮工作流自身的输出。
+                            # 旧逻辑会在本轮结束后“自动补触发”，导致手动运行完成后立刻又 watch 跑一遍。
+                            # 这里改为吞并运行期变更：刷新基线并清掉 pending，不排队补跑。
+                            try:
+                                running_scan = scan_folder_mtimes_result(folders, warning_cb=self._log)
+                            except Exception as e:
+                                logger.warning("监听运行中基线刷新异常: %s", e)
+                                self._log(f"警告：监听运行中基线刷新失败（将在下一轮重试）：{e}")
+                            else:
+                                if running_scan.aborted:
+                                    scan_degraded = True
+                                    self._log("警告：监听运行中 mtime 扫描提前终止，基线未刷新")
+                                else:
+                                    scan_degraded = False
+                                    degraded_triggered = False
+                                    last_mtime = running_scan.max_mtime
+                                    if mode == "all_folders_updated_since_success":
+                                        last_success_folder_mtimes = dict(running_scan.folder_mtimes)
+                                    self._log("检测到运行期间文件变更，已刷新监听基线，不在本轮结束后补触发")
+                            pending_since = None
+                            queued_while_running = False
                             continue
                         if conservative_trigger:
                             degraded_triggered = True
@@ -393,7 +411,27 @@ class FileWatcher:
                         queued_while_running = False
                         if not conservative_trigger:
                             self._log("检测到文件变更，触发工作流运行")
-                        self._trigger(workflow_id, "watch")
+                        trigger_ok = self._trigger(workflow_id, "watch")
+                        if not conservative_trigger:
+                            try:
+                                post_run_scan = scan_folder_mtimes_result(folders, warning_cb=self._log)
+                            except Exception as e:
+                                logger.warning("监听触发后基线刷新异常: %s", e)
+                                self._log(f"警告：监听触发后基线刷新失败（将在下一轮重试）：{e}")
+                            else:
+                                if post_run_scan.aborted:
+                                    scan_degraded = True
+                                    self._log("警告：监听触发后 mtime 扫描提前终止，基线未刷新")
+                                else:
+                                    scan_degraded = False
+                                    degraded_triggered = False
+                                    last_mtime = post_run_scan.max_mtime
+                                    if mode == "all_folders_updated_since_success":
+                                        last_success_folder_mtimes = dict(post_run_scan.folder_mtimes)
+                                    if trigger_ok:
+                                        self._log("监听触发后已刷新文件变更基线")
+                                    else:
+                                        self._log("监听触发失败后已刷新文件变更基线，避免同一变更重复触发")
                 else:
                     pending_since = None
                     queued_while_running = False

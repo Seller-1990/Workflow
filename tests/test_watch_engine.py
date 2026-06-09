@@ -141,7 +141,7 @@ def test_engine_stop_watch_does_not_emit_stopped_when_thread_survives():
     assert emitted == []
 
 
-def test_watch_loop_replays_queued_change_after_current_run_finishes(monkeypatch):
+def test_watch_loop_swallows_change_while_current_run_is_active(monkeypatch):
     engine = WorkflowEngine()
     engine._running = True
     scan_calls = {"count": 0}
@@ -153,6 +153,7 @@ def test_watch_loop_replays_queued_change_after_current_run_finishes(monkeypatch
             return {"watch": 0}
         if scan_calls["count"] >= 4:
             engine._running = False
+            engine._watcher._stop.set()
         return {"watch": 10}
 
     def fake_run_all(workflow_id, reason="manual"):
@@ -182,7 +183,7 @@ def test_watch_loop_replays_queued_change_after_current_run_finishes(monkeypatch
     engine._watcher._stop.set()
     thread.join(timeout=0.5)
 
-    assert trigger_calls == [(7, "watch")]
+    assert trigger_calls == []
 
 
 def test_scan_folder_mtimes_returns_root_aggregated_mtime(tmp_path: Path):
@@ -329,3 +330,123 @@ def test_watch_loop_all_folders_updated_since_success_uses_per_folder_success_ba
     thread.join(timeout=0.5)
 
     assert trigger_calls == [(9, "watch")]
+
+
+def test_watch_loop_swallows_changes_while_workflow_is_running(monkeypatch):
+    """运行期间写入监听目录应只刷新基线，不应在运行结束后自动补跑一次。"""
+    logs: list[str] = []
+    trigger_calls = []
+    scan_calls = {"count": 0}
+    running_checks = {"count": 0}
+
+    def fake_scan_result(_folders, **_kwargs):
+        scan_calls["count"] += 1
+        # 1 初始基线；2-3 外部变更等待 settle 后触发；4 触发后刷新仍为10；5+ 运行期间输出到20。
+        if scan_calls["count"] == 1:
+            return watcher_mod.MtimeScanResult({"watch": 0.0})
+        if scan_calls["count"] in (2, 3, 4):
+            return watcher_mod.MtimeScanResult({"watch": 10.0})
+        return watcher_mod.MtimeScanResult({"watch": 20.0})
+
+    def fake_trigger(workflow_id, reason):
+        trigger_calls.append((workflow_id, reason))
+        return True
+
+    def fake_is_running():
+        running_checks["count"] += 1
+        # 首次 settle 到期未运行 -> 允许触发；第二次 settle 到期为运行中 -> 吞并刷新基线。
+        return running_checks["count"] == 2
+
+    watcher = watcher_mod.FileWatcher(logs.append, fake_trigger, fake_is_running)
+    monkeypatch.setattr(watcher_mod, "scan_folder_mtimes_result", fake_scan_result)
+
+    thread = threading.Thread(
+        target=watcher._loop,
+        args=(11, ["watch"], 0.01, 0, "any_change"),
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.12)
+    watcher._stop.set()
+    watcher._dirty.set()
+    thread.join(timeout=0.5)
+
+    assert trigger_calls == [(11, "watch")]
+    assert any("检测到运行期间文件变更，已刷新监听基线" in message for message in logs)
+
+
+def test_watch_loop_refreshes_all_folders_baseline_after_run(monkeypatch):
+    logs: list[str] = []
+    trigger_calls = []
+    scan_calls = {"count": 0}
+    run_finished = {"value": False}
+
+    def fake_scan_result(_folders, **_kwargs):
+        scan_calls["count"] += 1
+        if scan_calls["count"] == 1:
+            return watcher_mod.MtimeScanResult({"a": 0.0, "b": 0.0})
+        if not run_finished["value"]:
+            return watcher_mod.MtimeScanResult({"a": 5.0, "b": 5.0})
+        return watcher_mod.MtimeScanResult({"a": 9.0, "b": 9.0})
+
+    def fake_trigger(workflow_id, reason):
+        trigger_calls.append((workflow_id, reason))
+        run_finished["value"] = True
+        return True
+
+    watcher = watcher_mod.FileWatcher(logs.append, fake_trigger, lambda: False)
+    monkeypatch.setattr(watcher_mod, "scan_folder_mtimes_result", fake_scan_result)
+
+    thread = threading.Thread(
+        target=watcher._loop,
+        args=(12, ["a", "b"], 0.01, 0, "all_folders_updated_since_success"),
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.12)
+    watcher._stop.set()
+    watcher._dirty.set()
+    thread.join(timeout=0.5)
+
+    assert trigger_calls == [(12, "watch")]
+    assert any("监听触发后已刷新文件变更基线" in message for message in logs)
+
+
+def test_watch_refreshes_file_baseline_after_failed_trigger(monkeypatch):
+    """监听触发的工作流失败后，也应刷新基线，避免同一批文件变更无限重跑。"""
+    logs = []
+    trigger_calls = []
+    watcher = watcher_mod.FileWatcher(
+        trigger_cb=lambda workflow_id, reason: trigger_calls.append((workflow_id, reason)) or False,
+        is_running_cb=lambda: False,
+        log_cb=logs.append,
+    )
+
+    scan_calls = {"count": 0}
+
+    def fake_scan(folders, max_depth=8, warning_cb=None):
+        scan_calls["count"] += 1
+        if scan_calls["count"] == 1:
+            return watcher_mod.MtimeScanResult({"watch": 1}, False)
+        if scan_calls["count"] == 2:
+            return watcher_mod.MtimeScanResult({"watch": 5}, False)
+        if scan_calls["count"] == 3:
+            return watcher_mod.MtimeScanResult({"watch": 8}, False)
+        watcher._stop.set()
+        return watcher_mod.MtimeScanResult({"watch": 8}, False)
+
+    monkeypatch.setattr(watcher_mod, "scan_folder_mtimes_result", fake_scan)
+
+    thread = threading.Thread(
+        target=watcher._loop,
+        args=(13, ["watch"], 0.01, 0, "any_change"),
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.12)
+    watcher._stop.set()
+    watcher._dirty.set()
+    thread.join(timeout=0.5)
+
+    assert trigger_calls == [(13, "watch")]
+    assert any("监听触发失败后已刷新文件变更基线" in message for message in logs)
