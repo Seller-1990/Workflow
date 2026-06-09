@@ -188,6 +188,26 @@ def test_log_panel_level_menu_tracks_theme_stylesheet():
     assert app is not None
 
 
+def test_log_panel_rerenders_existing_entries_with_current_theme():
+    app = QApplication.instance() or QApplication([])
+    panel = LogPanel()
+    light_error = panel._LEVEL_COLORS["ERROR"].lower()
+
+    panel.append_log("[12:00:00] [ERROR] old failure")
+    panel._flush_pending()
+    assert light_error in panel._render_entry_html(panel._entries[-1]).lower()
+
+    panel.refresh_theme(True)
+    dark_error = panel._LEVEL_COLORS["ERROR"].lower()
+
+    assert dark_error != light_error
+    assert dark_error in panel._render_entry_html(panel._entries[-1]).lower()
+    assert light_error not in panel._render_entry_html(panel._entries[-1]).lower()
+    assert dark_error in panel.log_text.toHtml().lower()
+    assert light_error not in panel.log_text.toHtml().lower()
+    assert app is not None
+
+
 def test_main_window_save_current_does_not_report_success_when_step_save_fails():
     window = type("WindowStub", (), {})()
     calls = []

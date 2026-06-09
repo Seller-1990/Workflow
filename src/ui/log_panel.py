@@ -139,25 +139,30 @@ class LogPanel(QWidget):
             return match.group(2), message  # 返回级别和原始消息
         return None, message
 
+    def _render_entry_html(self, entry: dict) -> str:
+        """按当前主题把日志条目渲染成 HTML。"""
+        import html as html_mod
+        plain = entry.get("plain", "")
+        safe_msg = html_mod.escape(plain)
+        level = entry.get("level")
+        if level and level in self._LEVEL_COLORS:
+            color = self._LEVEL_COLORS[level]
+            return f'<span style="color:{color}">{safe_msg}</span>'
+        return safe_msg
+
     @Slot(str)
     def append_log(self, message: str):
         """追加日志（根据级别自动着色，批量刷新；U-P2-8: 同时进入条目存储）"""
-        import html as html_mod
-        safe_msg = html_mod.escape(message)
         level, _ = self._parse_log_level(message)
-        if level and level in self._LEVEL_COLORS:
-            color = self._LEVEL_COLORS[level]
-            html = f'<span style="color:{color}">{safe_msg}</span>'
-        else:
-            html = safe_msg
         # 存进条目区（用于过滤/搜索/导出）。无级别标签的归入 INFO。
         entry_level = (level if level in _LEVELS else "INFO")
-        self._entries.append({"level": entry_level, "html": html, "plain": message})
+        entry = {"level": entry_level, "plain": message}
+        self._entries.append(entry)
         # 行数裁剪由 deque(maxlen) 自动处理，无需手工 del
         # 过滤匹配才进入 UI 缓冲
-        if not self._entry_passes_filter(self._entries[-1]):
+        if not self._entry_passes_filter(entry):
             return
-        self._pending_html.append(html)
+        self._pending_html.append(self._render_entry_html(entry))
         # 阈值刷新（突发日志）+ 定时刷新（稀疏日志）
         if len(self._pending_html) >= 32:
             self._flush_pending()
@@ -202,6 +207,8 @@ class LogPanel(QWidget):
                 padding: 12px;
             }}
         """)
+        if self._entries:
+            self._rerender()
     
     def clear(self):
         """清空日志"""
@@ -245,7 +252,7 @@ class LogPanel(QWidget):
         self.log_text.clear()
         for entry in self._entries:
             if self._entry_passes_filter(entry):
-                self.log_text.append(entry["html"])
+                self.log_text.append(self._render_entry_html(entry))
         # 滚动到底部
         cursor = self.log_text.textCursor()
         cursor.movePosition(QTextCursor.End)
