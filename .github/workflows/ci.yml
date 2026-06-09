@@ -48,11 +48,15 @@ jobs:
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
         run: pytest -q
 
       - name: CLI smoke
         env:
           QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
         run: |
           python src\cli.py --help
           python src\cli.py export --help
