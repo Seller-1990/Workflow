@@ -2025,8 +2025,8 @@ class MainWindow(QMainWindow):
         try:
             self._statusbar_stop_btn.setEnabled(False)
             self._statusbar_stop_btn.setText("⏹ 正在停止...")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("更新状态栏停止按钮失败", exc_info=exc)
         self._stop_workflow()
     
     @Slot(int)

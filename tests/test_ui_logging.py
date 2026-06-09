@@ -288,3 +288,30 @@ def test_node_card_shows_duration_badge_and_hides_it_when_empty():
     finally:
         card.deleteLater()
         assert app is not None
+
+
+def test_statusbar_stop_click_logs_button_update_failure(caplog):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    class BrokenStopButton:
+        def setEnabled(self, _value):
+            raise RuntimeError("button disabled failed")
+
+        def setText(self, _text):
+            raise AssertionError("setText should not run after setEnabled failure")
+
+    try:
+        stop_calls = []
+        window._statusbar_stop_btn = BrokenStopButton()
+        window._stop_workflow = lambda: stop_calls.append("stop")
+
+        with caplog.at_level(logging.WARNING, logger="ui.main_window"):
+            window._on_statusbar_stop_clicked()
+
+        assert stop_calls == ["stop"]
+        assert "更新状态栏停止按钮失败" in caplog.text
+        assert "button disabled failed" in caplog.text
+    finally:
+        window.close()
+        assert app is not None
