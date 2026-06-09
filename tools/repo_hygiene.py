@@ -31,6 +31,7 @@ ALLOWLISTED_FAKE_TOKENS = frozenset(
         "test-token",
         "request-token",
         "provider-token",
+        "subprocess-secret-token",
     }
 )
 
