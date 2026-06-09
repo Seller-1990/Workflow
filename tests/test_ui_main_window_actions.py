@@ -960,3 +960,75 @@ def test_step_table_stage_mutation_dependency_error_uses_actionable_dialog(monke
     assert calls and calls[0][0] == "操作无效"
     assert "bad dependency" in str(calls[0][1])
     assert app is not None
+
+
+def test_step_table_dependency_error_resolves_quoted_and_json_uid(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    panel = StepTablePanel()
+    panel._workflow_id = 7
+
+    monkeypatch.setattr(
+        "ui.step_table.panel.get_steps_by_workflow",
+        lambda workflow_id: [SimpleNamespace(id="41", uid="step-a"), SimpleNamespace(id=42, uid="step-b")],
+    )
+
+    from exceptions import DependencyError
+
+    assert panel._find_step_id_referenced_by_dependency_error(
+        DependencyError("跨阶段依赖不允许：uid='step-a' 指向未来阶段")
+    ) == 41
+    assert panel._find_step_id_referenced_by_dependency_error(
+        DependencyError('{"error": "future dependency", "uid": "step-b"}')
+    ) == 42
+    assert app is not None
+
+
+def test_step_table_dependency_error_locator_reports_select_failure(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    panel = StepTablePanel()
+    panel._workflow_id = 7
+    statuses = []
+
+    class DummyMessageBox:
+        Warning = QMessageBox.Warning
+        AcceptRole = QMessageBox.AcceptRole
+        Ok = QMessageBox.Ok
+
+        def __init__(self, parent):
+            self._clicked = None
+
+        def setWindowTitle(self, title):
+            pass
+
+        def setText(self, text):
+            pass
+
+        def setIcon(self, icon):
+            pass
+
+        def addButton(self, *args):
+            button = object()
+            if args and args[0] == "定位问题步骤":
+                self._clicked = button
+            return button
+
+        def setStyleSheet(self, style):
+            pass
+
+        def exec(self):
+            pass
+
+        def clickedButton(self):
+            return self._clicked
+
+    from exceptions import DependencyError
+
+    monkeypatch.setattr(panel, "_find_step_id_referenced_by_dependency_error", lambda error: 42)
+    monkeypatch.setattr(panel, "select_step", lambda step_id: (_ for _ in ()).throw(RuntimeError("row missing")))
+    monkeypatch.setattr(panel, "_notify_status", statuses.append)
+    monkeypatch.setattr("ui.step_table.panel.QMessageBox", DummyMessageBox)
+
+    panel._show_dependency_mutation_error("操作无效", DependencyError("bad dependency"), "请先调整依赖")
+
+    assert statuses == ["未能定位触发依赖校验的步骤：row missing"]
+    assert app is not None

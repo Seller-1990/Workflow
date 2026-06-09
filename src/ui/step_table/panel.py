@@ -2,6 +2,7 @@
 """步骤列表面板（StepTablePanel）"""
 
 import json
+import re
 import traceback
 
 from PySide6.QtWidgets import (
@@ -1259,18 +1260,37 @@ class StepTablePanel(QWidget):
             pass
         msg.exec()
         if msg.clickedButton() is locate_button:
-            self.select_step(focus_step_id)
+            try:
+                self.select_step(focus_step_id)
+            except (RuntimeError, ValueError, TypeError) as exc:
+                self._notify_status(f"未能定位触发依赖校验的步骤：{exc}")
+                return
             self._notify_status("已定位到触发依赖校验的步骤。")
 
     def _find_step_id_referenced_by_dependency_error(self, error: DependencyError) -> int | None:
-        """Return the visible step id mentioned by a DependencyError, if any."""
+        """Return the visible step id mentioned by a DependencyError, if any.
+
+        Service-side dependency messages have appeared in several formats over time,
+        for example ``uid=abc``, ``uid='abc'`` or JSON-like ``"uid": "abc"``.
+        Keep the UI locator tolerant so the actionable dialog does not silently fall
+        back to a generic warning when the wording changes slightly.
+        """
         message = str(error)
+        uid_tokens = set()
+        for pattern in (
+            r"\buid\s*=\s*['\"]?([^'\"\s,;，。)）]+)",
+            r"['\"]uid['\"]\s*:\s*['\"]([^'\"]+)['\"]",
+        ):
+            uid_tokens.update(match.group(1) for match in re.finditer(pattern, message))
+        if not uid_tokens:
+            return None
+
         steps = []
         if self._workflow_id:
             steps = get_steps_by_workflow(self._workflow_id)
         for step in steps:
             uid = getattr(step, "uid", None)
-            if uid and f"uid={uid}" in message:
+            if uid and str(uid) in uid_tokens:
                 try:
                     return int(step.id)
                 except (TypeError, ValueError):
