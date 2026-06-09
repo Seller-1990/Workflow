@@ -93,9 +93,17 @@ def test_workflow_config_dirty_state_tracks_user_edits_and_save(monkeypatch):
         panel.edit_name.setText("月报流程-已改")
         assert panel.is_dirty() is True
 
+        messages = []
+        panel.statusbar = type(
+            "StatusBar",
+            (),
+            {"showMessage": lambda self, message, timeout: messages.append((message, timeout))},
+        )()
+
         assert panel.save_config() is True
         assert panel.is_dirty() is False
         assert saved[0][0] == 11
+        assert messages == [("配置已保存", 2000)]
 
         monkeypatch.setattr(
             workflow_config_module,
