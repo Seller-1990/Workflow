@@ -21,6 +21,7 @@ from ui.run_history import RunHistoryPanel
 from ui.theme import get_menu_stylesheet, get_status_tokens, get_colors
 from ui.log_panel import LogPanel
 from ui.main_window import MainWindow
+from ui.error_summary import ErrorSummaryDialog
 from ui.step_editor import StepEditorPanel
 from ui.workflow_config import WorkflowConfigPanel
 from ui.dag_view import NodeCard
@@ -334,4 +335,24 @@ def test_statusbar_stop_click_logs_button_update_failure(caplog):
         assert "button disabled failed" in caplog.text
     finally:
         window.close()
+        assert app is not None
+
+
+def test_error_summary_open_step_log_emits_connected_handler():
+    app = QApplication.instance() or QApplication([])
+    dialog = ErrorSummaryDialog(
+        [{"step_id": 7, "step_name": "失败步骤", "error_message": "boom"}],
+        workflow_id=1,
+    )
+
+    try:
+        dialog.table.selectRow(0)
+        seen = []
+        dialog.open_step_log.connect(lambda step_id: seen.append(step_id))
+
+        dialog._open_selected_log()
+
+        assert seen == [7]
+    finally:
+        dialog.close()
         assert app is not None

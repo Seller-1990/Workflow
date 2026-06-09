@@ -154,7 +154,7 @@ class ErrorSummaryDialog(QDialog):
             msg_information(self, self._dark, "提示", "请先选中一个失败步骤。")
             return
         # 外部若绑定了 open_step_log，则优先交给外部（便于复用 LogPanel 的上下文）
-        if self.receivers(self.open_step_log) > 0:
+        if self.receivers("2open_step_log(int)") > 0:
             self.open_step_log.emit(step_id)
             return
         # 否则做一个最小可用的打开动作
