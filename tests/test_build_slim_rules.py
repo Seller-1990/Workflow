@@ -36,7 +36,18 @@ def test_should_keep_core_qt_runtime():
 def test_should_keep_non_qt_runtime_files():
     assert should_keep_artifact("python312.dll", profile="slim1") is True
     assert should_keep_artifact("pywin32_system32\\pythoncom312.dll", profile="slim1") is True
+    assert should_keep_artifact("certifi\\cacert.pem", profile="slim1") is True
+    assert should_keep_artifact("certifi\\cacert.pem", profile="slim2") is True
     assert should_keep_artifact("图标.png", profile="slim1") is True
+
+
+def test_pyinstaller_specs_collect_certifi_data_files():
+    root = Path(__file__).resolve().parent.parent
+
+    for spec_name in ("build.spec", "build_slim.spec", "build_slim2.spec"):
+        content = (root / spec_name).read_text(encoding="utf-8")
+        assert "collect_data_files" in content
+        assert "collect_data_files(\"certifi\")" in content or "collect_data_files('certifi')" in content
 
 
 def test_slim2_drops_icon_png_pythonwin_and_qtsvg():

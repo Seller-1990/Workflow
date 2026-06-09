@@ -8,16 +8,28 @@ import logging
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+APP_DATA_DIR_ENV_VAR = "WORKFLOW_APP_DATA_DIR"
+
 
 # 判断是否为打包后的 exe
 if getattr(sys, 'frozen', False):
-    # 打包后：使用临时目录作为根目录（用于查找资源），用户目录存储数据
+    # 打包后：使用临时目录作为根目录（用于查找资源）
     ROOT_DIR = Path(sys._MEIPASS)
-    APP_DATA_DIR = Path(os.environ.get('LOCALAPPDATA', Path.home())) / "工作流管理"
 else:
     # 开发时：使用项目根目录
     ROOT_DIR = Path(__file__).resolve().parents[1]
-    APP_DATA_DIR = ROOT_DIR
+
+
+def _resolve_app_data_dir() -> Path:
+    override_dir = os.environ.get(APP_DATA_DIR_ENV_VAR)
+    if override_dir:
+        return Path(override_dir).expanduser().resolve()
+    if getattr(sys, 'frozen', False):
+        return Path(os.environ.get('LOCALAPPDATA', Path.home())) / "工作流管理"
+    return ROOT_DIR
+
+
+APP_DATA_DIR = _resolve_app_data_dir()
 
 # 图标路径：优先使用 .ico，兼容 slim 包去掉 png 的场景
 ICON_PATH = ROOT_DIR / "图标.ico"
@@ -46,7 +58,7 @@ DATABASE_PATH = DATA_DIR / "workflows.db"
 
 # 应用信息
 APP_NAME = "工作流管理"
-APP_VERSION = "4.0.0"
+APP_VERSION = "4.1.0"
 
 # 默认配置
 DEFAULT_CONFIG = {
@@ -59,8 +71,6 @@ DEFAULT_CONFIG = {
     },
     "notify": {
         "enabled": False,
-        "ding_talk_webhook": "",
-        "ding_talk_keyword": "",
         "message_template": "{工作流名称} | {状态} | 编号={运行编号}"
     }
 }

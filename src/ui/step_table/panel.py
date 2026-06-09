@@ -57,9 +57,9 @@ from ui.step_table.row_cells import (
     create_script_item,
     create_type_item,
 )
+from ui.step_table.styles import build_table_stylesheet
 from ui.theme import (
     COLORS,
-    CORNER_RADIUS,
     get_colors,
     get_status_tokens,
     get_menu_stylesheet,
@@ -115,6 +115,7 @@ class StepTablePanel(QWidget):
         self._parallel_available = True
         self._selected_step_id = None
         self._selected_stage_uid = None
+        self._last_emitted_selection = None
 
         # UI 状态持久化（列宽等）
         self._settings = QSettings(APP_NAME, "ui")
@@ -205,7 +206,7 @@ class StepTablePanel(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
         self.table.setMouseTracking(True)
-        self.table.setStyleSheet(self._build_table_stylesheet(COLORS))
+        self.table.setStyleSheet(build_table_stylesheet(COLORS))
 
         # 启用拖拽排序
         self.table.setDragEnabled(True)
@@ -224,117 +225,11 @@ class StepTablePanel(QWidget):
 
         layout.addWidget(self.section)
 
-    def _build_table_stylesheet(self, colors: dict) -> str:
-        return f"""
-            QTableWidget {{
-                background: transparent;
-                border: none;
-                border-radius: {CORNER_RADIUS["default"]}px;
-            }}
-            QWidget {{
-                background: transparent;
-                border: none;
-            }}
-            QHeaderView::section {{
-                background: {colors["surface_header"]};
-                color: {colors["text_secondary"]};
-                font-weight: 600;
-                border: none;
-                padding: 6px 6px;
-            }}
-            QTableView::item {{
-                background: transparent;
-                padding: 4px 8px;
-                color: {colors["text_primary"]};
-            }}
-            QTableView::item:selected {{
-                background: {colors["selected_bg"]};
-                color: {colors["selected_text"]};
-            }}
-            QTableView::item:hover {{
-                background: {colors["hover"]};
-            }}
-            QToolButton#tableIcon, QPushButton#tableIcon {{
-                padding: 0px;
-                border-radius: {CORNER_RADIUS["default"]}px;
-                min-width: 32px;
-                min-height: 32px;
-                border: none;
-                background: transparent;
-            }}
-            QToolButton#tableIcon:hover, QPushButton#tableIcon:hover {{
-                background: {colors["hover"]};
-            }}
-            QToolButton#tableIcon:pressed, QPushButton#tableIcon:pressed {{
-                background: {colors["selected_bg"]};
-            }}
-            QToolButton#tableIcon:disabled, QPushButton#tableIcon:disabled {{
-                background: transparent;
-                border: none;
-            }}
-            QToolButton#tableDangerIcon, QPushButton#tableDangerIcon {{
-                padding: 0px;
-                border-radius: {CORNER_RADIUS["default"]}px;
-                min-width: 32px;
-                min-height: 32px;
-                border: none;
-                background: transparent;
-            }}
-            QToolButton#tableDangerIcon:hover, QPushButton#tableDangerIcon:hover {{
-                background: {colors["danger"]}22;
-            }}
-            QToolButton#tableDangerIcon:pressed, QPushButton#tableDangerIcon:pressed {{
-                background: {colors["danger"]}44;
-            }}
-            QToolButton#tableDangerIcon:disabled, QPushButton#tableDangerIcon:disabled {{
-                background: transparent;
-                border: none;
-            }}
-
-            QCheckBox {{
-                background: transparent;
-                border: none;
-            }}
-            QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
-                border: 1.5px solid {colors["border"]};
-                border-radius: 4px;
-                background: {colors["background"]};
-            }}
-            QCheckBox::indicator:checked {{
-                background: {colors["primary"]};
-                border: 1.5px solid {colors["primary"]};
-            }}
-
-            /* Stage header action pill (iOS-like compact toolbar) */
-            QFrame#stagePill {{
-                background: {colors["background"]};
-                border: 1px solid {colors["border"]};
-                border-radius: {CORNER_RADIUS["default"]}px;
-            }}
-            QToolButton#stagePillBtn {{
-                padding: 0px;
-                border: 0px;
-                border-radius: {CORNER_RADIUS["small"]}px;
-                background: transparent;
-            }}
-            QToolButton#stagePillBtn:hover {{
-                background: {colors["hover"]};
-            }}
-            QToolButton#stagePillBtn:pressed {{
-                background: {colors["pressed"]};
-            }}
-            QToolButton#stagePillBtn:disabled {{
-                background: transparent;
-            }}
-        """
-
     def refresh_theme(self, dark: bool):
         self._dark = dark
         colors = get_colors(dark)
         self.section.refresh_theme(dark)
-        self.table.setStyleSheet(self._build_table_stylesheet(colors))
+        self.table.setStyleSheet(build_table_stylesheet(colors))
         self.table.refresh_theme(dark)
         self.drag_hint_label.setStyleSheet(f"color:{colors['text_tertiary']}; font-size:11px;")
         self.stage_context_label.setStyleSheet(f"color:{colors['text_secondary']}; font-size:11px;")
@@ -838,6 +733,7 @@ class StepTablePanel(QWidget):
         self._workflow_id = None
         self._selected_step_id = None
         self._selected_stage_uid = None
+        self._last_emitted_selection = None
         self.table.setRowCount(0)
         self.hint_label.setVisible(False)
         self.hint_label.setText("")
@@ -869,7 +765,44 @@ class StepTablePanel(QWidget):
         self._single_script_mode = enabled
         self._apply_enabled_state()
 
-    def select_step(self, step_id: int):
+    def set_selected_stage_context(self, stage_uid: str | None, *, clear_step_selection: bool = False):
+        """同步当前阶段上下文，供外部视图切换后复用「添加步骤」目标阶段。"""
+        self._set_stage_context(stage_uid)
+        if not clear_step_selection:
+            return
+        self._selected_step_id = None
+        self._last_emitted_selection = None
+        table = getattr(self, "table", None)
+        if table is None:
+            return
+        blocked = table.signalsBlocked()
+        table.blockSignals(True)
+        try:
+            if hasattr(table, "clearSelection"):
+                table.clearSelection()
+            selection_model = table.selectionModel() if hasattr(table, "selectionModel") else None
+            if selection_model is not None and hasattr(selection_model, "clearCurrentIndex"):
+                selection_model.clearCurrentIndex()
+            elif hasattr(table, "setCurrentCell"):
+                table.setCurrentCell(-1, -1)
+        finally:
+            table.blockSignals(blocked)
+
+    def get_selection_snapshot(self) -> dict[str, int | str | None]:
+        """返回当前公开可见的选中快照，避免外部直接读取私有字段。"""
+        return {
+            "step_id": self._selected_step_id,
+            "stage_uid": self._selected_stage_uid,
+        }
+
+    def has_step(self, step_id: int) -> bool:
+        """判断当前表格缓存中是否包含指定步骤。"""
+        try:
+            return int(step_id) in self._row_by_step_id
+        except (TypeError, ValueError):
+            return False
+
+    def select_step(self, step_id: int, emit_signal: bool = True):
         """根据 step_id 选中对应行
 
         R5-#6: 使用 _row_by_step_id O(1) 反查，与 update_step_status 一致。
@@ -887,7 +820,16 @@ class StepTablePanel(QWidget):
                 if self._stage_collapsed.get(stage_uid):
                     self._toggle_stage_collapse(stage_uid)
                 self._set_stage_context(meta.get("stage_uid"))
-            self.table.setCurrentCell(row, 0)
+            if emit_signal:
+                self.table.setCurrentCell(row, 0)
+                return
+            blocked = self.table.signalsBlocked()
+            self.table.blockSignals(True)
+            try:
+                self._selected_step_id = int(step_id)
+                self.table.setCurrentCell(row, 0)
+            finally:
+                self.table.blockSignals(blocked)
 
     def update_step_status(self, step_id: int, status: str):
         """实时更新步骤状态背景色
@@ -1048,11 +990,13 @@ class StepTablePanel(QWidget):
         """选择变化"""
         if row < 0:
             self._selected_step_id = None
+            self._last_emitted_selection = None
             return
 
         meta = self._row_meta[row] if row < len(self._row_meta) else {}
         if meta.get("kind") == "stage_header":
             self._selected_step_id = None
+            self._last_emitted_selection = None
             self._set_stage_context(meta.get("stage_uid"))
             return
 
@@ -1062,32 +1006,44 @@ class StepTablePanel(QWidget):
             if step_id:
                 self._selected_step_id = step_id
                 self._set_stage_context(meta.get("stage_uid"))
-                self.step_selected.emit(step_id)
+                self._emit_step_selected_once(step_id, row)
             else:
                 self._selected_step_id = None
+                self._last_emitted_selection = None
 
     def _on_selection_changed_by_selection(self):
         """兜底：当点击 cellWidget 导致 currentCellChanged 不触发时，用 selectionChanged 补发 step_selected"""
         row = self.table.currentRow()
         if row < 0:
             self._selected_step_id = None
+            self._last_emitted_selection = None
             return
         meta = self._row_meta[row] if row < len(self._row_meta) else {}
         if meta.get("kind") == "stage_header":
             self._selected_step_id = None
+            self._last_emitted_selection = None
             self._set_stage_context(meta.get("stage_uid"))
             return
         item = self.table.item(row, 0)
         if not item:
             self._selected_step_id = None
+            self._last_emitted_selection = None
             return
         step_id = item.data(Qt.UserRole)
         if step_id:
             self._selected_step_id = step_id
             self._set_stage_context(meta.get("stage_uid"))
-            self.step_selected.emit(step_id)
+            self._emit_step_selected_once(step_id, row)
         else:
             self._selected_step_id = None
+            self._last_emitted_selection = None
+
+    def _emit_step_selected_once(self, step_id: int, row: int) -> None:
+        selection_key = (int(step_id), int(row))
+        if self._last_emitted_selection == selection_key:
+            return
+        self._last_emitted_selection = selection_key
+        self.step_selected.emit(int(step_id))
 
     def _ensure_row_selected(self, row: int):
         if row is None or row < 0:
@@ -1314,6 +1270,10 @@ class StepTablePanel(QWidget):
             "建议：检查依赖是否指向未来阶段；或调整执行阶段顺序/归属后再试。",
             "保存阶段/顺序时发生未知错误",
         )
+
+    def apply_orders_and_stage_updates(self, stage_overrides: dict[int, str], step_ids_in_order: list[int]) -> bool:
+        """公开的阶段/顺序更新 facade，供外部面板复用。"""
+        return self._apply_orders_and_stage_updates(stage_overrides, step_ids_in_order)
 
     def _move_stage_order(self, stage_uid: str, delta: int):
         """调整用途阶段顺序（带预校验与回滚）"""

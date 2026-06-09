@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
+import argparse
 import re
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,7 +13,26 @@ from pathlib import Path
 TRACKED_ARTIFACT_PREFIXES = ("build/", "dist/", "data/", "logs/")
 TRACKED_ARTIFACT_SUFFIXES = (".exe", ".db", ".sqlite", ".sqlite3")
 TEXT_SUFFIXES = {".json", ".py", ".md", ".txt", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".spec"}
-SECRET_PATTERN = re.compile(r"access_token=(?!<redacted>)(?!local-token\b)[A-Za-z0-9._~+-]{8,}")
+SECRET_PATTERN = re.compile(r"access_token=([A-Za-z0-9._~+-]{3,}|<redacted>)")
+STRICT_LOCAL_DIRS = ("build", "dist", "data", "logs")
+STRICT_LOCAL_CACHE_DIRS = ("__pycache__", ".pytest_cache")
+STRICT_LOCAL_EXPORT_PATTERNS = ("audit_export.json", "tmp_export.json", "workflows_export*.json")
+ALLOWLISTED_FAKE_TOKENS = frozenset(
+    {
+        "<redacted>",
+        "contract-token",
+        "integration-secret-token",
+        "local-token",
+        "secret-token",
+        "dev-token",
+        "other-token",
+        "imported",
+        "imported-token",
+        "test-token",
+        "request-token",
+        "provider-token",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -42,7 +61,22 @@ def list_tracked_files(root: Path) -> list[Path]:
 
 
 def local_sensitive_candidates(root: Path) -> list[Path]:
-    return sorted(path for path in root.glob("workflows_export*.json") if path.is_file())
+    candidates: set[Path] = set()
+    for pattern in STRICT_LOCAL_EXPORT_PATTERNS:
+        candidates.update(path for path in root.glob(pattern) if path.is_file())
+    return sorted(candidates, key=lambda path: _display_path(path, root))
+
+
+def list_local_residue_paths(root: Path) -> list[Path]:
+    residues: set[Path] = set()
+    for dirname in STRICT_LOCAL_DIRS:
+        path = root / dirname
+        if path.exists():
+            residues.add(path)
+    for dirname in STRICT_LOCAL_CACHE_DIRS:
+        residues.update(path for path in root.rglob(dirname) if path.is_dir())
+    residues.update(local_sensitive_candidates(root))
+    return sorted(residues, key=lambda path: _display_path(path, root))
 
 
 def find_tracked_artifacts(paths: list[Path], root: Path) -> list[HygieneIssue]:
@@ -61,10 +95,18 @@ def find_tracked_artifacts(paths: list[Path], root: Path) -> list[HygieneIssue]:
     return issues
 
 
+def find_local_residue(paths: list[Path], root: Path) -> list[HygieneIssue]:
+    return [
+        HygieneIssue(
+            kind="local-residue",
+            path=path,
+            message=f"local-only residue present (strict mode): {_display_path(path, root)}",
+        )
+        for path in paths
+    ]
+
+
 def _should_scan_text(path: Path, root: Path) -> bool:
-    rel = _display_path(path, root)
-    if rel.startswith("tests/"):
-        return False
     return path.suffix.lower() in TEXT_SUFFIXES
 
 
@@ -78,7 +120,7 @@ def find_secret_matches(paths: list[Path], root: Path) -> list[HygieneIssue]:
         except UnicodeDecodeError:
             continue
         for line_number, line in enumerate(lines, start=1):
-            if SECRET_PATTERN.search(line):
+            if any(token not in ALLOWLISTED_FAKE_TOKENS and len(token) >= 8 for token in SECRET_PATTERN.findall(line)):
                 issues.append(
                     HygieneIssue(
                         kind="secret-residue",
@@ -90,15 +132,31 @@ def find_secret_matches(paths: list[Path], root: Path) -> list[HygieneIssue]:
     return issues
 
 
-def run_checks(root: Path) -> list[HygieneIssue]:
-    tracked = list_tracked_files(root)
-    scan_paths = sorted(set(tracked + local_sensitive_candidates(root)))
-    return find_tracked_artifacts(tracked, root) + find_secret_matches(scan_paths, root)
+def run_checks(root: Path, *, strict: bool = False, tracked_paths: list[Path] | None = None) -> list[HygieneIssue]:
+    tracked = tracked_paths if tracked_paths is not None else list_tracked_files(root)
+    scan_paths = list(tracked)
+    if strict:
+        scan_paths = sorted(set(scan_paths + local_sensitive_candidates(root)))
+    issues = find_tracked_artifacts(tracked, root) + find_secret_matches(scan_paths, root)
+    if strict:
+        issues.extend(find_local_residue(list_local_residue_paths(root), root))
+    return issues
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Repository hygiene checks.")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="also fail on local-only residue such as build/dist/data/logs caches and local export JSON files",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     root = Path(__file__).resolve().parent.parent
-    issues = run_checks(root)
+    issues = run_checks(root, strict=args.strict)
     if not issues:
         print("Repository hygiene check passed.")
         return 0

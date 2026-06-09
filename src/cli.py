@@ -666,13 +666,15 @@ def cmd_export(args):
     workflow = get_workflow_by_id(workflow_id)
     if not workflow:
         print(f"工作流不存在")
-        return
+        raise SystemExit(1)
 
     output = Path(args.output) if args.output else Path(f"{workflow.name}.json")
     include_secrets = bool(getattr(args, "include_secrets", False))
     export_to_json(output, workflow_ids=[workflow_id], include_secrets=include_secrets)
     print(f"工作流已导出到: {output.resolve()}")
-    if not include_secrets:
+    if include_secrets:
+        print("警告: 本次导出包含完整 Webhook URL，请勿提交、同步或共享该文件")
+    else:
         print("提示: Webhook URL 已脱敏；如需完整密钥导出，请显式使用 --include-secrets")
 
 
@@ -682,7 +684,7 @@ def cmd_import(args):
     json_path = Path(args.json_path)
     if not json_path.exists():
         print(f"文件不存在: {json_path}")
-        return
+        raise SystemExit(1)
 
     count = import_from_json(json_path)
     print(f"成功导入 {count} 个工作流")

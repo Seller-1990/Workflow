@@ -5,22 +5,300 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Optional
 
 from sqlalchemy.orm import Session, selectinload
 
 from models import Step, WebhookConfig, Workflow, WorkflowStage
+from webhook_url_policy import (
+    is_masked_webhook_url,
+    is_valid_dingtalk_webhook_url,
+    mask_webhook_url_for_log,
+)
 
 logger = logging.getLogger(__name__)
+EXPORT_SCHEMA_VERSION = 1
+WORKFLOW_PAYLOAD_SCHEMA_VERSION = 1
 
 
-def is_masked_webhook_url(value: str | None, masked_value: str) -> bool:
-    """判断导入值是否为脱敏占位符。"""
-    text = (value or "").strip()
-    if not text:
+def normalize_single_script_args(value) -> list[str]:
+    """将单脚本参数统一序列化为字符串数组。"""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, tuple):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            return [text]
+        if isinstance(decoded, list):
+            return [str(item) for item in decoded]
+        if decoded is None:
+            return []
+        return [str(decoded)]
+    return [str(value)]
+
+
+def _json_error(path: str, message: str) -> ValueError:
+    return ValueError(f"{path}: {message}")
+
+
+def _expect_mapping(value, path: str) -> dict:
+    if not isinstance(value, dict):
+        raise _json_error(path, "必须是对象")
+    return value
+
+
+def _expect_list(value, path: str) -> list:
+    if not isinstance(value, list):
+        raise _json_error(path, "必须是数组")
+    return value
+
+
+def _expect_optional_mapping(parent: dict, key: str, path: str) -> dict:
+    value = parent.get(key, {})
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise _json_error(f"{path}.{key}", "必须是对象")
+    return value
+
+
+def _expect_optional_list(parent: dict, key: str, path: str) -> list:
+    value = parent.get(key, [])
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise _json_error(f"{path}.{key}", "必须是数组")
+    return value
+
+
+def _expect_int_if_present(parent: dict, key: str, path: str, *, allow_none: bool = False) -> None:
+    if key not in parent:
+        return
+    value = parent.get(key)
+    if allow_none and value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _json_error(f"{path}.{key}", "必须是整数")
+
+
+def _expect_bool_if_present(parent: dict, key: str, path: str) -> None:
+    if key not in parent:
+        return
+    if not isinstance(parent.get(key), bool):
+        raise _json_error(f"{path}.{key}", "必须是布尔值")
+
+
+def _expect_str_if_present(parent: dict, key: str, path: str, *, allow_none: bool = True) -> None:
+    if key not in parent:
+        return
+    value = parent.get(key)
+    if allow_none and value is None:
+        return
+    if not isinstance(value, str):
+        raise _json_error(f"{path}.{key}", "必须是字符串")
+
+
+def _expect_str_list_if_present(parent: dict, key: str, path: str) -> None:
+    if key not in parent:
+        return
+    values = _expect_optional_list(parent, key, path)
+    for index, value in enumerate(values):
+        if not isinstance(value, str):
+            raise _json_error(f"{path}.{key}[{index}]", "必须是字符串")
+
+
+_WATCH_MODES = {"any_change", "all_folders_updated_since_success"}
+_EXECUTABLE_TYPES = {"python", "excel_powerquery", "powerbi_refresh", "sub_workflow"}
+_IMPORTED_PATH_WARNING = "[导入提示] 此工作流包含绝对路径或上级目录引用，首次运行前请确认脚本和工作目录来源可信。"
+
+
+def _looks_risky_import_path(value: object) -> bool:
+    """Return True for import paths that should be made visible to reviewers.
+
+    Import/export intentionally preserves paths for portability, so this helper is
+    advisory only: it flags absolute paths and parent-directory traversal without
+    changing execution semantics.
+    """
+    if not isinstance(value, str) or not value.strip():
         return False
-    return text == masked_value or text.lower() in {"<masked>", "masked", "***"}
+    raw = value.strip()
+    try:
+        windows_path = PureWindowsPath(raw)
+        posix_path = PurePosixPath(raw)
+    except (TypeError, ValueError):
+        return True
+    if windows_path.is_absolute() or posix_path.is_absolute():
+        return True
+    return ".." in windows_path.parts or ".." in posix_path.parts
+
+
+def _workflow_has_risky_import_paths(wf_data: dict) -> bool:
+    single_script = wf_data.get("single_script", {})
+    if _looks_risky_import_path(single_script.get("path")) or _looks_risky_import_path(single_script.get("cwd")):
+        return True
+    for step_data in wf_data.get("steps", []):
+        if _looks_risky_import_path(step_data.get("script")) or _looks_risky_import_path(step_data.get("cwd")):
+            return True
+    return False
+
+
+def _append_import_path_warning(description: str) -> str:
+    description = description or ""
+    if _IMPORTED_PATH_WARNING in description:
+        return description
+    return f"{description}\n\n{_IMPORTED_PATH_WARNING}" if description else _IMPORTED_PATH_WARNING
+
+
+def _mark_risky_import_paths(workflow: Workflow, wf_data: dict) -> None:
+    if not _workflow_has_risky_import_paths(wf_data):
+        return
+    workflow.description = _append_import_path_warning(workflow.description or "")
+    logger.warning(
+        "导入工作流包含需复核的脚本路径或工作目录: uid=%r, name=%r",
+        workflow.uid,
+        workflow.name,
+    )
+
+
+def _expect_supported_executable_type_if_present(parent: dict, key: str, path: str) -> None:
+    if key not in parent:
+        return
+    value = parent.get(key)
+    if not isinstance(value, str):
+        raise _json_error(f"{path}.{key}", "必须是字符串")
+    if value not in _EXECUTABLE_TYPES:
+        supported = ", ".join(sorted(_EXECUTABLE_TYPES))
+        raise _json_error(f"{path}.{key}", f"不支持的执行类型: {value!r}（支持: {supported}）")
+
+
+def _expect_watch_mode_if_present(parent: dict, key: str, path: str) -> None:
+    if key not in parent:
+        return
+    value = parent.get(key)
+    if not isinstance(value, str):
+        raise _json_error(f"{path}.{key}", "必须是字符串")
+    if value not in _WATCH_MODES:
+        raise _json_error(f"{path}.{key}", f"不支持的监听模式: {value!r}")
+
+
+_NOTIFY_SCHEMA_FIELDS = {
+    "enabled",
+    "webhook_id",
+    "webhook_name",
+    "message_template",
+}
+
+
+def _validate_notify_mapping(value: dict, path: str) -> None:
+    for key in value:
+        if key not in _NOTIFY_SCHEMA_FIELDS:
+            raise _json_error(f"{path}.{key}", "未知字段")
+    _expect_bool_if_present(value, "enabled", path)
+    _expect_str_if_present(value, "webhook_name", path)
+    _expect_int_if_present(value, "webhook_id", path, allow_none=True)
+    _expect_str_if_present(value, "message_template", path)
+
+
+def _validate_notify_value(value, path: str) -> None:
+    if value is None or isinstance(value, dict):
+        if isinstance(value, dict):
+            _validate_notify_mapping(value, path)
+        return
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise _json_error(path, "必须是对象或合法 JSON 对象字符串") from exc
+        if isinstance(decoded, dict):
+            _validate_notify_mapping(decoded, path)
+            return
+    raise _json_error(path, "必须是对象")
+
+
+def _validate_import_payload(data) -> dict:
+    data = _expect_mapping(data, "$")
+    version = data.get("version")
+    if version != EXPORT_SCHEMA_VERSION:
+        raise _json_error(
+            "$.version",
+            f"不支持的导入版本: {version!r}，当前仅支持 {EXPORT_SCHEMA_VERSION}",
+        )
+    webhooks = _expect_optional_list(data, "webhooks", "$")
+    workflows = _expect_optional_list(data, "workflows", "$")
+
+    for index, webhook in enumerate(webhooks):
+        webhook_path = f"$.webhooks[{index}]"
+        webhook = _expect_mapping(webhook, webhook_path)
+        _expect_str_if_present(webhook, "name", webhook_path)
+        _expect_str_if_present(webhook, "webhook_url", webhook_path)
+        _expect_bool_if_present(webhook, "webhook_url_masked", webhook_path)
+        _expect_str_if_present(webhook, "keyword", webhook_path)
+        _expect_str_if_present(webhook, "description", webhook_path)
+
+    for wf_index, workflow in enumerate(workflows):
+        wf_path = f"$.workflows[{wf_index}]"
+        workflow = _expect_mapping(workflow, wf_path)
+        _expect_str_if_present(workflow, "id", wf_path)
+        _expect_str_if_present(workflow, "name", wf_path)
+        _expect_str_if_present(workflow, "description", wf_path)
+        parallel = _expect_optional_mapping(workflow, "parallel", wf_path)
+        watch = _expect_optional_mapping(workflow, "watch", wf_path)
+        single_script = _expect_optional_mapping(workflow, "single_script", wf_path)
+
+        _expect_bool_if_present(parallel, "enabled", f"{wf_path}.parallel")
+        _expect_int_if_present(parallel, "max_workers", f"{wf_path}.parallel")
+        _expect_bool_if_present(watch, "enabled", f"{wf_path}.watch")
+        _expect_watch_mode_if_present(watch, "mode", f"{wf_path}.watch")
+        _expect_int_if_present(watch, "cooldown_seconds", f"{wf_path}.watch")
+        _expect_int_if_present(watch, "settle_seconds", f"{wf_path}.watch")
+        _expect_str_list_if_present(watch, "folders", f"{wf_path}.watch")
+        _expect_bool_if_present(single_script, "enabled", f"{wf_path}.single_script")
+        _expect_supported_executable_type_if_present(single_script, "type", f"{wf_path}.single_script")
+        _expect_str_if_present(single_script, "path", f"{wf_path}.single_script")
+        _expect_str_if_present(single_script, "cwd", f"{wf_path}.single_script")
+
+        if "notify" in workflow:
+            _validate_notify_value(workflow.get("notify"), f"{wf_path}.notify")
+
+        stages = _expect_optional_list(workflow, "stages", wf_path)
+        for stage_index, stage in enumerate(stages):
+            stage_path = f"{wf_path}.stages[{stage_index}]"
+            stage = _expect_mapping(stage, stage_path)
+            _expect_int_if_present(stage, "order", stage_path)
+
+        steps = _expect_optional_list(workflow, "steps", wf_path)
+        for step_index, step in enumerate(steps):
+            step_path = f"{wf_path}.steps[{step_index}]"
+            step = _expect_mapping(step, step_path)
+            _expect_str_if_present(step, "id", step_path)
+            _expect_str_if_present(step, "name", step_path)
+            _expect_str_if_present(step, "stage_uid", step_path)
+            _expect_supported_executable_type_if_present(step, "step_type", step_path)
+            _expect_str_if_present(step, "script", step_path)
+            _expect_str_if_present(step, "cwd", step_path)
+            _expect_int_if_present(step, "timeout_seconds", step_path, allow_none=True)
+            _expect_int_if_present(step, "retry_count", step_path)
+            _expect_bool_if_present(step, "is_gate", step_path)
+            _expect_bool_if_present(step, "is_parallel", step_path)
+            _expect_bool_if_present(step, "skip_on_success", step_path)
+            _expect_optional_list(step, "args", step_path)
+            _expect_optional_list(step, "depends_on", step_path)
+
+    return data
+
+
+def _workflow_import_uid(wf_data: dict, generate_uid: Callable[[], str]) -> str:
+    uid = (wf_data.get("id") or "").strip()
+    return uid or generate_uid()
 
 
 def import_from_json_impl(
@@ -33,7 +311,7 @@ def import_from_json_impl(
 ) -> int:
     """从 JSON 文件导入工作流。"""
     with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        data = _validate_import_payload(json.load(f))
 
     webhooks_data = data.get("webhooks", [])
     workflows_data = data.get("workflows", [])
@@ -46,8 +324,18 @@ def import_from_json_impl(
             masked_webhook_url=masked_webhook_url,
         )
 
+        existing_uids = {
+            uid for (uid,) in session.query(Workflow.uid).all()
+        }
+
         for wf_data in workflows_data:
-            workflow = _build_workflow(wf_data, generate_uid)
+            workflow_uid = _workflow_import_uid(wf_data, generate_uid)
+            if workflow_uid in existing_uids:
+                logger.warning("导入工作流 UID 已存在，跳过: uid=%r", workflow_uid)
+                continue
+
+            workflow = _build_workflow(wf_data, workflow_uid)
+            _mark_risky_import_paths(workflow, wf_data)
             _apply_notify_config(session, workflow, wf_data, webhook_name_to_id)
             if "watch" in wf_data:
                 folders = wf_data.get("watch", {}).get("folders", [])
@@ -76,6 +364,7 @@ def import_from_json_impl(
                 generate_uid,
             )
             imported_count += 1
+            existing_uids.add(workflow_uid)
 
         session.commit()
 
@@ -92,14 +381,27 @@ def export_to_json_impl(
 ) -> None:
     """导出工作流到 JSON 文件。"""
     data = {
-        "version": 1,
+        "version": EXPORT_SCHEMA_VERSION,
         "secrets_included": bool(include_secrets),
         "webhooks": [],
         "workflows": [],
     }
 
     with get_session() as session:
-        webhooks = session.query(WebhookConfig).order_by(WebhookConfig.name).all()
+        workflow_query = session.query(Workflow).options(
+            selectinload(Workflow.stages),
+            selectinload(Workflow.steps),
+        )
+        if workflow_ids:
+            workflow_query = workflow_query.filter(Workflow.id.in_(list(workflow_ids)))
+        workflows = workflow_query.order_by(Workflow.created_at.desc()).all()
+
+        webhook_ids = _collect_referenced_webhook_ids(workflows)
+        webhook_query = session.query(WebhookConfig).order_by(WebhookConfig.name)
+        if workflow_ids:
+            webhooks = webhook_query.filter(WebhookConfig.id.in_(webhook_ids)).all() if webhook_ids else []
+        else:
+            webhooks = webhook_query.all()
         data["webhooks"] = [
             {
                 "name": wh.name,
@@ -112,19 +414,25 @@ def export_to_json_impl(
         ]
         webhook_map = {wh.id: wh.name for wh in webhooks}
 
-        workflow_query = session.query(Workflow).options(
-            selectinload(Workflow.stages),
-            selectinload(Workflow.steps),
-        )
-        if workflow_ids:
-            workflow_query = workflow_query.filter(Workflow.id.in_(list(workflow_ids)))
-        workflows = workflow_query.order_by(Workflow.created_at.desc()).all()
-
         for workflow in workflows:
             data["workflows"].append(_export_workflow(workflow, webhook_map))
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _collect_referenced_webhook_ids(workflows: list[Workflow]) -> set[int]:
+    webhook_ids: set[int] = set()
+    for workflow in workflows:
+        notify = workflow.get_notify_config()
+        if not isinstance(notify, dict):
+            continue
+        webhook_id = notify.get("webhook_id")
+        if isinstance(webhook_id, int):
+            webhook_ids.add(webhook_id)
+        elif isinstance(webhook_id, str) and webhook_id.isdigit():
+            webhook_ids.add(int(webhook_id))
+    return webhook_ids
 
 
 def _import_webhooks(
@@ -147,7 +455,10 @@ def _import_webhooks(
             continue
         keyword = (wh.get("keyword") or "").strip()
         desc = (wh.get("description") or "").strip()
-        existing = session.query(WebhookConfig).filter(WebhookConfig.name == name).first()
+        existing_matches = session.query(WebhookConfig).filter(WebhookConfig.name == name).all()
+        if len(existing_matches) > 1:
+            raise ValueError(f"Webhook 名称重复，无法确定绑定: {name}")
+        existing = existing_matches[0] if existing_matches else None
 
         if url_masked:
             if existing:
@@ -159,6 +470,8 @@ def _import_webhooks(
 
         if not url:
             continue
+        if not is_valid_dingtalk_webhook_url(url):
+            raise ValueError(f"Webhook URL 必须是钉钉机器人地址: {name}")
         if existing:
             _update_existing_webhook(session, existing, name, url, keyword, desc)
             webhook_name_to_id[name] = existing.id
@@ -206,6 +519,15 @@ def _update_existing_webhook(
     keyword: str,
     desc: str,
 ) -> None:
+    if existing.webhook_url != url:
+        logger.warning(
+            "导入 webhook 检测到同名不同 URL，保留本机配置并继续绑定: name=%r, local=%r, imported=%r",
+            name,
+            mask_webhook_url_for_log(existing.webhook_url),
+            mask_webhook_url_for_log(url),
+        )
+        _update_existing_masked_webhook(session, existing, keyword, desc)
+        return
     overrides = []
     if existing.webhook_url != url:
         overrides.append("webhook_url")
@@ -221,13 +543,15 @@ def _update_existing_webhook(
     session.flush()
 
 
-def _build_workflow(wf_data: dict, generate_uid: Callable[[], str]) -> Workflow:
-    single_args = wf_data.get("single_script", {}).get("args")
-    if isinstance(single_args, list):
-        single_args = json.dumps(single_args, ensure_ascii=False)
+def _build_workflow(wf_data: dict, workflow_uid: str) -> Workflow:
+    single_args = json.dumps(
+        normalize_single_script_args(wf_data.get("single_script", {}).get("args")),
+        ensure_ascii=False,
+    )
     return Workflow(
-        uid=wf_data.get("id", generate_uid()),
+        uid=workflow_uid,
         name=wf_data.get("name", "未命名工作流"),
+        description=wf_data.get("description") or "",
         chart_theme=wf_data.get("chart_theme", "default"),
         parallel_enabled=wf_data.get("parallel", {}).get("enabled", False),
         max_workers=wf_data.get("parallel", {}).get("max_workers", 2),
@@ -263,12 +587,19 @@ def _apply_notify_config(
     wh_name = (notify.get("webhook_name") or "").strip()
     if wh_name and wh_name in webhook_name_to_id:
         notify["webhook_id"] = webhook_name_to_id[wh_name]
+    elif wh_name:
+        matches = session.query(WebhookConfig).filter(WebhookConfig.name == wh_name).all()
+        if len(matches) > 1:
+            raise ValueError(f"Webhook 名称重复，无法确定绑定: {wh_name}")
+        notify["webhook_id"] = matches[0].id if matches else None
     else:
-        wh_id = notify.get("webhook_id")
-        if wh_id:
-            exists = session.query(WebhookConfig).filter(WebhookConfig.id == wh_id).first()
-            if not exists:
-                notify["webhook_id"] = None
+        if notify.get("webhook_id"):
+            logger.warning(
+                "导入通知配置忽略跨环境裸 webhook_id: workflow=%r, webhook_id=%r",
+                wf_data.get("name"),
+                notify.get("webhook_id"),
+            )
+        notify["webhook_id"] = None
     workflow.set_notify_config(notify)
 
 
@@ -348,7 +679,8 @@ def _import_steps(
         session.add(step)
 
 
-def _export_workflow(workflow: Workflow, webhook_map: dict[int, str]) -> dict:
+def serialize_workflow_payload(workflow: Workflow, webhook_map: Optional[dict[int, str]] = None) -> dict:
+    webhook_map = webhook_map or {}
     notify = workflow.get_notify_config()
     if not isinstance(notify, dict):
         notify = {}
@@ -361,6 +693,7 @@ def _export_workflow(workflow: Workflow, webhook_map: dict[int, str]) -> dict:
     return {
         "id": workflow.uid,
         "name": workflow.name,
+        "description": workflow.description or "",
         "chart_theme": workflow.chart_theme,
         "parallel": {
             "enabled": workflow.parallel_enabled,
@@ -378,12 +711,16 @@ def _export_workflow(workflow: Workflow, webhook_map: dict[int, str]) -> dict:
             "enabled": workflow.single_script_enabled,
             "type": workflow.single_script_type,
             "path": workflow.single_script_path,
-            "args": workflow.single_script_args,
+            "args": normalize_single_script_args(workflow.single_script_args),
             "cwd": workflow.single_script_cwd,
         },
         "stages": _export_stages(workflow),
         "steps": _export_steps(workflow),
     }
+
+
+def _export_workflow(workflow: Workflow, webhook_map: dict[int, str]) -> dict:
+    return serialize_workflow_payload(workflow, webhook_map)
 
 
 def _export_stages(workflow: Workflow) -> list[dict]:

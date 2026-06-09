@@ -7,10 +7,15 @@ on:
         description: "PyInstaller spec to build"
         required: true
         default: "build_slim2.spec"
+  push:
+    tags:
+      - "v*"
 
 jobs:
   package:
     runs-on: windows-latest
+    env:
+      DEFAULT_SPEC: build_slim2.spec
 
     steps:
       - name: Checkout
@@ -25,25 +30,117 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-release.txt
-          pip install pyinstaller
+          pip install -r requirements-ci.txt
+
+      - name: Repository hygiene
+        run: python tools\repo_hygiene.py --strict
+
+      - name: Resolve build metadata
+        id: build_meta
+        shell: pwsh
+        run: |
+          $specPath = "${{ github.event.inputs.spec }}"
+          if ([string]::IsNullOrWhiteSpace($specPath)) {
+            $specPath = "${{ env.DEFAULT_SPEC }}"
+          }
+          if (-not (Test-Path $specPath)) {
+            throw "Spec file not found: $specPath"
+          }
+          $specName = [System.IO.Path]::GetFileNameWithoutExtension($specPath)
+          $shortSha = "${{ github.sha }}".Substring(0, 7)
+          $versionScript = @(
+            'from pathlib import Path',
+            'import ast',
+            '',
+            'config_path = Path("src/config.py")',
+            'module = ast.parse(config_path.read_text(encoding="utf-8"), filename=str(config_path))',
+            'for node in module.body:',
+            '    if isinstance(node, ast.Assign):',
+            '        for target in node.targets:',
+            '            if getattr(target, "id", None) == "APP_VERSION":',
+            '                value = ast.literal_eval(node.value)',
+            '                if not isinstance(value, str) or not value.strip():',
+            '                    raise SystemExit("APP_VERSION must be a non-empty string")',
+            '                print(value.strip())',
+            '                raise SystemExit(0)',
+            'raise SystemExit("APP_VERSION not found in src/config.py")'
+          ) -join "`n"
+          $appVersion = $versionScript | python -
+          "spec_path=$specPath" >> $env:GITHUB_OUTPUT
+          "spec_name=$specName" >> $env:GITHUB_OUTPUT
+          "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
+          "app_version=$appVersion" >> $env:GITHUB_OUTPUT
+          "artifact_name=workflow-manager-$appVersion-$specName-$shortSha" >> $env:GITHUB_OUTPUT
+
+
+      - name: Pre-package quality guards
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python tools/check_test_env.py
+          python tools/check_requirements_consistency.py
+          python tools/audit_risky_calls.py
+          python tools/audit_broad_except.py
+          python tools/module_hotspot_report.py --top 30 --baseline quality/module_hotspot_baseline.json --fail-on-regression
+          python -m pytest tests/test_docs_guardrails.py tests/test_ci_workflow_guards.py -q
+          python tools/run_tests.py --collect-only
 
       - name: Compile sources
         run: python -m compileall src tests _import_and_run.py
 
-      - name: Build executable
-        run: pyinstaller ${{ inputs.spec }} --noconfirm
-
-      - name: Verify artifact
+      - name: Release gate (clean tracked tree)
         shell: pwsh
         run: |
+          $status = git status --porcelain --untracked-files=all
+          if ($status) {
+            Write-Output $status
+            throw "Working tree (including untracked files) is dirty before packaging."
+          }
+
+      - name: Build executable
+        run: pyinstaller ${{ steps.build_meta.outputs.spec_path }} --noconfirm
+
+      - name: Verify artifact
+        id: verify_artifact
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $env:WORKFLOW_APP_DATA_DIR = Join-Path $env:RUNNER_TEMP "workflow-self-check-data"
           $exe = Get-ChildItem -Path dist -Filter *.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $exe) {
             throw "No executable produced in dist"
           }
-          Get-FileHash -Algorithm SHA256 -Path $exe.FullName | Format-List
+          "artifact_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          "artifact_name=${{ steps.build_meta.outputs.artifact_name }}" >> $env:GITHUB_OUTPUT
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList "--self-check" -PassThru -NoNewWindow
+          try {
+            $completed = $process.WaitForExit(60000)
+            if (-not $completed) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "Self-check timed out for $($exe.Name)"
+            }
+            $process.Refresh()
+            if ($process.ExitCode -ne 0) {
+              throw "Self-check failed for $($exe.Name) with exit code $($process.ExitCode)"
+            }
+          } finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+          $hash = Get-FileHash -Algorithm SHA256 -Path $exe.FullName
+          $hashLine = "$($hash.Hash)  $($exe.Name)"
+          $hashPath = "$($exe.FullName).sha256"
+          Set-Content -Path $hashPath -Value $hashLine -Encoding UTF8
+          "hash_path=$hashPath" >> $env:GITHUB_OUTPUT
+          $hash | Format-List
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: workflow-manager-exe
-          path: dist/*.exe
+          name: ${{ steps.verify_artifact.outputs.artifact_name }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.verify_artifact.outputs.artifact_path }}
+            ${{ steps.verify_artifact.outputs.hash_path }}

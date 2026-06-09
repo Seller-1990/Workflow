@@ -1,0 +1,37 @@
+# Keep repository text files normalized in Git while avoiding binary conversion.
+* text=auto
+
+# Source, docs, manifests and CI files are stored with LF in the repository.
+*.py text eol=lf
+*.pyw text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+*.spec text eol=lf
+*.ps1 text eol=lf
+*.sh text eol=lf
+*.bat text eol=lf
+*.sql text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.qss text eol=lf
+
+# Binary artifacts must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.exe binary
+*.dll binary
+*.zip binary

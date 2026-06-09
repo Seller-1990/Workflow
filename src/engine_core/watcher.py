@@ -14,10 +14,27 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+MTIME_SCAN_MAX_DEPTH: int | None = None
+MTIME_SCAN_MAX_DIRECTORIES = 20000
+MTIME_SCAN_MAX_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class MtimeScanResult:
+    folder_mtimes: dict[str, float]
+    aborted: bool = False
+    warning: Optional[str] = None
+    scanned_directories: int = 0
+
+    @property
+    def max_mtime(self) -> float:
+        return max(self.folder_mtimes.values()) if self.folder_mtimes else 0.0
 
 
 def validate_watch_folders(folders: list[str]) -> list[str]:
@@ -64,24 +81,55 @@ def validate_watch_folders(folders: list[str]) -> list[str]:
     return validated
 
 
-def scan_folder_mtimes(folders: list, max_depth: int = 3) -> dict:
-    """扫描每个监听目录的最大修改时间（os.scandir 递归，限制深度）
+def _describe_mtime_scan_scope(max_depth: int | None = MTIME_SCAN_MAX_DEPTH) -> str:
+    depth_desc = "无限" if max_depth is None else f"{max_depth}层"
+    return (
+        f"深度={depth_desc}, 目录上限={MTIME_SCAN_MAX_DIRECTORIES}, "
+        f"单轮耗时上限={MTIME_SCAN_MAX_SECONDS:.1f}s"
+    )
+
+
+def scan_folder_mtimes_result(
+    folders: list,
+    max_depth: int | None = MTIME_SCAN_MAX_DEPTH,
+    warning_cb: Callable[[str], None] | None = None,
+) -> MtimeScanResult:
+    """扫描每个监听根目录聚合后的最大修改时间（os.scandir 递归）
 
     H4：去掉跨调用的缓存以保证正确性。
+    为避免深层目录被静默漏扫，默认不再限制深度；但保留目录数量与单轮耗时保护，
+    防止大目录树在轮询模式下无限放大扫描成本。
     """
     folder_mtimes: dict = {}
+    scanned_directories = 0
+    deadline = time.perf_counter() + MTIME_SCAN_MAX_SECONDS
+    aborted = False
 
-    def _scan_dir(current_path: str, depth: int):
+    def _should_abort() -> bool:
+        return scanned_directories >= MTIME_SCAN_MAX_DIRECTORIES or time.perf_counter() >= deadline
+
+    def _scan_dir(root_key: str, current_path: str, depth: int):
+        nonlocal scanned_directories, aborted
+        if aborted:
+            return
+        if _should_abort():
+            aborted = True
+            return
+        scanned_directories += 1
         try:
             with os.scandir(current_path) as it:
                 for entry in it:
+                    if aborted:
+                        return
                     try:
                         if entry.is_file(follow_symlinks=False):
                             mtime = entry.stat(follow_symlinks=False).st_mtime
-                            if mtime > folder_mtimes.get(current_path, 0.0):
-                                folder_mtimes[current_path] = mtime
-                        elif entry.is_dir(follow_symlinks=False) and depth < max_depth:
-                            _scan_dir(entry.path, depth + 1)
+                            if mtime > folder_mtimes.get(root_key, 0.0):
+                                folder_mtimes[root_key] = mtime
+                        elif entry.is_dir(follow_symlinks=False) and (
+                            max_depth is None or depth < max_depth
+                        ):
+                            _scan_dir(root_key, entry.path, depth + 1)
                     except (OSError, PermissionError):
                         continue
         except (OSError, PermissionError):
@@ -92,9 +140,38 @@ def scan_folder_mtimes(folders: list, max_depth: int = 3) -> dict:
             continue
         folder_str = str(folder)
         folder_mtimes[folder_str] = 0.0
-        _scan_dir(folder, 0)
+        _scan_dir(folder_str, folder, 0)
+        if aborted:
+            break
 
-    return folder_mtimes
+    warning: Optional[str] = None
+    if aborted:
+        warning = (
+            f"警告：mtime 扫描提前终止：{_describe_mtime_scan_scope(max_depth)}；"
+            f"已扫描目录={scanned_directories}"
+        )
+        logger.warning(warning)
+        if warning_cb:
+            warning_cb(warning)
+
+    return MtimeScanResult(
+        folder_mtimes=folder_mtimes,
+        aborted=aborted,
+        warning=warning,
+        scanned_directories=scanned_directories,
+    )
+
+
+def scan_folder_mtimes(
+    folders: list,
+    max_depth: int | None = MTIME_SCAN_MAX_DEPTH,
+    warning_cb: Callable[[str], None] | None = None,
+) -> dict:
+    return scan_folder_mtimes_result(
+        folders,
+        max_depth=max_depth,
+        warning_cb=warning_cb,
+    ).folder_mtimes
 
 
 def scan_mtime(folders: list) -> float:
@@ -144,6 +221,9 @@ class FileWatcher:
     ) -> bool:
         """启动监听。folders 应已经过 validate_watch_folders。"""
         self.stop()
+        if self._thread is not None and self._thread.is_alive():
+            self._log("警告：旧的文件监听线程仍在退出中，本次重启已取消")
+            return False
         self._stop.clear()
         self._dirty.clear()
         self._workflow_id = workflow_id
@@ -159,32 +239,41 @@ class FileWatcher:
             daemon=True,
         )
         self._thread.start()
-        observer_mode = "事件驱动 (watchdog)" if self._observer else "轮询 (mtime)"
+        observer_mode = (
+            "事件驱动 (watchdog)"
+            if self._observer
+            else f"轮询 (mtime, {_describe_mtime_scan_scope()})"
+        )
         self._log(f"已启动文件监听 [{observer_mode}]")
         return True
 
     def stop(self, join_timeout: float = 1.0) -> None:
         thread = self._thread
+        thread_stopped = True
         if thread and thread.is_alive():
             self._stop.set()
             self._dirty.set()  # 唤醒可能阻塞在 dirty.wait 的循环
             thread.join(timeout=max(0.0, float(join_timeout or 0.0)))
             if thread.is_alive():
                 self._log("警告：文件监听线程未能及时退出")
-        self._thread = None
+                thread_stopped = False
+        if thread_stopped:
+            self._thread = None
         if self._observer is not None:
             try:
                 self._observer.stop()
                 self._observer.join(timeout=max(0.5, float(join_timeout or 0.5)))
             except Exception as e:
                 logger.warning("watchdog Observer 关闭异常: %s", e)
-            self._observer = None
-        # R2-#4: 停止后清空目标记录
-        self._workflow_id = None
-        self._folders = []
-        self._cooldown = 0
-        self._settle = 0
-        self._mode = ""
+            if not getattr(self._observer, "is_alive", lambda: False)():
+                self._observer = None
+        if self._thread is None and self._observer is None:
+            # R2-#4: 停止后清空目标记录
+            self._workflow_id = None
+            self._folders = []
+            self._cooldown = 0
+            self._settle = 0
+            self._mode = ""
 
     # ── 内部 ──
     def _start_watchdog_observer(self, folders: list[str]) -> None:
@@ -228,11 +317,18 @@ class FileWatcher:
         mode: str,
     ) -> None:
         try:
-            last_mtime = scan_mtime(folders)
-            last_trigger_time = last_mtime
+            initial_scan = scan_folder_mtimes_result(folders, warning_cb=self._log)
+            last_success_folder_mtimes = (
+                dict(initial_scan.folder_mtimes) if not initial_scan.aborted else {}
+            )
+            last_mtime = initial_scan.max_mtime if not initial_scan.aborted else -1.0
             pending_since: Optional[float] = None
             queued_while_running = False
             use_observer = self._observer is not None
+            scan_degraded = initial_scan.aborted
+            degraded_triggered = False
+            if initial_scan.aborted:
+                self._log("警告：初始 mtime 扫描提前终止，监听基线未确认；后续将保守按可能有变更处理")
             while not self._stop.is_set():
                 if use_observer:
                     self._dirty.wait(timeout=cooldown)
@@ -243,20 +339,38 @@ class FileWatcher:
                     if self._stop.wait(cooldown):
                         break
                 try:
-                    folder_mtimes = scan_folder_mtimes(folders)
+                    scan_result = scan_folder_mtimes_result(folders, warning_cb=self._log)
                 except Exception as e:
                     logger.warning("监听扫描异常: %s", e)
                     self._log(f"警告：监听扫描异常（将在下一轮重试）：{e}")
                     continue
-                current_mtime = max(folder_mtimes.values()) if folder_mtimes else 0
+                folder_mtimes = scan_result.folder_mtimes
+                current_mtime = scan_result.max_mtime
 
                 triggered = False
-                if mode == "all_folders_updated_since_success":
-                    if folder_mtimes and all(m > last_trigger_time for m in folder_mtimes.values()):
+                conservative_trigger = False
+                if scan_result.aborted:
+                    if not scan_degraded:
+                        self._log("警告：mtime 扫描提前终止，本轮不能确认“无变化”，将保守按可能有变更处理")
+                    scan_degraded = True
+                    if not degraded_triggered:
                         triggered = True
+                        conservative_trigger = True
                 else:
-                    if current_mtime > last_mtime:
-                        triggered = True
+                    if scan_degraded:
+                        self._log("mtime 扫描已恢复完整，重新按完整扫描结果判断变更")
+                    scan_degraded = False
+                    degraded_triggered = False
+                    if mode == "all_folders_updated_since_success":
+                        # 每个监听根目录都必须相对各自上次成功基线前进，避免被其它目录更大的 mtime 长期压制。
+                        if folder_mtimes and all(
+                            folder_mtimes.get(folder, 0.0) > last_success_folder_mtimes.get(folder, 0.0)
+                            for folder in folder_mtimes
+                        ):
+                            triggered = True
+                    else:
+                        if current_mtime > last_mtime:
+                            triggered = True
 
                 if triggered:
                     if pending_since is None:
@@ -267,11 +381,18 @@ class FileWatcher:
                                 self._log("检测到变更，但当前正在运行，待本轮结束后自动补触发")
                                 queued_while_running = True
                             continue
-                        last_mtime = current_mtime
-                        last_trigger_time = current_mtime
+                        if conservative_trigger:
+                            degraded_triggered = True
+                            self._log("mtime 扫描不完整，保守触发工作流运行")
+                        else:
+                            last_mtime = current_mtime
+                            degraded_triggered = False
+                        if mode == "all_folders_updated_since_success" and not conservative_trigger:
+                            last_success_folder_mtimes = dict(folder_mtimes)
                         pending_since = None
                         queued_while_running = False
-                        self._log("检测到文件变更，触发工作流运行")
+                        if not conservative_trigger:
+                            self._log("检测到文件变更，触发工作流运行")
                         self._trigger(workflow_id, "watch")
                 else:
                     pending_since = None

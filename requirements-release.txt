@@ -1,4 +1,4 @@
-# Release build constraints for direct runtime dependencies.
+# Release build constraints for direct runtime dependencies and packaging toolchain.
 # Update deliberately after smoke-testing the packaged executable.
 PySide6==6.10.1
 SQLAlchemy==2.0.46
@@ -7,3 +7,5 @@ pywinauto==0.6.9
 watchdog==6.0.0
 psutil==7.2.2
 requests==2.32.5
+certifi==2026.1.4
+pyinstaller==6.11.1

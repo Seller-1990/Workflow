@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from executors.base import BaseExecutor, ExecutorResult
+from runtime.process_runner import build_subprocess_kwargs, start_process
 
 
 def _get_python_executable() -> str:
@@ -87,6 +88,38 @@ def _stream_pipe(pipe, file_obj, stream, log_errors: bool = True):
             print(f"[PythonExecutor] 输出流处理异常: {e}", file=sys.stderr)
 
 
+_ENV_REMOVE_KEYS = {
+    'PYTHONHOME',
+    'PYTHONPATH',
+    'PYTHONSTARTUP',
+    'PYTHONUSERBASE',
+    'PYTHONEXECUTABLE',
+}
+
+
+def _build_subprocess_env(log_dir: Path, chart_theme: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """构建子进程环境，避免继承会污染解释器/模块解析的 Python 变量。"""
+    run_env = os.environ.copy()
+    for key in _ENV_REMOVE_KEYS:
+        run_env.pop(key, None)
+
+    run_env['PYTHONIOENCODING'] = 'utf-8'
+    run_env['PYTHONUTF8'] = '1'
+    run_env['PYTHONUNBUFFERED'] = '1'
+    run_env['WORKFLOW_STEP_LOG_DIR'] = str(log_dir)
+
+    if chart_theme:
+        run_env['CHART_THEME'] = chart_theme
+
+    if env:
+        for key, value in env.items():
+            if key in _ENV_REMOVE_KEYS:
+                continue
+            run_env[key] = str(value)
+
+    return run_env
+
+
 def _read_stderr_excerpt(stderr_path: Path, max_lines: int = 8, max_chars: int = 400) -> str:
     """读取 stderr 末尾摘要，用于把真实错误回传到 UI/CLI。"""
     try:
@@ -109,6 +142,8 @@ class PythonExecutor(BaseExecutor):
     """Python 脚本执行器"""
 
     SUPPORTED_SUFFIXES = {".py", ".pyw"}
+    STREAM_JOIN_TIMEOUT_SECONDS = 5
+    COMMUNICATE_TIMEOUT_SECONDS = 3
 
     def _normalize_args(self, args: List[str] = None) -> List[str]:
         """标准化并校验命令行参数。"""
@@ -137,6 +172,28 @@ class PythonExecutor(BaseExecutor):
         if not work_dir.is_dir():
             raise ValueError(f"工作目录不是文件夹: {work_dir}")
         return work_dir
+
+    def _cleanup_process_resources(
+        self,
+        proc: subprocess.Popen,
+        t_out: threading.Thread | None,
+        t_err: threading.Thread | None,
+    ) -> None:
+        """终止后尽快清空管道并回收输出线程，避免句柄与后台线程残留。"""
+        try:
+            proc.communicate(timeout=self.COMMUNICATE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.wait()
+            except Exception as e:
+                print(f"[PythonExecutor] 等待进程退出失败: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"[PythonExecutor] 回收进程管道失败: {e}", file=sys.stderr)
+        finally:
+            if t_out is not None:
+                t_out.join(timeout=self.STREAM_JOIN_TIMEOUT_SECONDS)
+            if t_err is not None:
+                t_err.join(timeout=self.STREAM_JOIN_TIMEOUT_SECONDS)
     
     def execute(
         self,
@@ -210,17 +267,7 @@ class PythonExecutor(BaseExecutor):
         stderr_path = log_dir / "stderr.txt"
         
         # 准备环境变量
-        run_env = os.environ.copy()
-        run_env['PYTHONIOENCODING'] = 'utf-8'
-        run_env['PYTHONUTF8'] = '1'
-        run_env['PYTHONUNBUFFERED'] = '1'
-        run_env['WORKFLOW_STEP_LOG_DIR'] = str(log_dir)
-        
-        if chart_theme:
-            run_env['CHART_THEME'] = chart_theme
-        
-        if env:
-            run_env.update(env)
+        run_env = _build_subprocess_env(log_dir, chart_theme=chart_theme, env=env)
         
         # 构建命令 - 使用 _get_python_executable() 而不是 sys.executable
         python_exe = _get_python_executable()
@@ -228,6 +275,9 @@ class PythonExecutor(BaseExecutor):
         
         start_time = datetime.now()
         
+        proc = None
+        t_out = None
+        t_err = None
         try:
             with open(stdout_path, 'w', encoding='utf-8-sig') as f_out, \
                  open(stderr_path, 'w', encoding='utf-8-sig') as f_err:
@@ -237,15 +287,17 @@ class PythonExecutor(BaseExecutor):
                 if sys.platform == 'win32':
                     creation_flags = subprocess.CREATE_NO_WINDOW
                 
-                proc = subprocess.Popen(
+                proc = start_process(
                     cmd,
-                    cwd=str(work_dir),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=False,
-                    env=run_env,
-                    bufsize=0,
-                    creationflags=creation_flags
+                    **build_subprocess_kwargs(
+                        cwd=work_dir,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=False,
+                        env=run_env,
+                        bufsize=0,
+                        creationflags=creation_flags,
+                    ),
                 )
                 
                 # 启动输出线程
@@ -257,8 +309,14 @@ class PythonExecutor(BaseExecutor):
                     target=_stream_pipe,
                     args=(proc.stderr, f_err, sys.stderr)
                 )
-                t_out.start()
-                t_err.start()
+                try:
+                    t_out.start()
+                    t_err.start()
+                except Exception:
+                    self.kill_process_tree(proc)
+                    self._cleanup_process_resources(proc, t_out, t_err)
+                    proc = None
+                    raise
                 
                 # 等待完成（支持取消中断 + 超时）
                 # MA1: 改用 BaseExecutor.wait_with_cancel 统一等待语义
@@ -269,12 +327,7 @@ class PythonExecutor(BaseExecutor):
                         )
                         if cancelled:
                             self.kill_process_tree(proc)
-                            try:
-                                proc.communicate(timeout=3)
-                            except subprocess.TimeoutExpired:
-                                proc.wait()
-                            t_out.join(timeout=5)
-                            t_err.join(timeout=5)
+                            self._cleanup_process_resources(proc, t_out, t_err)
                             end_time = datetime.now()
                             return ExecutorResult(
                                 success=False,
@@ -295,6 +348,7 @@ class PythonExecutor(BaseExecutor):
                             proc.wait()
                 except subprocess.TimeoutExpired:
                     self.kill_process_tree(proc)
+                    self._cleanup_process_resources(proc, t_out, t_err)
                     end_time = datetime.now()
                     return ExecutorResult(
                         success=False,
@@ -329,6 +383,9 @@ class PythonExecutor(BaseExecutor):
             )
             
         except Exception as e:
+            if proc is not None and proc.poll() is None:
+                self.kill_process_tree(proc)
+                self._cleanup_process_resources(proc, t_out, t_err)
             end_time = datetime.now()
             return ExecutorResult(
                 success=False,

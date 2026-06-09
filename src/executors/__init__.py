@@ -21,6 +21,11 @@ from executors.base import BaseExecutor, ExecutorResult
 from executors.python_executor import PythonExecutor
 from executors.excel_executor import ExcelExecutor
 from executors.powerbi_executor import PowerBIExecutor
+from executors.result_policy import (
+    ResultPolicyKeys,
+    build_policy_extra,
+    has_non_retryable_policy,
+)
 from executors.sub_workflow_executor import SubWorkflowExecutor
 
 
@@ -105,8 +110,11 @@ __all__ = [
     "PythonExecutor",
     "ExcelExecutor",
     "PowerBIExecutor",
+    "ResultPolicyKeys",
     "SubWorkflowExecutor",
+    "build_policy_extra",
     "get_executor",
+    "has_non_retryable_policy",
     "register_executor",
     "list_registered_types",
     "get_type_label",

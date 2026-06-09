@@ -90,6 +90,15 @@ def make_window_stub(engine=None):
     window._current_workflow_id = None
     window._dark_mode = False
     window._restore_selection_silently = lambda reason: setattr(window, "_restored_reason", reason)
+    window._should_check_workflow_config_dirty = (
+        MainWindow._should_check_workflow_config_dirty.__get__(window, type(window))
+    )
+    window._is_panel_dirty = MainWindow._is_panel_dirty.__get__(window, type(window))
+    window._build_dirty_message = MainWindow._build_dirty_message.__get__(window, type(window))
+    window._save_dirty_panels = MainWindow._save_dirty_panels.__get__(window, type(window))
+    window._discard_panel_changes = MainWindow._discard_panel_changes.__get__(window, type(window))
+    window._discard_dirty_panels = MainWindow._discard_dirty_panels.__get__(window, type(window))
+    window._reset_panel_dirty_state = MainWindow._reset_panel_dirty_state.__get__(window, type(window))
     return window
 
 

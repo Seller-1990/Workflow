@@ -22,7 +22,12 @@ def cleanup_old_log_dirs(
 ) -> int:
     """清理过期运行日志目录，返回删除数量。"""
     retention_days = getattr(workflow, "log_retention_days", 30) or 30
-    workflow_log_dir = Path(base_log_dir) / workflow.uid
+    base_dir = Path(base_log_dir).resolve()
+    workflow_log_dir = (base_dir / workflow.uid).resolve()
+    try:
+        workflow_log_dir.relative_to(base_dir)
+    except ValueError:
+        return 0
     if not workflow_log_dir.exists():
         return 0
 
@@ -43,7 +48,12 @@ def cleanup_old_log_dirs(
         except (ValueError, IndexError):
             continue
         if dir_time < cutoff:
-            remover(subdir)
+            resolved_subdir = subdir.resolve()
+            try:
+                resolved_subdir.relative_to(workflow_log_dir)
+            except ValueError:
+                continue
+            remover(resolved_subdir)
             removed += 1
     return removed
 

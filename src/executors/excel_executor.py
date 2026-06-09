@@ -9,40 +9,81 @@ from typing import Dict, List, Optional
 
 from executors.base import BaseExecutor, ExecutorResult
 from exceptions import WorkflowTimeoutError
+from runtime.process_runner import run_process
 from constants import EXCEL_REFRESH_TIMEOUT
+
+
+def _run_async_query_wait(wait_method, completed_event, error_holder: list[Exception | None]) -> None:
+    """在后台线程中执行 Excel 的阻塞等待，避免主线程失去取消/超时可达性。"""
+    pythoncom = None
+    try:
+        try:
+            import pythoncom as _pythoncom
+
+            pythoncom = _pythoncom
+            pythoncom.CoInitialize()
+        except ImportError:
+            pythoncom = None
+        wait_method()
+    except Exception as exc:
+        error_holder.append(exc)
+    finally:
+        if pythoncom is not None:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+        completed_event.set()
 
 
 def _wait_for_refresh_completion(excel, workbook, timeout: int, cancel_event, log_messages: list[str]) -> None:
     """等待 Excel PowerQuery 刷新完成。"""
-    start_wait = time.time()
+    start_wait = time.monotonic()
+    poll_interval = 0.2
 
     wait_method = getattr(excel, "CalculateUntilAsyncQueriesDone", None)
     if callable(wait_method):
         log_messages.append(f"[{datetime.now().isoformat()}] 等待 Excel 异步查询完成...")
-        try:
-            wait_method()
-        except Exception as e:
-            log_messages.append(f"[{datetime.now().isoformat()}] 异步查询等待失败，改为轮询: {e}")
+        completed_event = threading.Event()
+        wait_errors: list[Exception | None] = []
+        wait_thread = threading.Thread(
+            target=_run_async_query_wait,
+            args=(wait_method, completed_event, wait_errors),
+            daemon=True,
+        )
+        wait_thread.start()
+
+        while not completed_event.wait(timeout=poll_interval):
+            if cancel_event and cancel_event.is_set():
+                log_messages.append(f"[{datetime.now().isoformat()}] 用户取消，正在关闭 Excel...")
+                raise WorkflowTimeoutError("用户取消")
+            if timeout is not None and time.monotonic() - start_wait > timeout:
+                raise WorkflowTimeoutError(f"刷新超时 ({timeout}秒)")
+
+        if wait_errors:
+            log_messages.append(
+                f"[{datetime.now().isoformat()}] 异步查询等待失败，改为轮询: {wait_errors[-1]}"
+            )
 
     while True:
         if cancel_event and cancel_event.is_set():
             log_messages.append(f"[{datetime.now().isoformat()}] 用户取消，正在关闭 Excel...")
             raise WorkflowTimeoutError("用户取消")
 
-        if timeout is not None and time.time() - start_wait > timeout:
+        if timeout is not None and time.monotonic() - start_wait > timeout:
             raise WorkflowTimeoutError(f"刷新超时 ({timeout}秒)")
 
         try:
             calc_state = getattr(excel, "CalculationState", None)
             if calc_state not in (None, 0):
-                time.sleep(1)
+                time.sleep(poll_interval)
                 continue
         except Exception:
             pass
 
         try:
             if bool(getattr(workbook, "Refreshing")):
-                time.sleep(1)
+                time.sleep(poll_interval)
                 continue
         except Exception:
             pass
@@ -219,8 +260,7 @@ class ExcelExecutor(BaseExecutor):
             # 仅当出现错误（取消/超时/RefreshAll 异常）时介入，正常路径下 Quit() 已经把进程清掉
             if excel_pid and error_messages:
                 try:
-                    import subprocess
-                    subprocess.run(
+                    run_process(
                         ["taskkill", "/F", "/T", "/PID", str(excel_pid)],
                         capture_output=True,
                         timeout=5,

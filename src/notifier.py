@@ -8,6 +8,8 @@ except ImportError:
 from typing import Optional
 from datetime import datetime
 
+from webhook_url_policy import is_valid_dingtalk_webhook_url, mask_webhook_url_for_log
+
 
 # 可用的模板变量
 TEMPLATE_VARIABLES = {
@@ -108,9 +110,33 @@ def format_message(
 def _response_excerpt(text: str, limit: int = 200) -> str:
     """生成可记录的短响应摘要，避免日志塞入整段 HTML。"""
     compact = " ".join(str(text or "").split())
+    compact = _redact_access_tokens(compact)
     if len(compact) <= limit:
         return compact
     return compact[:limit] + "..."
+
+
+def _redact_access_tokens(text: object) -> str:
+    """Redact DingTalk access_token values from provider/errors before returning them to UI/logs."""
+    import re
+
+    raw = str(text or "")
+    return re.sub(r"(?i)(access_token=)([^\s&#?]+)", r"\1<redacted>", raw)
+
+
+def _is_ca_bundle_error(error: Exception) -> bool:
+    text = str(error)
+    return (
+        "TLS CA certificate bundle" in text
+        or ("certifi" in text and "cacert.pem" in text)
+    )
+
+
+def _format_ca_bundle_error(error: Exception) -> str:
+    return (
+        "TLS CA 证书文件缺失或路径无效，"
+        f"请检查 PyInstaller 是否已打包 certifi/cacert.pem: {_redact_access_tokens(error)}"
+    )
 
 
 def send_dingtalk_message(
@@ -132,6 +158,10 @@ def send_dingtalk_message(
     """
     if not webhook_url:
         return False, "Webhook URL 为空"
+
+    if not is_valid_dingtalk_webhook_url(webhook_url):
+        safe_url = mask_webhook_url_for_log(webhook_url)
+        return False, f"Webhook URL 非法或不受信任: {safe_url}"
 
     if requests is None:
         return False, "requests 库未安装，请执行: pip install requests"
@@ -170,20 +200,25 @@ def send_dingtalk_message(
 
         if status_code is not None and status_code >= 400:
             excerpt = _response_excerpt(getattr(response, "text", ""))
-            message_text = result.get("errmsg") or excerpt or "未知错误"
+            message_text = _redact_access_tokens(result.get("errmsg") or excerpt or "未知错误")
             return False, f"发送失败: HTTP {status_code}: {message_text}"
         
         if result.get("errcode") == 0:
             return True, "发送成功"
         else:
-            return False, f"发送失败: {result.get('errmsg', '未知错误')}"
+            message_text = _redact_access_tokens(result.get("errmsg", "未知错误"))
+            return False, f"发送失败: {message_text}"
     
     except requests.exceptions.Timeout:
         return False, "请求超时"
     except requests.exceptions.RequestException as e:
-        return False, f"请求错误: {str(e)}"
+        if _is_ca_bundle_error(e):
+            return False, _format_ca_bundle_error(e)
+        return False, f"请求错误: {_redact_access_tokens(e)}"
     except Exception as e:
-        return False, f"未知错误: {str(e)}"
+        if _is_ca_bundle_error(e):
+            return False, _format_ca_bundle_error(e)
+        return False, f"未知错误: {_redact_access_tokens(e)}"
 
 
 def send_workflow_notification(

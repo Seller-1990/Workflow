@@ -60,3 +60,28 @@ def test_cleanup_old_log_dirs_missing_workflow_dir_is_noop(tmp_path):
     workflow = SimpleNamespace(uid="missing", log_retention_days=1)
 
     assert cleanup_old_log_dirs(workflow, base_log_dir=tmp_path) == 0
+
+
+
+def test_cleanup_old_log_dirs_rejects_workflow_uid_path_escape(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}_outside"
+    outside.mkdir()
+    try:
+        workflow = SimpleNamespace(uid=f"../{outside.name}", log_retention_days=1)
+        (outside / "20260101_010203").mkdir()
+        removed = []
+
+        count = cleanup_old_log_dirs(
+            workflow,
+            base_log_dir=tmp_path,
+            now=datetime(2026, 1, 10, 12, 0, 0),
+            remove_tree=lambda path: removed.append(path),
+        )
+
+        assert count == 0
+        assert removed == []
+        assert (outside / "20260101_010203").exists()
+    finally:
+        for child in outside.iterdir():
+            child.rmdir()
+        outside.rmdir()

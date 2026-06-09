@@ -65,6 +65,34 @@ def test_detect_watch_output_conflicts_flags_monthly_output_dirs():
     assert all("月度接收" not in item for item in conflicts)
 
 
+def test_detect_watch_output_conflicts_flags_watch_parent_of_output_dir():
+    conflicts = detect_watch_output_conflicts(
+        ["D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/基础文件"],
+        [_monthly_refresh_step()],
+    )
+
+    assert conflicts == ["D:\\OneDrive - PowerBI学谦\\Data Analysis\\经营分析\\基础文件"]
+
+
+def test_detect_watch_output_conflicts_supports_inline_out_argument():
+    output_dir = "D:/tmp/workflow-output"
+    conflicts = detect_watch_output_conflicts(
+        [output_dir],
+        [MockStep(script_path="D:/tmp/job.py", args=json.dumps([f"--out={output_dir}"]))],
+    )
+
+    assert conflicts == ["D:\\tmp\\workflow-output"]
+
+
+def test_detect_watch_output_conflicts_ignores_shallow_monthly_script_path():
+    conflicts = detect_watch_output_conflicts(
+        ["D:/tmp"],
+        [MockStep(script_path="D:/tmp/00_月度接收__月度基础数据刷新.py")],
+    )
+
+    assert conflicts == []
+
+
 def test_sanitize_workflow_watch_config_rewrites_monthly_output_watchers():
     changed, sanitized_folders, enabled = sanitize_workflow_watch_config(
         workflow_name="月度数据处理",

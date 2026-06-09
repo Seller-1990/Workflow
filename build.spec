@@ -7,6 +7,7 @@
 import sys
 import runpy
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
@@ -25,7 +26,7 @@ a = Analysis(
         ('图标.png', '.'), 
         # 如果有静态资源文件，在这里添加
         # ('src/resources', 'resources'),
-    ],
+    ] + collect_data_files('certifi'),
     hiddenimports=[
         'PySide6.QtCore',
         'PySide6.QtGui',

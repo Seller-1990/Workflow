@@ -18,6 +18,25 @@ def _normalize_path(raw_path: str) -> Path | None:
         return None
 
 
+def _extract_output_path(arg: str) -> Path | None:
+    normalized = (arg or "").strip()
+    if not normalized:
+        return None
+    prefix = "--out="
+    if normalized.lower().startswith(prefix):
+        return _normalize_path(normalized[len(prefix):])
+    return None
+
+
+def _get_monthly_workflow_root(script_resolved: Path | None) -> Path | None:
+    if script_resolved is None:
+        return None
+    parents = script_resolved.parents
+    if len(parents) <= 3:
+        return None
+    return parents[3]
+
+
 def collect_workflow_output_roots(steps: Iterable[object]) -> list[Path]:
     """根据步骤脚本与参数推断当前工作流的输出根目录。"""
     output_roots: set[Path] = set()
@@ -34,12 +53,17 @@ def collect_workflow_output_roots(steps: Iterable[object]) -> list[Path]:
                 output_path = _normalize_path(args[index + 1])
                 if output_path is not None:
                     output_roots.add(output_path)
+                continue
+            inline_output_path = _extract_output_path(arg)
+            if inline_output_path is not None:
+                output_roots.add(inline_output_path)
 
         script_path = (getattr(step, "script_path", None) or "").replace("\\", "/")
         if script_path.endswith(MONTHLY_REFRESH_SCRIPT_SUFFIX):
             script_resolved = _normalize_path(script_path)
-            if script_resolved is not None:
-                output_roots.add(script_resolved.parents[3] / "基础文件")
+            workflow_root = _get_monthly_workflow_root(script_resolved)
+            if workflow_root is not None:
+                output_roots.add(workflow_root / "基础文件")
     return sorted(output_roots)
 
 
@@ -52,7 +76,11 @@ def detect_watch_output_conflicts(watch_folders: list[str], steps: Iterable[obje
         if watch_path is None:
             continue
         for output_root in output_roots:
-            if watch_path == output_root or output_root in watch_path.parents:
+            if (
+                watch_path == output_root
+                or output_root in watch_path.parents
+                or watch_path in output_root.parents
+            ):
                 conflicts.append(str(watch_path))
                 break
     return conflicts
@@ -67,9 +95,10 @@ def suggest_watch_folders(workflow_name: str, steps: Iterable[object]) -> list[s
         script_path = (getattr(step, "script_path", None) or "").replace("\\", "/")
         if script_path.endswith(MONTHLY_REFRESH_SCRIPT_SUFFIX):
             script_resolved = _normalize_path(script_path)
-            if script_resolved is None:
+            workflow_root = _get_monthly_workflow_root(script_resolved)
+            if workflow_root is None:
                 continue
-            source_root = script_resolved.parents[3] / "月度接收" / "1账务信息"
+            source_root = workflow_root / "月度接收" / "1账务信息"
             return [str(source_root)]
     return []
 

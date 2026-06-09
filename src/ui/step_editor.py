@@ -802,7 +802,7 @@ class StepEditorPanel(QWidget):
         finally:
             self._suppress_dirty = False
         # load 完毕复位脏标记
-        self._is_dirty = False
+        self.reset_dirty_state()
 
     def _load_dependencies(self, step: Step):
         """加载上游依赖步骤列表"""
@@ -966,7 +966,7 @@ class StepEditorPanel(QWidget):
         finally:
             self._suppress_dirty = False
         # clear 完毕复位脏标记
-        self._is_dirty = False
+        self.reset_dirty_state()
     
     @Slot()
     def save_step(self) -> bool:
@@ -1054,7 +1054,7 @@ class StepEditorPanel(QWidget):
             update_recent_workflow(script_path)
 
         # #5: 保存成功后复位脏标记
-        self._is_dirty = False
+        self.reset_dirty_state()
         self._notify_status("已保存步骤配置。")
         self.step_saved.emit()
         return True
@@ -1063,6 +1063,15 @@ class StepEditorPanel(QWidget):
     def is_dirty(self) -> bool:
         """是否有未保存的编辑"""
         return self._is_dirty and self._step_id is not None
+
+    def reset_dirty_state(self) -> None:
+        self._is_dirty = False
+
+    def discard_changes(self) -> None:
+        if self._step_id:
+            self.load_step(self._step_id)
+            return
+        self.clear()
 
     def _mark_dirty(self, *_args, **_kwargs):
         """所有可编辑控件信号都接到这里"""
@@ -1094,7 +1103,7 @@ class StepEditorPanel(QWidget):
             except Exception:
                 pass
         # 下拉
-        for w in (self.combo_type, self.combo_stage, self.combo_target_workflow, self.combo_target_scope):
+        for w in (self.combo_type, self.combo_stage, self.combo_target_workflow):
             try:
                 w.currentIndexChanged.connect(self._mark_dirty)
             except Exception:

@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
         self.run_control.btn_cancel.setAccessibleName("停止运行")
 
         self.btn_view_board.clicked.connect(lambda: self._set_plan_view(0))
+        self.btn_view_dag.clicked.connect(lambda: self._set_plan_view(1))
         self.btn_view_table.clicked.connect(lambda: self._set_plan_view(2))
 
     def _create_left_panel(self) -> QFrame:
@@ -342,8 +343,13 @@ class MainWindow(QMainWindow):
         self.btn_view_table.setObjectName("ViewSwitch")
         self.btn_view_table.setToolTip("使用表格查看和批量调整步骤")
         self.btn_view_table.setAccessibleName("列表视图")
-        self._view_buttons = [(self.btn_view_board, 0), (self.btn_view_table, 2)]
+        self._view_buttons = [
+            (self.btn_view_board, 0),
+            (self.btn_view_dag, 1),
+            (self.btn_view_table, 2),
+        ]
         switch_layout.addWidget(self.btn_view_board)
+        switch_layout.addWidget(self.btn_view_dag)
         switch_layout.addWidget(self.btn_view_table)
         switch_layout.addStretch(1)
         return plan_switch
@@ -905,7 +911,7 @@ class MainWindow(QMainWindow):
         return "keep_running"
 
     def _confirm_discard_unsaved(self, *, reason: str, new_target) -> bool:
-        """如果 step_editor 有脏改动，弹"保存 / 不保存 / 取消"三选项。
+        """如果当前上下文有脏改动，弹"保存 / 不保存 / 取消"三选项。
 
         Returns:
             True  → 调用方可继续切换
@@ -916,9 +922,15 @@ class MainWindow(QMainWindow):
                造成对话框无限重弹。
         """
         try:
-            if not self.step_editor.is_dirty():
-                return True
+            config_dirty = self._should_check_workflow_config_dirty(reason) and self._is_panel_dirty(
+                self.workflow_config,
+                "workflow_config",
+            )
+            step_dirty = self._is_panel_dirty(self.step_editor, "step_editor")
         except Exception:
+            self._restore_selection_silently(reason)
+            return False
+        if not config_dirty and not step_dirty:
             return True
 
         from PySide6.QtWidgets import QMessageBox
@@ -927,19 +939,31 @@ class MainWindow(QMainWindow):
         # R3-#7 / R4-#8: 文案明确「取消」具体取消什么；标题区分工作流/步骤
         if reason == "switch_workflow":
             box.setWindowTitle("切换工作流前是否保存？")
-            box.setText("当前步骤编辑器有未保存的修改。\n切换工作流前要先保存吗？")
+            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
             save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
             discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
             cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
         elif reason == "switch_step":
             box.setWindowTitle("切换步骤前是否保存？")
-            box.setText("当前步骤编辑器有未保存的修改。\n切换步骤前要先保存吗？")
+            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
             save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
             discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
             cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
+        elif reason == "switch_stage":
+            box.setWindowTitle("切换阶段前是否保存？")
+            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
+            save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
+            discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
+            cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
+        elif reason == "close":
+            box.setWindowTitle("关闭前是否保存？")
+            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
+            save_btn = box.addButton("保存并关闭", QMessageBox.AcceptRole)
+            discard_btn = box.addButton("不保存直接关闭", QMessageBox.DestructiveRole)
+            cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
         else:
             box.setWindowTitle("未保存的修改")
-            box.setText("步骤编辑器有未保存的修改。是否保存？")
+            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
             save_btn = box.addButton("保存", QMessageBox.AcceptRole)
             discard_btn = box.addButton("不保存", QMessageBox.DestructiveRole)
             cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
@@ -948,69 +972,167 @@ class MainWindow(QMainWindow):
         box.exec_()
         clicked = box.clickedButton()
         if clicked is save_btn:
-            try:
-                ok = bool(self.step_editor.save_step())
-            except Exception as e:
-                logger.warning("自动保存步骤失败: %s", e)
-                ok = False
-            # R2-#2: save_step 失败时不允许切换；保留编辑器内容，留住 dirty 状态
-            if not ok or self.step_editor.is_dirty():
+            if not self._save_dirty_panels(config_dirty=config_dirty, step_dirty=step_dirty):
                 self._restore_selection_silently(reason)
                 return False
             return True
         if clicked is discard_btn:
-            # 用户主动放弃改动：复位脏标记
-            try:
-                self.step_editor._is_dirty = False
-            except Exception:
-                pass
+            if not self._discard_dirty_panels(config_dirty=config_dirty, step_dirty=step_dirty):
+                self._restore_selection_silently(reason)
+                return False
             return True
         # 取消：恢复 UI 上的选中状态到旧值
         self._restore_selection_silently(reason)
         return False
 
-    def _restore_selection_silently(self, reason: str) -> None:
+    def _should_check_workflow_config_dirty(self, reason: str) -> bool:
+        return reason in {"switch_workflow", "close"}
+
+    def _is_panel_dirty(self, panel, panel_name: str) -> bool:
+        if panel is None:
+            return False
+        dirty_getter = getattr(panel, "is_dirty", None)
+        if dirty_getter is None:
+            return False
+        try:
+            return bool(dirty_getter())
+        except Exception as exc:
+            logger.warning("检查 %s dirty 状态失败: %s", panel_name, exc)
+            raise
+
+    def _build_dirty_message(self, reason: str, *, config_dirty: bool, step_dirty: bool) -> str:
+        if config_dirty and step_dirty:
+            body = "当前工作流配置和步骤编辑器都有未保存的修改。"
+        elif config_dirty:
+            body = "当前工作流配置有未保存的修改。"
+        else:
+            body = "当前步骤编辑器有未保存的修改。"
+
+        if reason == "switch_workflow":
+            suffix = "切换工作流前要先保存吗？"
+        elif reason == "switch_step":
+            suffix = "切换步骤前要先保存吗？"
+        elif reason == "switch_stage":
+            suffix = "切换阶段前要先保存吗？"
+        elif reason == "close":
+            suffix = "关闭前要先保存吗？"
+        else:
+            suffix = "是否保存？"
+        return f"{body}\n{suffix}"
+
+    def _save_dirty_panels(self, *, config_dirty: bool, step_dirty: bool) -> bool:
+        if config_dirty:
+            try:
+                config_ok = bool(self.workflow_config.save_config())
+            except Exception as exc:
+                logger.warning("自动保存工作流配置失败: %s", exc)
+                return False
+            if not config_ok:
+                return False
+            try:
+                if self.workflow_config.is_dirty():
+                    return False
+            except Exception as exc:
+                logger.warning("保存后复查 workflow_config dirty 失败: %s", exc)
+                return False
+        if step_dirty:
+            try:
+                step_ok = bool(self.step_editor.save_step())
+            except Exception as exc:
+                logger.warning("自动保存步骤失败: %s", exc)
+                return False
+            if not step_ok:
+                return False
+            try:
+                if self.step_editor.is_dirty():
+                    return False
+            except Exception as exc:
+                logger.warning("保存后复查 step_editor dirty 失败: %s", exc)
+                return False
+        return True
+
+    def _discard_dirty_panels(self, *, config_dirty: bool, step_dirty: bool) -> bool:
+        if config_dirty and not self._discard_panel_changes(self.workflow_config, "workflow_config"):
+            return False
+        if step_dirty and not self._discard_panel_changes(self.step_editor, "step_editor"):
+            return False
+        return True
+
+    def _discard_panel_changes(self, panel, panel_name: str) -> bool:
+        if panel is None:
+            return True
+        discarder = getattr(panel, "discard_changes", None)
+        if discarder is not None:
+            try:
+                discarder()
+                return True
+            except Exception as exc:
+                logger.warning("丢弃 %s 修改失败: %s", panel_name, exc)
+                return False
+        return self._reset_panel_dirty_state(panel, panel_name)
+
+    def _reset_panel_dirty_state(self, panel, panel_name: str) -> bool:
+        if panel is None:
+            return True
+        resetter = getattr(panel, "reset_dirty_state", None)
+        if resetter is None:
+            logger.warning("%s 缺少公开 dirty reset/discard API", panel_name)
+            return False
+        try:
+            resetter()
+            return True
+        except Exception as exc:
+            logger.warning("重置 %s dirty 状态失败: %s", panel_name, exc)
+            return False
+
+    def _restore_selection_silently(self, reason: str) -> bool:
         """R2-#3 / R4-#7: 静默回滚 UI 选中状态，避免引发新一轮选中信号。
 
         支持 reason: switch_workflow / switch_step
         """
         if reason == "switch_workflow":
-            self._restore_workflow_selection_silently()
-        elif reason == "switch_step":
-            self._restore_step_selection_silently()
+            return self._restore_workflow_selection_silently()
+        elif reason in {"switch_step", "switch_stage"}:
+            return self._restore_step_selection_silently()
+        return True
 
-    def _restore_step_selection_silently(self) -> None:
+    def _restore_step_selection_silently(self) -> bool:
         """R4-#7: switch_step 取消路径——把 step_table 行选回当前编辑器的 step_id。"""
         try:
             target_step_id = getattr(self.step_editor, "_step_id", None) or getattr(
                 self.step_editor, "current_step_id", None
             )
             if not target_step_id:
-                return
-            tbl = getattr(self.step_table, "table", None)
-            if tbl is None:
-                return
-            blocker_active = tbl.signalsBlocked()
-            tbl.blockSignals(True)
+                return True
+            target_step_id = int(target_step_id)
             try:
-                row_map = getattr(self.step_table, "_row_by_step_id", {}) or {}
-                row = row_map.get(int(target_step_id))
-                if row is not None and 0 <= row < tbl.rowCount():
-                    tbl.setCurrentCell(row, 0)
-            finally:
-                tbl.blockSignals(blocker_active)
+                self.step_table.select_step(target_step_id, emit_signal=False)
+                selection = self.step_table.get_selection_snapshot()
+            except Exception as exc:
+                logger.warning("回滚步骤表选中失败: step_id=%s, error=%s", target_step_id, exc, exc_info=True)
+                return False
+            if selection.get("step_id") != target_step_id:
+                logger.warning("回滚步骤表选中后状态不一致: expected=%s, actual=%s", target_step_id, selection)
+                return False
+            try:
+                self.workbench_board.select_step(target_step_id, emit_signal=False)
+            except Exception as exc:
+                logger.warning("回滚看板步骤选中失败: step_id=%s, error=%s", target_step_id, exc, exc_info=True)
+                return False
+            return True
         except Exception as e:
             logger.warning("回滚步骤选中失败: %s", e)
+            return False
 
-    def _restore_workflow_selection_silently(self) -> None:
+    def _restore_workflow_selection_silently(self) -> bool:
         """R2-#3 / R3-#1 / R4-#7: switch_workflow 取消路径的原逻辑提取。"""
         if self._current_workflow_id is None:
-            return
+            return True
         try:
             # 直接定位 QListWidget 并 blockSignals
             lw = getattr(self.workflow_list, "list_widget", None)
             if lw is None:
-                return
+                return True
             blocker_active = lw.signalsBlocked()
             lw.blockSignals(True)
             try:
@@ -1022,14 +1144,15 @@ class MainWindow(QMainWindow):
                         matched = True
                         break
                 # R3-#1: 过滤态下找不到匹配（旧工作流被搜索过滤掉了）：
-                # 清空选中并把 _current_workflow_id 置 None，避免 UI 与状态错位
+                # 只清空列表选中，不改当前工作流上下文；中间面板仍显示旧工作流。
                 if not matched:
                     lw.setCurrentRow(-1)
-                    self._current_workflow_id = None
             finally:
                 lw.blockSignals(blocker_active)
+            return True
         except Exception as e:
             logger.warning("回滚选中失败: %s", e)
+            return False
 
     def _sync_engine_watch(self, workflow) -> None:
         """根据 workflow.watch_enabled 启停 engine 监听。
@@ -1196,6 +1319,21 @@ class MainWindow(QMainWindow):
     def _on_stage_selected(self, stage_uid: str):
         if not stage_uid:
             return
+        current_step_id = getattr(self.step_editor, "_step_id", None)
+        selected_stage_uid = None
+        step_table_selection = {}
+        try:
+            step_table_selection = self.step_table.get_selection_snapshot()
+        except Exception:
+            step_table_selection = {}
+        try:
+            selected_stage_uid = self.workbench_board.selected_stage_uid()
+        except Exception:
+            selected_stage_uid = step_table_selection.get("stage_uid")
+        if not current_step_id and selected_stage_uid == stage_uid:
+            return
+        if not self._confirm_discard_unsaved(reason="switch_stage", new_target=stage_uid):
+            return
         stage_label = stage_uid
         try:
             stages = list_stages(self._current_workflow_id)
@@ -1205,6 +1343,16 @@ class MainWindow(QMainWindow):
                     break
         except Exception:
             pass
+        try:
+            self.workbench_board.select_stage(stage_uid, emit_signal=False)
+        except Exception as exc:
+            logger.warning("同步看板阶段选中失败: stage_uid=%s, error=%s", stage_uid, exc, exc_info=True)
+            return
+        try:
+            self.step_table.set_selected_stage_context(stage_uid, clear_step_selection=True)
+        except Exception as exc:
+            logger.warning("同步步骤表阶段上下文失败: stage_uid=%s, error=%s", stage_uid, exc, exc_info=True)
+            return
         self.lbl_inspector_kind.setText("选中阶段")
         self.lbl_inspector_title.setText(stage_label)
         self.step_editor.clear()
@@ -1258,7 +1406,7 @@ class MainWindow(QMainWindow):
             return
         if not self._require_edit_mode("拖拽调整步骤"):
             return
-        ok = self.step_table._apply_orders_and_stage_updates(
+        ok = self.step_table.apply_orders_and_stage_updates(
             {int(step_id): target_stage_uid},
             [int(sid) for sid in ordered_step_ids],
         )
@@ -1287,9 +1435,18 @@ class MainWindow(QMainWindow):
     @Slot(int)
     def _on_step_selected(self, step_id: int):
         """步骤被选中"""
+        try:
+            if int(getattr(self.step_editor, "_step_id", 0) or 0) == int(step_id):
+                return
+        except (TypeError, ValueError):
+            pass
         # #5: 切换步骤前，如编辑器有未保存改动，弹三选项确认
         if not self._confirm_discard_unsaved(reason="switch_step", new_target=step_id):
             return
+        try:
+            self.step_table.select_step(step_id, emit_signal=False)
+        except Exception:
+            pass
         self.step_editor.load_step(step_id)
         try:
             self.workbench_board.select_step(step_id, emit_signal=False)
@@ -1393,25 +1550,134 @@ class MainWindow(QMainWindow):
     def _on_steps_changed(self):
         """步骤发生变化"""
         if self._current_workflow_id:
-            self.dag_view.update_dag(self._current_workflow_id)
-            self.step_table.load_steps(self._current_workflow_id)
-            self.workbench_board.load_workflow(self._current_workflow_id)
-            self._refresh_workbench_header(self._current_workflow_id)
+            wid = self._current_workflow_id
+            selection = {}
+            try:
+                selection = self.step_table.get_selection_snapshot()
+            except Exception:
+                selection = {}
+            current_step_id = getattr(self.step_editor, "_step_id", None) or selection.get("step_id")
+            current_stage_uid = None
+            if current_step_id:
+                try:
+                    current_stage_uid = self.step_table.get_stage_uid_for_step(current_step_id)
+                except Exception:
+                    current_stage_uid = None
+            if not current_stage_uid:
+                current_stage_uid = selection.get("stage_uid") or self.workbench_board.selected_stage_uid()
+            self._reload_steps_views(wid, restore_step_id=current_step_id, restore_stage_uid=current_stage_uid, reload_editor=True)
     
     @Slot()
     def _on_step_saved(self):
         """步骤保存"""
         if self._current_workflow_id:
-            # R3-#9: 把较重的 DAG 重建推到下一轮事件循环，避免与 step_table 同步抢主线程
             wid = self._current_workflow_id
             current_step_id = getattr(self.step_editor, "_step_id", None)
-            self.step_table.load_steps(wid)
-            self.workbench_board.load_workflow(wid)
-            self._refresh_workbench_header(wid)
-            QTimer.singleShot(0, lambda w=wid: self._async_load_dag(w))
+            current_stage_uid = None
             if current_step_id:
-                QTimer.singleShot(0, lambda sid=current_step_id: self.step_table.select_step(sid))
-                QTimer.singleShot(0, lambda sid=current_step_id: self.workbench_board.select_step(sid, emit_signal=False))
+                try:
+                    current_stage_uid = self.step_table.get_stage_uid_for_step(current_step_id)
+                except Exception:
+                    current_stage_uid = None
+            self._reload_steps_views(wid, restore_step_id=current_step_id, restore_stage_uid=current_stage_uid)
+
+    def _reload_steps_views(
+        self,
+        workflow_id: int,
+        *,
+        restore_step_id: int | None = None,
+        restore_stage_uid: str | None = None,
+        reload_editor: bool = False,
+    ) -> None:
+        self.step_table.load_steps(workflow_id)
+        self.workbench_board.load_workflow(workflow_id)
+        self._refresh_workbench_header(workflow_id)
+        QTimer.singleShot(0, lambda w=workflow_id: self._async_load_dag(w))
+
+        def _clear_step_context() -> None:
+            try:
+                self.step_table.set_selected_stage_context(None, clear_step_selection=True)
+            except Exception as exc:
+                logger.warning("清空步骤表阶段上下文失败: workflow_id=%s, error=%s", workflow_id, exc, exc_info=True)
+            self.step_editor.clear()
+            self.lbl_inspector_kind.setText("Inspector")
+            self.lbl_inspector_title.setText("选择步骤或阶段")
+            self.run_control.set_selected_step(None, None)
+            self.log_panel.set_context(workflow_id=workflow_id, step_id=None)
+
+        def _restore_stage_context(stage_uid: str | None) -> None:
+            if not stage_uid:
+                _clear_step_context()
+                return
+            stage_label = stage_uid
+            try:
+                stages = list_stages(workflow_id)
+                for idx, stage in enumerate(stages, start=1):
+                    if stage.uid == stage_uid:
+                        stage_label = f"S{idx} {stage.name}"
+                        break
+            except Exception as exc:
+                logger.warning("恢复阶段标题失败: workflow_id=%s, stage_uid=%s, error=%s", workflow_id, stage_uid, exc)
+            try:
+                self.workbench_board.select_stage(stage_uid, emit_signal=False)
+            except Exception as exc:
+                logger.warning("恢复看板阶段选中失败: stage_uid=%s, error=%s", stage_uid, exc, exc_info=True)
+                return
+            try:
+                self.step_table.set_selected_stage_context(stage_uid, clear_step_selection=True)
+            except Exception as exc:
+                logger.warning("恢复步骤表阶段上下文失败: stage_uid=%s, error=%s", stage_uid, exc, exc_info=True)
+                return
+            self.lbl_inspector_kind.setText("选中阶段")
+            self.lbl_inspector_title.setText(stage_label)
+            self.step_editor.clear()
+            self.run_control.set_selected_step(None, stage_uid)
+            self.log_panel.set_context(workflow_id=workflow_id, step_id=None)
+
+        def _restore_step_context(step_id: int | None, fallback_stage_uid: str | None) -> None:
+            if not step_id:
+                _restore_stage_context(fallback_stage_uid)
+                return
+            if not self.step_table.has_step(int(step_id)):
+                _restore_stage_context(fallback_stage_uid)
+                return
+            try:
+                self.step_table.select_step(int(step_id), emit_signal=False)
+            except Exception as exc:
+                logger.warning("恢复步骤表步骤选中失败: step_id=%s, error=%s", step_id, exc, exc_info=True)
+                _restore_stage_context(fallback_stage_uid)
+                return
+            try:
+                self.workbench_board.select_step(int(step_id), emit_signal=False)
+            except Exception as exc:
+                logger.warning("恢复看板步骤选中失败: step_id=%s, error=%s", step_id, exc, exc_info=True)
+                _restore_stage_context(fallback_stage_uid)
+                return
+            if reload_editor:
+                try:
+                    self.step_editor.load_step(int(step_id))
+                except Exception as exc:
+                    logger.warning("恢复步骤编辑器失败: step_id=%s, error=%s", step_id, exc, exc_info=True)
+                    _restore_stage_context(fallback_stage_uid)
+                    return
+            try:
+                step = get_step_by_id(int(step_id))
+                if step:
+                    self.lbl_inspector_kind.setText("选中步骤")
+                    self.lbl_inspector_title.setText(step.name)
+            except Exception as exc:
+                logger.warning("恢复步骤 Inspector 标题失败: step_id=%s, error=%s", step_id, exc)
+            stage_uid = fallback_stage_uid
+            if stage_uid is None:
+                try:
+                    stage_uid = self.step_table.get_stage_uid_for_step(int(step_id))
+                except Exception as exc:
+                    logger.warning("恢复步骤阶段上下文失败: step_id=%s, error=%s", step_id, exc)
+                    stage_uid = None
+            self.run_control.set_selected_step(int(step_id), stage_uid)
+            self.log_panel.set_context(workflow_id=workflow_id, step_id=int(step_id))
+
+        QTimer.singleShot(0, lambda sid=restore_step_id, stage_uid=restore_stage_uid: _restore_step_context(sid, stage_uid))
 
     @Slot()
     def _on_workflow_updated(self):
@@ -1794,6 +2060,8 @@ class MainWindow(QMainWindow):
         """打开 Webhook 管理对话框"""
         dialog = WebhookManagerDialog(self)
         dialog.exec_()
+        if hasattr(self, "workflow_config") and hasattr(self.workflow_config, "refresh_webhooks"):
+            self.workflow_config.refresh_webhooks()
 
     def _toggle_left_panel(self):
         """折叠/展开左侧面板"""
@@ -1847,9 +2115,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """关闭事件"""
-        if not self._confirm_discard_unsaved(reason="close", new_target=None):
-            event.ignore()
-            return
         if self.engine.is_running:
             reply = msg_question(
                 self, self._dark_mode, "确认退出",
@@ -1858,6 +2123,10 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.No:
                 event.ignore()
                 return
+        if not self._confirm_discard_unsaved(reason="close", new_target=None):
+            event.ignore()
+            return
+        if self.engine.is_running:
             self.engine.cancel()
             shutdown_wait = self.engine.wait_for_completion(timeout=10.0)
             if hasattr(self, '_run_thread') and self._run_thread.is_alive():

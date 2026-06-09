@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QPushButton, QInputDialog, QMessageBox, QMenu, QLabel, QLineEdit
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont
 
 from database import (
     list_workflows, create_workflow, delete_workflow,
@@ -240,7 +240,7 @@ class WorkflowListPanel(QWidget):
             else:
                 placeholder = QListWidgetItem("(空)")
             placeholder.setFlags(Qt.NoItemFlags)
-            placeholder.setForeground(get_colors(self._dark)["text_tertiary"])
+            placeholder.setForeground(QColor(get_colors(self._dark)["text_tertiary"]))
             placeholder.setData(Qt.UserRole, None)
             self.list_widget.addItem(placeholder)
 

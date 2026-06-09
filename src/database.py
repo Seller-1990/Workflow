@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """数据库连接与 CRUD 操作"""
 
+import json
 import logging
 import threading
 import time
@@ -28,7 +29,10 @@ from database_field_guards import (
 from database_import_export import (
     export_to_json_impl,
     import_from_json_impl,
+)
+from webhook_url_policy import (
     is_masked_webhook_url as _is_masked_webhook_url,
+    is_valid_dingtalk_webhook_url,
 )
 from database_versions import (
     get_workflow_version_impl,
@@ -199,6 +203,8 @@ SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
     (1, "_migrate_v1_workflow_step_runhistory_columns"),
     (2, "_migrate_v2_version_table_and_step_uid_unique"),
     (3, "_migrate_v3_step_logs_step_run_index"),
+    (4, "_migrate_v4_workflow_version_unique"),
+    (5, "_migrate_v5_webhook_name_unique"),
 ]
 
 
@@ -295,6 +301,17 @@ def _migrate_v3_step_logs_step_run_index(engine):
             logger.warning("创建 ix_step_logs_step_run 失败: %s", e)
 
 
+def _migrate_v4_workflow_version_unique(engine):
+    """v4: 为 workflow_versions 建立 (workflow_id, version) 唯一约束。"""
+    _ensure_version_table(engine)
+    _ensure_workflow_version_unique(engine)
+
+
+def _migrate_v5_webhook_name_unique(engine):
+    """v5: 清理重复 webhook 名称后建立唯一索引。"""
+    _ensure_webhook_name_unique(engine)
+
+
 def _ensure_workflow_columns(engine):
     """兼容老库：补齐新增字段"""
     with engine.begin() as conn:
@@ -349,6 +366,117 @@ def _ensure_version_table(engine):
             pass
 
 
+def _ensure_workflow_version_unique(engine):
+    """清理重复版本号后建立 workflow_versions 唯一索引。"""
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT id, workflow_id, version FROM workflow_versions "
+            "ORDER BY workflow_id, version, created_at, id"
+        )).fetchall()
+        by_workflow: dict[int, list[tuple[int, int]]] = {}
+        for row_id, workflow_id, version in rows:
+            by_workflow.setdefault(int(workflow_id), []).append((int(row_id), int(version)))
+
+        for workflow_id, versions in by_workflow.items():
+            used: set[int] = set()
+            next_version = max((version for _, version in versions), default=0) + 1
+            for row_id, version in versions:
+                if version not in used:
+                    used.add(version)
+                    continue
+                while next_version in used:
+                    next_version += 1
+                conn.execute(
+                    text("UPDATE workflow_versions SET version=:version WHERE id=:id"),
+                    {"version": next_version, "id": row_id},
+                )
+                used.add(next_version)
+                logger.warning(
+                    "已修正重复工作流版本号: workflow_id=%s, row_id=%s, new_version=%s",
+                    workflow_id,
+                    row_id,
+                    next_version,
+                )
+                next_version += 1
+
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_versions_workflow_version "
+            "ON workflow_versions(workflow_id, version)"
+        ))
+
+
+def _ensure_webhook_name_unique(engine):
+    """清理重复 webhook 名称后建立唯一索引。"""
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT id, name FROM webhook_configs "
+            "ORDER BY name, id"
+        )).fetchall()
+
+        keep_by_name: dict[str, int] = {}
+        duplicate_to_keep: dict[int, int] = {}
+        duplicate_ids: list[int] = []
+
+        for row_id, name in rows:
+            normalized_name = str(name or "")
+            existing_id = keep_by_name.get(normalized_name)
+            if existing_id is None:
+                keep_by_name[normalized_name] = int(row_id)
+                continue
+            duplicate_id = int(row_id)
+            duplicate_to_keep[duplicate_id] = existing_id
+            duplicate_ids.append(duplicate_id)
+            logger.warning(
+                "已修正重复 webhook 名称: name=%r, keep_id=%s, drop_id=%s",
+                normalized_name,
+                existing_id,
+                duplicate_id,
+            )
+
+        if duplicate_to_keep:
+            workflows = conn.execute(text(
+                "SELECT id, notify_config FROM workflows "
+                "WHERE notify_config IS NOT NULL AND notify_config != ''"
+            )).fetchall()
+            for workflow_id, notify_config in workflows:
+                try:
+                    notify = json.loads(notify_config)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(notify, dict):
+                    continue
+
+                webhook_id = notify.get("webhook_id")
+                if isinstance(webhook_id, str):
+                    if not webhook_id.isdigit():
+                        continue
+                    webhook_id = int(webhook_id)
+                if not isinstance(webhook_id, int):
+                    continue
+                if webhook_id not in duplicate_to_keep:
+                    continue
+
+                notify["webhook_id"] = duplicate_to_keep[webhook_id]
+                conn.execute(
+                    text("UPDATE workflows SET notify_config=:notify_config WHERE id=:id"),
+                    {
+                        "notify_config": json.dumps(notify, ensure_ascii=False),
+                        "id": workflow_id,
+                    },
+                )
+
+            for duplicate_id in duplicate_ids:
+                conn.execute(
+                    text("DELETE FROM webhook_configs WHERE id=:id"),
+                    {"id": duplicate_id},
+                )
+
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_webhook_configs_name "
+            "ON webhook_configs(name)"
+        ))
+
+
 def _ensure_run_history_columns(engine):
     """兼容老库：补齐运行历史新增字段（trace_id, parent_run_id）"""
     with engine.begin() as conn:
@@ -395,16 +523,19 @@ def _ensure_step_uid_unique(engine):
                 "SELECT MAX(id) FROM steps WHERE workflow_id=:w AND uid=:u"
             ), {"w": wf_id, "u": uid}).scalar()
             conn.execute(text(
+                "UPDATE step_logs SET step_id=:k "
+                "WHERE step_id IN ("
+                "SELECT id FROM steps WHERE workflow_id=:w AND uid=:u AND id != :k"
+                ")"
+            ), {"w": wf_id, "u": uid, "k": keep_id})
+            conn.execute(text(
                 "DELETE FROM steps WHERE workflow_id=:w AND uid=:u AND id != :k"
             ), {"w": wf_id, "u": uid, "k": keep_id})
-        # 2) 创建 unique index（IF NOT EXISTS 幂等）
-        try:
-            conn.execute(text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_steps_workflow_uid "
-                "ON steps(workflow_id, uid)"
-            ))
-        except Exception as e:
-            logger.warning("创建 steps 唯一索引失败（可能存在残余重复）: %s", e)
+        # 2) 创建 unique index（IF NOT EXISTS 幂等）；失败必须中止迁移，避免版本已记录但约束缺失。
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_steps_workflow_uid "
+            "ON steps(workflow_id, uid)"
+        ))
 
 
 def _ensure_default_stage_in_session(session: Session, workflow_id: int) -> WorkflowStage:
@@ -1067,9 +1198,29 @@ def create_run_history(
             parent_run_id=parent_run_id
         )
         session.add(run_history)
+        session.flush()
+        fallback = RunHistory(
+            workflow_id=workflow_id,
+            run_id=run_id,
+            status="pending",
+            reason=reason,
+            run_mode=run_mode,
+            run_mode_param=run_mode_param,
+            trace_id=trace_id or run_id,
+            parent_run_id=parent_run_id,
+        )
+        fallback.id = run_history.id
         session.commit()
-        session.execute(text("PRAGMA wal_checkpoint(PASSIVE)"))
-        session.refresh(run_history)
+        _wal_checkpoint(session)
+        try:
+            session.refresh(run_history)
+        except Exception as exc:
+            logger.warning("RunHistory 已提交但刷新失败，返回已知字段: id=%s, error=%s", fallback.id, exc)
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            return fallback
         return run_history
 
 
@@ -1174,16 +1325,34 @@ def create_step_log(
                 status="pending"
             )
             session.add(step_log)
+            fallback = None
             try:
+                session.flush()
+                fallback = StepLog(
+                    run_history_id=run_history_id,
+                    step_id=step_id,
+                    order=order,
+                    status="pending",
+                )
+                fallback.id = step_log.id
                 session.commit()
-                session.refresh(step_log)
-                return step_log
             except Exception as e:
                 session.rollback()
                 last_error = e
                 if attempt < 2:
-                    session.execute(text("PRAGMA wal_checkpoint(PASSIVE)"))
+                    _wal_checkpoint(session)
                     time.sleep(0.1 * (attempt + 1))
+                continue
+            try:
+                session.refresh(step_log)
+            except Exception as exc:
+                logger.warning("StepLog 已提交但刷新失败，返回已知字段: id=%s, error=%s", fallback.id, exc)
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                return fallback
+            return step_log
     raise last_error
 
 
@@ -1307,6 +1476,14 @@ def is_masked_webhook_url(value: str | None) -> bool:
     return _is_masked_webhook_url(value, MASKED_WEBHOOK_URL)
 
 
+def validate_webhook_url(webhook_url: str) -> str:
+    """校验并规范化钉钉机器人 Webhook URL。"""
+    url = (webhook_url or "").strip()
+    if not is_valid_dingtalk_webhook_url(url):
+        raise ValueError("Webhook URL 必须是钉钉机器人 HTTPS 地址")
+    return url
+
+
 def import_from_json(json_path: Path) -> int:
     """从 JSON 文件导入工作流。"""
     return import_from_json_impl(
@@ -1366,7 +1543,14 @@ def create_webhook(
     description: str = ""
 ) -> WebhookConfig:
     """创建 Webhook 配置"""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Webhook 名称不能为空")
+    webhook_url = validate_webhook_url(webhook_url)
     with get_session() as session:
+        existing = session.query(WebhookConfig).filter(WebhookConfig.name == name).first()
+        if existing:
+            raise ValueError(f"Webhook 名称已存在: {name}")
         webhook = WebhookConfig(
             name=name,
             webhook_url=webhook_url,
@@ -1383,9 +1567,23 @@ def create_webhook(
 def update_webhook(webhook_id: int, **kwargs) -> Optional[WebhookConfig]:
     """更新 Webhook 配置"""
     _validate_update_fields("WebhookConfig", kwargs, WEBHOOK_UPDATE_FIELDS)
+    if "name" in kwargs:
+        kwargs["name"] = (kwargs["name"] or "").strip()
+        if not kwargs["name"]:
+            raise ValueError("Webhook 名称不能为空")
+    if "webhook_url" in kwargs:
+        kwargs["webhook_url"] = validate_webhook_url(kwargs["webhook_url"])
     with get_session() as session:
         webhook = session.query(WebhookConfig).filter(WebhookConfig.id == webhook_id).first()
         if webhook:
+            if "name" in kwargs:
+                duplicate = (
+                    session.query(WebhookConfig)
+                    .filter(WebhookConfig.name == kwargs["name"], WebhookConfig.id != webhook_id)
+                    .first()
+                )
+                if duplicate:
+                    raise ValueError(f"Webhook 名称已存在: {kwargs['name']}")
             for key, value in kwargs.items():
                 setattr(webhook, key, value)
             webhook.updated_at = datetime.now()

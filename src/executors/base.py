@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import threading
 
+from runtime.process_runner import run_process
+
 
 @dataclass
 class ExecutorResult:
@@ -102,7 +104,7 @@ class BaseExecutor(ABC):
             return
         if sys.platform == "win32":
             try:
-                subprocess.run(
+                run_process(
                     ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                     capture_output=True,
                     timeout=taskkill_timeout,

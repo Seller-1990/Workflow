@@ -1,6 +1,6 @@
 # 工作流管理系统 (Workflow Manager)
 
-基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、Excel 刷新、Power BI 刷新等异构任务串联成自动化工作流，提供可视化管理、阶段分组、日志追踪和钉钉通知。
+基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、Excel 刷新、Power BI 刷新等异构任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、文件监听、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：4.1.0。
 
 ## 核心功能
 
@@ -11,6 +11,14 @@
 - **钉钉通知** — 运行完成/失败时推送消息，支持自定义模板变量
 - **运行历史** — 记录每次运行的步骤状态、耗时、日志，支持重试失败步骤
 - **CLI 接口** — 无需打开 GUI，命令行即可运行/管理工作流
+
+## 4.1.0 更新详情
+
+- **安全通知加固**：统一钉钉 Webhook URL 策略，发送前校验可信域名，错误消息和异常链路默认脱敏 access_token。
+- **执行运行时治理**：补强子进程/执行器清理策略、结果状态策略和日志清理边界，降低孤儿进程与残留文件风险。
+- **UI 架构优化**：步骤表格样式拆分复用，Webhook 管理界面复用统一策略，减少重复实现。
+- **工程质量提升**：新增仓库卫生、CI、依赖一致性、风险调用、宽泛异常和打包自检守卫；全量测试覆盖提升到 317 项。
+- **发布流程改进**：GitHub Actions 打包工作流支持手动/标签触发，产物附带 sha256，并执行隔离自检。
 
 ## 技术栈
 
@@ -41,21 +49,38 @@ python src/main.py
 
 ```bash
 pip install -r requirements-release.txt
-pyinstaller build.spec
-# 输出: dist/工作流管理.exe
+pyinstaller build_slim2.spec
+# 输出: dist/工作流管理_4.1.0_slim2.exe
 ```
 
 ### 质量验证
 
+开发/CI 验证请先安装测试依赖：
+
 ```bash
+pip install -r requirements-ci.txt
+```
+
+运行 `python tools/repo_hygiene.py --strict` 前，请先清理本地运行产物和导出残留，例如 `build/`、`dist/`、`data/`、`logs/`、`__pycache__/`、`.pytest_cache/`、`audit_export.json`、`tmp_export.json`、`workflows_export*.json`。
+
+```bash
+python tools/repo_hygiene.py --strict
 python -m compileall src tests _import_and_run.py
-pytest -q
+python -m pytest -q
 python src/cli.py --help
 python src/cli.py export --help
 python _import_and_run.py --help
 ```
 
-仓库包含 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Windows runner 上执行依赖安装、编译检查、仓库卫生检查、测试和 CLI smoke；`.github/workflows/package.yml` 可手动触发 PyInstaller 打包验证。
+仓库包含 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Windows runner 上执行依赖安装、编译检查、仓库卫生检查、测试和 CLI smoke；`.github/workflows/package.yml` 可手动触发 PyInstaller 打包验证，默认使用 `build_slim2.spec`，会在隔离的 `WORKFLOW_APP_DATA_DIR` 下对生成的 exe 执行 `--self-check`，并随 exe 上传 `.sha256` 校验文件。
+
+### Release / Rollback
+
+`.github/workflows/package.yml` 同时支持 `workflow_dispatch` 和发布 tag `v*` 触发。手动触发时可指定 PyInstaller spec；tag 触发默认使用 `build_slim2.spec`。打包前会先执行 `python tools/repo_hygiene.py --strict`，随后执行 clean-tree release gate（`git status --porcelain --untracked-files=all`），避免在脏工作区继续打包。
+
+artifact 名称格式固定为 `workflow-manager-<APP_VERSION>-<specName>-<shortSha>`；其中 `APP_VERSION` 直接从 `src/config.py` 读取，产物会附带 `.sha256` 校验文件，且 exe 会在隔离的 `WORKFLOW_APP_DATA_DIR` 下执行 `--self-check`。
+
+回滚时优先下载并校验目标版本 tag 对应的历史 artifact；如需重建旧版本，则手动运行 `Package` workflow，选择目标 tag 作为 ref，并保持与原发布一致的 spec。
 
 ## CLI 接口
 
@@ -170,9 +195,11 @@ Workflow/
 ├── data/                       # SQLite 数据库（自动创建）
 ├── logs/                       # 运行日志（按工作流/运行批次/步骤分级）
 ├── docs/                       # 项目设计文档
-├── build.spec                  # PyInstaller 打包配置
+├── build.spec                  # PyInstaller 打包配置（完整包）
+├── build_slim2.spec            # 默认发布用 PyInstaller spec
 ├── requirements.txt            # Python 依赖
-├── requirements-release.txt    # 发布打包直接依赖锁定
+├── requirements-release.txt    # 发布打包依赖与 PyInstaller 版本锁定
+├── requirements-ci.txt         # CI 测试依赖锁定
 └── _import_and_run.py          # 月度批量运行脚本（导入 + 运行 + 通知）
 ```
 
@@ -199,14 +226,14 @@ python _import_and_run.py run 7
 python _import_and_run.py run "月度"
 
 # 查看所有可用工作流
-python _import_and_run.py import
+python src/cli.py list
 ```
 
 > **注意**：`_import_and_run.py` 默认读取项目根目录的 `workflows_export.json`；如文件在其他位置，请使用 `--workflows-json` 指定。
 
 ## 数据存储
 
-- 数据库文件：`data/workflow.db`（SQLite）
+- 数据库文件：`data/workflows.db`（SQLite）
 - 运行日志：`logs/{workflow_uid}/{run_id}/step_{order}_{step_uid}/stdout.txt`
 - 打包后数据目录：`%LOCALAPPDATA%/工作流管理/`
 

@@ -2,12 +2,13 @@
 """
 工作流管理应用第二版精简打包配置
 使用命令: pyinstaller build_slim2.spec
-输出: dist/工作流管理_4.0.0_slim2.exe
+输出: dist/工作流管理_4.1.0_slim2.exe
 """
 
 import runpy
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
@@ -41,7 +42,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ("图标.ico", "."),
-    ],
+    ] + collect_data_files("certifi"),
     hiddenimports=[
         "PySide6.QtCore",
         "PySide6.QtGui",

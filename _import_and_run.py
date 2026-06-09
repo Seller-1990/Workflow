@@ -19,6 +19,14 @@ import sys
 import os
 from pathlib import Path
 
+# Windows 子进程在非 UTF-8 活动代码页下会把中文输出编码成本地编码，
+# 但测试与 CI 按 UTF-8 读取；显式重配可避免 CLI 合同输出乱码。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 src_dir = Path(__file__).resolve().parent / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
@@ -165,16 +173,21 @@ def main():
 
     args = parser.parse_args()
 
-    if args.auto:
-        cmd_import(args.workflows_json)
-        print("\n" + "="*60, flush=True)
-        cmd_run("月度数据处理")
-    elif args.cmd == "import":
-        cmd_import(args.workflows_json)
-    elif args.cmd == "run":
-        cmd_run(args.name)
-    else:
-        parser.print_help()
+    try:
+        if args.auto:
+            cmd_import(args.workflows_json)
+            print("\n" + "="*60, flush=True)
+            cmd_run("月度数据处理")
+        elif args.cmd == "import":
+            cmd_import(args.workflows_json)
+        elif args.cmd == "run":
+            cmd_run(args.name)
+        else:
+            parser.print_help()
+    except FileNotFoundError as exc:
+        sys.stdout.buffer.write((str(exc) + "\n").encode("utf-8"))
+        sys.stdout.flush()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

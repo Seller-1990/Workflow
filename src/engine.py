@@ -66,7 +66,11 @@ from database import (
     cleanup_session,
 )
 from models import Workflow, Step, RunHistory
-from executors import get_executor, ExecutorResult
+from executors import (
+    ExecutorResult,
+    get_executor,
+    has_non_retryable_policy,
+)
 from diagnostics import ErrorDiagnostician
 from duration_utils import format_duration_short
 from exceptions import (
@@ -391,10 +395,17 @@ class WorkflowEngine(QObject):
 
     def stop_watch(self, join_timeout: float = 1.0):
         """停止文件监听（委托给 FileWatcher）"""
-        was_watching = getattr(self._watcher, "_thread", None) is not None
+        previous_thread = getattr(self._watcher, "_thread", None)
+        was_watching = previous_thread is not None
         prev_workflow_id = getattr(self._watcher, "_workflow_id", None)
         self._watcher.stop(join_timeout)
-        if was_watching:
+        current_thread = getattr(self._watcher, "_thread", None)
+        old_thread_alive = bool(
+            previous_thread is not None
+            and getattr(previous_thread, "is_alive", lambda: False)()
+        )
+        stopped = current_thread is None or current_thread is not previous_thread or not old_thread_alive
+        if was_watching and stopped:
             try:
                 self.watch_stopped.emit(prev_workflow_id or 0)
             except Exception:
@@ -1160,7 +1171,6 @@ class WorkflowEngine(QObject):
         step: Step,
         run_history_id: int,
         log_dir: Path,
-        signal_policy: RunSignalPolicy,
     ) -> tuple[int, Path]:
         step_log_dir = log_dir / f"step_{step.order:02d}_{step.uid}"
         step_log_dir.mkdir(parents=True, exist_ok=True)
@@ -1169,12 +1179,18 @@ class WorkflowEngine(QObject):
             step_id=step.id,
             order=step.order,
         )
+        return step_log.id, step_log_dir
 
+    def _mark_step_running(
+        self,
+        step: Step,
+        step_log_id: int,
+        signal_policy: RunSignalPolicy,
+    ) -> None:
         if signal_policy.emit_step_signals:
             self.step_started.emit(step.id, step.name)
         self._emit_log(f"开始步骤 [{step.order}] {step.name}")
-        update_step_log(step_log.id, status="running", start_time=datetime.now())
-        return step_log.id, step_log_dir
+        update_step_log(step_log_id, status="running", start_time=datetime.now())
 
     def _cancelled_step_result(
         self,
@@ -1279,10 +1295,29 @@ class WorkflowEngine(QObject):
                 self._finish_step(step, step_log_id, result, exec_result, signal_policy)
                 return result, None
 
+            if self._is_non_retryable_executor_result(exec_result):
+                result = StepResult(
+                    step_id=step.id,
+                    step_name=step.name,
+                    status="failure",
+                    exit_code=exec_result.exit_code if exec_result.exit_code is not None else 1,
+                    start_time=exec_result.start_time,
+                    end_time=exec_result.end_time,
+                    error_message=exec_result.error_message,
+                    log_dir=str(step_log_dir),
+                )
+                self._finish_step(step, step_log_id, result, exec_result, signal_policy)
+                return result, None
+
             return None, exec_result.error_message
         except Exception as e:
             logger.warning("步骤执行异常: %s", e)
             return None, str(e)
+
+    @staticmethod
+    def _is_non_retryable_executor_result(exec_result: ExecutorResult) -> bool:
+        extra = getattr(exec_result, "extra", None) or {}
+        return has_non_retryable_policy(extra)
 
     def _build_failed_step_result(
         self,
@@ -1305,6 +1340,57 @@ class WorkflowEngine(QObject):
             log_dir=str(step_log_dir),
             suggested_fix=diagnosis["suggested_fix"],
         )
+
+    def _build_unexpected_step_failure(
+        self,
+        step: Step,
+        error: Exception,
+        step_log_dir: Path,
+    ) -> StepResult:
+        message = str(error) or error.__class__.__name__
+        return StepResult(
+            step_id=step.id,
+            step_name=step.name,
+            status="failure",
+            exit_code=1,
+            end_time=datetime.now(),
+            error_message=f"步骤执行异常: {message}",
+            log_dir=str(step_log_dir),
+        )
+
+    def _finish_failed_step_after_unexpected_error(
+        self,
+        step: Step,
+        step_log_id: int,
+        result: StepResult,
+        signal_policy: RunSignalPolicy,
+    ) -> None:
+        try:
+            self._finish_step(step, step_log_id, result, signal_policy=signal_policy)
+            return
+        except Exception as finish_error:
+            finish_error_message = str(finish_error) or finish_error.__class__.__name__
+            logger.exception(
+                "步骤异常收尾失败: step_id=%s order=%s",
+                getattr(step, "id", None),
+                getattr(step, "order", None),
+            )
+
+        error_message = result.error_message or "步骤执行异常"
+        try:
+            update_step_log(
+                step_log_id,
+                status="failure",
+                exit_code=1,
+                end_time=result.end_time or datetime.now(),
+                error_message=f"{error_message}; 收尾失败: {finish_error_message}",
+            )
+        except Exception:
+            logger.exception(
+                "步骤日志最小失败状态写入失败: step_log_id=%s step_id=%s",
+                step_log_id,
+                getattr(step, "id", None),
+            )
 
     def _stop_cancel_watcher(self, cancel_watcher, step: Step) -> None:
         cancel_watcher.join(timeout=1)
@@ -1390,35 +1476,50 @@ class WorkflowEngine(QObject):
         if skipped_result is not None:
             return skipped_result
 
-        step_log_id, step_log_dir = self._begin_step_execution(
-            step,
-            run_history_id,
-            log_dir,
-            signal_policy,
-        )
-
+        step_log_id = None
+        step_log_dir = None
         try:
-            executor = get_executor(step.step_type)
-        except ValueError as e:
-            result = StepResult(
-                step_id=step.id,
-                step_name=step.name,
-                status="failure",
-                exit_code=1,
-                error_message=str(e)
-            )
-            self._finish_step(step, step_log_id, result, signal_policy=signal_policy)
-            return result
+            step_log_id, step_log_dir = self._begin_step_execution(step, run_history_id, log_dir)
+            self._mark_step_running(step, step_log_id, signal_policy)
+            try:
+                executor = get_executor(step.step_type)
+            except ValueError as e:
+                result = StepResult(
+                    step_id=step.id,
+                    step_name=step.name,
+                    status="failure",
+                    exit_code=1,
+                    error_message=str(e),
+                    log_dir=str(step_log_dir),
+                )
+                self._finish_step(step, step_log_id, result, signal_policy=signal_policy)
+                return result
 
-        return self._execute_step_with_retries(
-            workflow=workflow,
-            step=step,
-            executor=executor,
-            step_log_id=step_log_id,
-            step_log_dir=step_log_dir,
-            signal_policy=signal_policy,
-            run_cancel_event=run_cancel_event,
-        )
+            return self._execute_step_with_retries(
+                workflow=workflow,
+                step=step,
+                executor=executor,
+                step_log_id=step_log_id,
+                step_log_dir=step_log_dir,
+                signal_policy=signal_policy,
+                run_cancel_event=run_cancel_event,
+            )
+        except Exception as e:
+            logger.exception(
+                "步骤执行链路异常: step_id=%s order=%s",
+                getattr(step, "id", None),
+                getattr(step, "order", None),
+            )
+            if step_log_id is None or step_log_dir is None:
+                raise
+            result = self._build_unexpected_step_failure(step, e, step_log_dir)
+            self._finish_failed_step_after_unexpected_error(
+                step,
+                step_log_id,
+                result,
+                signal_policy,
+            )
+            return result
 
     def _execute_parallel_steps(
         self,

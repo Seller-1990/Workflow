@@ -43,7 +43,10 @@ class WorkflowConfigPanel(QWidget):
         self._workflow_id = None
         self._is_collapsed = False
         self._edit_enabled = False
+        self._is_dirty = False
+        self._suppress_dirty = False
         self._setup_ui()
+        self._connect_dirty_tracking()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -260,21 +263,30 @@ class WorkflowConfigPanel(QWidget):
     def _load_webhook_list(self):
         """加载 Webhook 列表"""
         current_data = self.webhook_list.currentData()
-        self.webhook_list.clear()
-        self.webhook_list.addItem("（未选择）", None)
-        
-        webhooks = list_webhooks()
-        for webhook in webhooks:
-            display = f"{webhook.name}"
-            if webhook.keyword:
-                display += f" ({webhook.keyword})"
-            self.webhook_list.addItem(display, webhook.id)
-        
-        # 恢复选择
-        if current_data:
-            idx = self.webhook_list.findData(current_data)
-            if idx >= 0:
-                self.webhook_list.setCurrentIndex(idx)
+        previous_suppress = self._suppress_dirty
+        self._suppress_dirty = True
+        try:
+            self.webhook_list.clear()
+            self.webhook_list.addItem("（未选择）", None)
+
+            webhooks = list_webhooks()
+            for webhook in webhooks:
+                display = f"{webhook.name}"
+                if webhook.keyword:
+                    display += f" ({webhook.keyword})"
+                self.webhook_list.addItem(display, webhook.id)
+
+            # 恢复选择
+            if current_data is not None:
+                idx = self.webhook_list.findData(current_data)
+                if idx >= 0:
+                    self.webhook_list.setCurrentIndex(idx)
+        finally:
+            self._suppress_dirty = previous_suppress
+
+    def refresh_webhooks(self) -> None:
+        """公开刷新 Webhook 下拉项，供外部窗口安全调用。"""
+        self._load_webhook_list()
 
     def load_workflow(self, workflow_id: int):
         """加载工作流配置"""
@@ -292,60 +304,77 @@ class WorkflowConfigPanel(QWidget):
             self.clear()
             return
 
-        self.edit_name.setText(wf.name)
-        idx = self.combo_theme.findText(wf.chart_theme or "default")
-        if idx >= 0:
-            self.combo_theme.setCurrentIndex(idx)
-        else:
-            self.combo_theme.setCurrentText("default")
-
-        self.check_parallel.setChecked(bool(wf.parallel_enabled))
-        self.spin_workers.setValue(int(wf.max_workers or 2))
-
-        notify = wf.get_notify_config()
-        self.check_notify.setChecked(bool(notify.get("enabled", False)))
-        
-        # 加载 Webhook 列表
-        self._load_webhook_list()
-        webhook_id = notify.get("webhook_id")
-        if webhook_id:
-            idx = self.webhook_list.findData(webhook_id)
+        self._suppress_dirty = True
+        try:
+            self.edit_name.setText(wf.name)
+            idx = self.combo_theme.findText(wf.chart_theme or "default")
             if idx >= 0:
-                self.webhook_list.setCurrentIndex(idx)
-        
-        self.edit_template.setText(
-            notify.get("message_template", "{工作流名称} - {状态} - 编号={运行编号}")
-        )
+                self.combo_theme.setCurrentIndex(idx)
+            else:
+                self.combo_theme.setCurrentText("default")
 
-        # 保持步骤编排始终启用
-        self.check_use_steps.setChecked(True)
+            self.check_parallel.setChecked(bool(wf.parallel_enabled))
+            self.spin_workers.setValue(int(wf.max_workers or 2))
 
-        self.check_watch.setChecked(bool(wf.watch_enabled))
-        mode_index = self.combo_watch_mode.findData(wf.watch_mode or "any_change")
-        if mode_index >= 0:
-            self.combo_watch_mode.setCurrentIndex(mode_index)
-        self._set_watch_folders(wf.get_watch_folders())
-        self.spin_cooldown.setValue(int(wf.cooldown_seconds or 8))
-        self.spin_settle.setValue(int(wf.settle_seconds or 15))
-        self._apply_enabled_state()
+            notify = wf.get_notify_config()
+            self.check_notify.setChecked(bool(notify.get("enabled", False)))
+
+            # 加载 Webhook 列表
+            self._load_webhook_list()
+            webhook_id = notify.get("webhook_id")
+            if webhook_id is not None:
+                idx = self.webhook_list.findData(webhook_id)
+                if idx >= 0:
+                    self.webhook_list.setCurrentIndex(idx)
+                else:
+                    self.webhook_list.setCurrentIndex(0)
+            else:
+                self.webhook_list.setCurrentIndex(0)
+
+            self.edit_template.setText(
+                notify.get("message_template", "{工作流名称} - {状态} - 编号={运行编号}")
+            )
+
+            # 保持步骤编排始终启用
+            self.check_use_steps.setChecked(True)
+
+            self.check_watch.setChecked(bool(wf.watch_enabled))
+            mode_index = self.combo_watch_mode.findData(wf.watch_mode or "any_change")
+            if mode_index >= 0:
+                self.combo_watch_mode.setCurrentIndex(mode_index)
+            self._set_watch_folders(wf.get_watch_folders())
+            self.spin_cooldown.setValue(int(wf.cooldown_seconds or 8))
+            self.spin_settle.setValue(int(wf.settle_seconds or 15))
+            self._apply_enabled_state()
+        finally:
+            self._suppress_dirty = False
+        self._is_dirty = False
 
     def clear(self):
         """清空配置"""
-        self._workflow_id = None
-        self.edit_name.clear()
-        self.combo_theme.setCurrentIndex(0)
-        self.check_parallel.setChecked(False)
-        self.spin_workers.setValue(2)
-        self.check_notify.setChecked(False)
-        self.webhook_list.setCurrentIndex(-1)
-        self.edit_template.clear()
-        self.check_use_steps.setChecked(True)
-        self.check_watch.setChecked(False)
-        self.combo_watch_mode.setCurrentIndex(0)
-        self.list_watch_folders.clear()
-        self.spin_cooldown.setValue(8)
-        self.spin_settle.setValue(15)
-        self._apply_enabled_state()
+        self._suppress_dirty = True
+        try:
+            self._workflow_id = None
+            self.edit_name.clear()
+            self.combo_theme.setCurrentIndex(0)
+            self.check_parallel.setChecked(False)
+            self.spin_workers.setValue(2)
+            self.check_notify.setChecked(False)
+            if self.webhook_list.count():
+                self.webhook_list.setCurrentIndex(0)
+            else:
+                self.webhook_list.setCurrentIndex(-1)
+            self.edit_template.clear()
+            self.check_use_steps.setChecked(True)
+            self.check_watch.setChecked(False)
+            self.combo_watch_mode.setCurrentIndex(0)
+            self.list_watch_folders.clear()
+            self.spin_cooldown.setValue(8)
+            self.spin_settle.setValue(15)
+            self._apply_enabled_state()
+        finally:
+            self._suppress_dirty = False
+        self._is_dirty = False
 
     def save_config(self) -> bool:
         """保存配置"""
@@ -400,6 +429,7 @@ class WorkflowConfigPanel(QWidget):
                 single_script_enabled=False
             )
             self.workflow_updated.emit()
+            self._is_dirty = False
             # #6: 保存成功反馈，避免用户对静默 emit 产生疑问
             try:
                 window = self.window()
@@ -463,12 +493,14 @@ class WorkflowConfigPanel(QWidget):
         item.setSizeHint(row.sizeHint())
         self.list_watch_folders.addItem(item)
         self.list_watch_folders.setItemWidget(item, row)
+        self._mark_dirty()
 
     def _remove_watch_folder(self, path: str) -> None:
         for i in range(self.list_watch_folders.count() - 1, -1, -1):
             it = self.list_watch_folders.item(i)
             if it and it.data(Qt.UserRole) == path:
                 self.list_watch_folders.takeItem(i)
+                self._mark_dirty()
                 break
 
     def _get_watch_folders(self) -> list:
@@ -486,3 +518,42 @@ class WorkflowConfigPanel(QWidget):
         for path in folders or []:
             if path and isinstance(path, str):
                 self._add_watch_folder_item(path.strip())
+
+    def is_dirty(self) -> bool:
+        return bool(self._is_dirty and self._workflow_id is not None)
+
+    def reset_dirty_state(self) -> None:
+        self._is_dirty = False
+
+    def discard_changes(self) -> None:
+        if self._workflow_id is None:
+            self.clear()
+            return
+        self.load_workflow(self._workflow_id)
+
+    def _mark_dirty(self, *_args, **_kwargs) -> None:
+        if self._suppress_dirty:
+            return
+        self._is_dirty = True
+
+    def _connect_dirty_tracking(self) -> None:
+        for widget in (self.edit_name, self.edit_template):
+            try:
+                widget.textChanged.connect(self._mark_dirty)
+            except Exception:
+                pass
+        for widget in (self.check_parallel, self.check_notify, self.check_watch):
+            try:
+                widget.stateChanged.connect(self._mark_dirty)
+            except Exception:
+                pass
+        for widget in (self.spin_workers, self.spin_cooldown, self.spin_settle):
+            try:
+                widget.valueChanged.connect(self._mark_dirty)
+            except Exception:
+                pass
+        for widget in (self.combo_theme, self.webhook_list, self.combo_watch_mode):
+            try:
+                widget.currentIndexChanged.connect(self._mark_dirty)
+            except Exception:
+                pass

@@ -120,6 +120,9 @@ class Workflow(Base):
 class WorkflowVersion(Base):
     """工作流配置版本历史"""
     __tablename__ = "workflow_versions"
+    __table_args__ = (
+        Index("uq_workflow_versions_workflow_version", "workflow_id", "version", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     workflow_id: Mapped[int] = mapped_column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
@@ -338,6 +341,9 @@ class RecentWorkflow(Base):
 class WebhookConfig(Base):
     """Webhook 配置模型"""
     __tablename__ = "webhook_configs"
+    __table_args__ = (
+        Index("uq_webhook_configs_name", "name", unique=True),
+    )
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
