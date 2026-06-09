@@ -920,3 +920,43 @@ def test_async_workflow_refresh_callbacks_ignore_stale_workflow_id():
 
     assert dag_calls == [2]
     assert history_calls == [2]
+
+
+def test_step_table_dependency_error_can_resolve_referenced_step(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    panel = StepTablePanel()
+    panel._workflow_id = 7
+
+    monkeypatch.setattr(
+        "ui.step_table.panel.get_steps_by_workflow",
+        lambda workflow_id: [SimpleNamespace(id=41, uid="step-a"), SimpleNamespace(id=42, uid="step-b")],
+    )
+
+    from exceptions import DependencyError
+
+    assert panel._find_step_id_referenced_by_dependency_error(
+        DependencyError("跨阶段依赖不允许：步骤「B」依赖未来阶段的步骤 uid=step-b")
+    ) == 42
+    assert app is not None
+
+
+def test_step_table_stage_mutation_dependency_error_uses_actionable_dialog(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    panel = StepTablePanel()
+    calls = []
+
+    from exceptions import DependencyError
+
+    monkeypatch.setattr(panel, "_show_dependency_mutation_error", lambda *args: calls.append(args))
+
+    ok = panel._run_stage_mutation(
+        lambda: (_ for _ in ()).throw(DependencyError("bad dependency")),
+        "操作无效",
+        "请先调整依赖",
+        "未知错误",
+    )
+
+    assert ok is False
+    assert calls and calls[0][0] == "操作无效"
+    assert "bad dependency" in str(calls[0][1])
+    assert app is not None

@@ -1232,12 +1232,56 @@ class StepTablePanel(QWidget):
 
         menu.exec_(global_pos)
 
+    def _show_dependency_mutation_error(self, title: str, error: DependencyError, detail: str = "") -> None:
+        """Show an actionable dependency error and optionally focus the offending step.
+
+        Stage/order operations can fail because a step would depend on a future stage.
+        A plain text warning leaves users hunting through the table, so expose a direct
+        "定位问题步骤" action when the offending dependency uid can be resolved.
+        """
+        text = f"{error}\n\n{detail}" if detail else str(error)
+        focus_step_id = self._find_step_id_referenced_by_dependency_error(error)
+        if not focus_step_id:
+            msg_warning(self, self._dark, title, text)
+            return
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle(title)
+        msg.setText(text)
+        msg.setIcon(QMessageBox.Warning)
+        locate_button = msg.addButton("定位问题步骤", QMessageBox.AcceptRole)
+        msg.addButton(QMessageBox.Ok)
+        try:
+            from ui.theme import _style_colors, _MSG_BOX_STYLE
+
+            msg.setStyleSheet(_MSG_BOX_STYLE.format(**_style_colors(self._dark)))
+        except (ImportError, KeyError, ValueError):
+            pass
+        msg.exec()
+        if msg.clickedButton() is locate_button:
+            self.select_step(focus_step_id)
+            self._notify_status("已定位到触发依赖校验的步骤。")
+
+    def _find_step_id_referenced_by_dependency_error(self, error: DependencyError) -> int | None:
+        """Return the visible step id mentioned by a DependencyError, if any."""
+        message = str(error)
+        steps = []
+        if self._workflow_id:
+            steps = get_steps_by_workflow(self._workflow_id)
+        for step in steps:
+            uid = getattr(step, "uid", None)
+            if uid and f"uid={uid}" in message:
+                try:
+                    return int(step.id)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
     def _run_stage_mutation(self, action, dependency_title: str, dependency_detail: str, unknown_message: str) -> bool:
         try:
             return bool(action())
         except DependencyError as e:
-            detail = f"{e}\n\n{dependency_detail}" if dependency_detail else str(e)
-            msg_warning(self, self._dark, dependency_title, detail)
+            self._show_dependency_mutation_error(dependency_title, e, dependency_detail)
             return False
         except WorkflowError as e:
             msg_warning(self, self._dark, "保存失败", str(e))
