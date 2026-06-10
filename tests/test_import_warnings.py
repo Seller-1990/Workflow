@@ -187,7 +187,7 @@ class _FakeWorkflow:
 _FAKE_WEBHOOK = SimpleNamespace(
     id=5,
     name="解析测试机器人",
-    webhook_url="https://oapi.dingtalk.com/robot/send?access_token=resolver-token",
+    webhook_url="https://oapi.dingtalk.com/robot/send?access_token=secret-token",
     keyword="",
 )
 
