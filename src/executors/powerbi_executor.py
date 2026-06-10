@@ -12,8 +12,9 @@ from typing import Dict, List, Optional
 
 from executors.base import BaseExecutor, ExecutorResult
 from executors.result_policy import ResultPolicyKeys, build_policy_extra
+from executors.powerbi_rest import PowerBIRestError, refresh_dataset
 from runtime.process_runner import start_process
-from constants import POWERBI_REFRESH_TIMEOUT
+from constants import POWERBI_REFRESH_TIMEOUT, POWERBI_REST_POLL_INTERVAL, POWERBI_REST_TIMEOUT
 
 
 def _kill_process_tree(proc):
@@ -133,6 +134,122 @@ class PowerBIExecutor(BaseExecutor):
             if os.path.exists(path):
                 return path
         return None
+
+    @staticmethod
+    def _parse_rest_args(args: Optional[List[str]]) -> tuple[bool, str, str]:
+        """解析 REST 刷新模式参数（仅支持 --key=value 形式）
+
+        Returns:
+            tuple[bool, str, str]: (是否启用 REST 模式, workspace_id, dataset_id)
+        """
+        rest_mode = False
+        workspace_id = ""
+        dataset_id = ""
+        for arg in args or []:
+            if not isinstance(arg, str):
+                continue
+            if arg == "--refresh-mode=rest":
+                rest_mode = True
+            elif arg.startswith("--workspace-id="):
+                workspace_id = arg.split("=", 1)[1].strip()
+            elif arg.startswith("--dataset-id="):
+                dataset_id = arg.split("=", 1)[1].strip()
+        return rest_mode, workspace_id, dataset_id
+
+    def _execute_rest_refresh(
+        self,
+        script_path: str,
+        workspace_id: str,
+        dataset_id: str,
+        log_dir: Optional[Path],
+        timeout: Optional[int],
+        cancel_event: Optional[threading.Event],
+    ) -> ExecutorResult:
+        """M5：REST 刷新模式（无人值守）
+
+        通过 Power BI Service REST API 触发数据集刷新并轮询结果，
+        不打开本地 .pbix、不依赖 Power BI Desktop；script_path 仅用于日志展示。
+        access token 只从环境变量 POWERBI_ACCESS_TOKEN 读取，不落地、不写日志。
+        """
+        if log_dir is None:
+            from config import LOG_DIR
+            log_dir = LOG_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_dir = Path(log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path = log_dir / "stdout.txt"
+        stderr_path = log_dir / "stderr.txt"
+
+        start_time = datetime.now()
+        log_messages: List[str] = []
+        error_messages: List[str] = []
+
+        def _write_logs() -> None:
+            with open(stdout_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(log_messages))
+            with open(stderr_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(error_messages))
+
+        def _fail(message: str, exit_code: int = 1) -> ExecutorResult:
+            error_messages.append(message)
+            _write_logs()
+            return ExecutorResult(
+                success=False,
+                exit_code=exit_code,
+                start_time=start_time,
+                end_time=datetime.now(),
+                stdout_path=str(stdout_path),
+                stderr_path=str(stderr_path),
+                error_message=message,
+            )
+
+        log_messages.append(f"[{datetime.now().isoformat()}] Power BI REST 刷新模式: {script_path}")
+
+        token = os.environ.get("POWERBI_ACCESS_TOKEN", "").strip()
+        missing = []
+        if not workspace_id:
+            missing.append("--workspace-id=<工作区GUID>（步骤参数）")
+        if not dataset_id:
+            missing.append("--dataset-id=<数据集GUID>（步骤参数）")
+        if not token:
+            missing.append("POWERBI_ACCESS_TOKEN（环境变量，可用 az cli 或 MSAL 获取访问令牌后再启动运行）")
+        if missing:
+            return _fail("REST 刷新缺少必要配置: " + "；".join(missing))
+
+        # 默认超时（MA3：来自 constants.py；REST 轮询上限高于桌面模式）
+        effective_timeout = timeout if timeout is not None else POWERBI_REST_TIMEOUT
+        log_messages.append(
+            f"[{datetime.now().isoformat()}] workspace={workspace_id}, dataset={dataset_id}, "
+            f"超时={effective_timeout}秒, 轮询间隔={POWERBI_REST_POLL_INTERVAL}秒"
+        )
+
+        try:
+            refresh_dataset(
+                workspace_id,
+                dataset_id,
+                token,
+                timeout_seconds=effective_timeout,
+                poll_interval=POWERBI_REST_POLL_INTERVAL,
+                should_cancel=lambda: bool(cancel_event and cancel_event.is_set()),
+                log_cb=log_messages.append,
+            )
+        except PowerBIRestError as exc:
+            message = str(exc)
+            if message == "用户取消":
+                return _fail("用户取消", exit_code=-1)
+            return _fail(message)
+
+        log_messages.append(f"[{datetime.now().isoformat()}] REST 刷新完成")
+        _write_logs()
+        return ExecutorResult(
+            success=True,
+            exit_code=0,
+            start_time=start_time,
+            end_time=datetime.now(),
+            stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path),
+            extra={"proof_type": "rest_refresh_completed"},
+        )
+
     
     def execute(
         self,
@@ -156,15 +273,32 @@ class PowerBIExecutor(BaseExecutor):
             env: 未使用
             log_dir: 日志目录
             timeout: 超时时间（秒），默认 600 秒
-            auto_close: 刷新后是否自动关闭（默认 True）
-            
+            auto_close: 超时后是否强制关闭 Power BI（默认 True）
+
         Returns:
             ExecutorResult: 执行结果
-            
+
         Note:
-            Power BI Desktop 不支持命令行刷新，此执行器仅打开文件。
-            建议手动刷新或使用 Power BI Service API。
+            Power BI Desktop 不支持命令行刷新，此执行器为半自动方案：
+            打开文件并尝试发送 F5 触发刷新，刷新完成确认、保存并关闭仍需人工操作。
+            auto_close 只是超时后强制关闭进程，不会自动保存；
+            无人值守场景会超时失败，建议改用 REST 刷新模式
+            （args 提供 --refresh-mode=rest --workspace-id=<GUID> --dataset-id=<GUID>，
+            并在环境变量 POWERBI_ACCESS_TOKEN 提供访问令牌）。
         """
+        # M5：REST 刷新模式必须在桌面流程之前分流——
+        # REST 模式不依赖本地 .pbix 文件，也不需要安装 Power BI Desktop。
+        rest_mode, workspace_id, dataset_id = self._parse_rest_args(args)
+        if rest_mode:
+            return self._execute_rest_refresh(
+                script_path=script_path,
+                workspace_id=workspace_id,
+                dataset_id=dataset_id,
+                log_dir=log_dir,
+                timeout=timeout,
+                cancel_event=cancel_event,
+            )
+
         # 解析路径
         pbix_path = self.get_absolute_path(script_path)
         if not pbix_path.exists():
@@ -379,8 +513,15 @@ class PowerBIExecutor(BaseExecutor):
                         timed_out = True
 
                 if timed_out:
-                    log_messages.append(f"[{datetime.now().isoformat()}] 等待超时 ({timeout}秒)，强制关闭 Power BI...")
-                    error_messages.append(f"等待超时 ({timeout}秒)，Power BI 可能未完成刷新")
+                    # M5：超时信息必须解释真实原因（半自动步骤需要人工收尾），不要让用户误以为是性能问题
+                    log_messages.append(
+                        f"[{datetime.now().isoformat()}] 等待超时 ({timeout}秒)：Power BI Desktop 需要人工完成刷新、"
+                        "保存并关闭后该步骤才能成功；如无人值守请改用其它刷新方案。强制关闭 Power BI..."
+                    )
+                    error_messages.append(
+                        f"等待超时 ({timeout}秒)：Power BI Desktop 需要人工完成刷新、保存并关闭后该步骤才能成功；"
+                        "如无人值守请改用其它刷新方案"
+                    )
                     _kill_process_tree(proc)
 
                 if cancelled or timed_out:

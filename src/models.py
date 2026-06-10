@@ -193,6 +193,8 @@ class Step(Base):
     timeout_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     skip_on_success: Mapped[bool] = mapped_column(Boolean, default=False)  # 上次成功则跳过
+    # ROI-2: 步骤显式声明的输出路径（JSON 数组）；监听冲突检测优先使用声明而非推断
+    output_paths: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
@@ -234,6 +236,19 @@ class Step(Base):
         """设置依赖步骤列表"""
         self.depends_on = json.dumps(deps, ensure_ascii=False)
 
+    def get_output_paths(self) -> list:
+        """获取声明的输出路径列表（ROI-2）"""
+        if self.output_paths:
+            try:
+                return json.loads(self.output_paths)
+            except json.JSONDecodeError as e:
+                logger.warning("步骤输出路径 JSON 解析失败: %s", e)
+        return []
+
+    def set_output_paths(self, paths: list):
+        """设置声明的输出路径列表（ROI-2）"""
+        self.output_paths = json.dumps([str(p) for p in (paths or [])], ensure_ascii=False)
+
 
 class RunHistory(Base):
     """运行历史模型"""
@@ -261,6 +276,9 @@ class RunHistory(Base):
     # 执行追踪
     trace_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)  # 追踪 ID（同一次完整执行的顶级 ID）
     parent_run_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)  # 父运行 ID（子工作流关联）
+
+    # ROI-1: 通知结果（sent / failed:摘要 / skipped:原因），由 engine_core.notification 回写
+    notify_status: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     
     # 关系
     workflow: Mapped["Workflow"] = relationship("Workflow", back_populates="run_histories")

@@ -248,9 +248,20 @@ class RunHistoryPanel(QWidget):
                 "running": "运行中", "cancelled": "已取消", "pending": "等待",
             }
             status_text = status_map.get(history.status, history.status)
+            # ROI-1: 通知结果标记（sent → 📨✓；failed → 📨✗ 并在 tooltip 展示全文；
+            # skipped / 未回写 → 不显示）。旧记录可能没有 notify_status 字段，用 getattr 兜底。
+            notify_status = str(getattr(history, "notify_status", None) or "")
+            notify_tooltip = ""
+            if notify_status == "sent":
+                status_text = f"{status_text} 📨✓"
+            elif notify_status.startswith("failed"):
+                status_text = f"{status_text} 📨✗"
+                notify_tooltip = notify_status
             status_item = QTableWidgetItem(status_text)
             status_item.setTextAlignment(Qt.AlignCenter)
             status_item.setForeground(QColor(status_tokens["fg"]))
+            if notify_tooltip:
+                status_item.setToolTip(notify_tooltip)
             if row_bg:
                 status_item.setBackground(row_bg)
             self.table.setItem(row, 1, status_item)

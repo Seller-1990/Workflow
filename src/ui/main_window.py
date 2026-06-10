@@ -60,6 +60,7 @@ from ui.main_window_theme import (
 from ui.panel_layout import expanded_splitter_sizes, panel_toggle_text, run_splitter_sizes
 from ui.run_actions import run_engine_mode
 from ui.run_state import compute_run_lock_state
+from ui import dirty_guard, run_dispatch, watch_status_controller
 
 
 class MainWindow(QMainWindow):
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         self._running_workflow_id = None  # R5-#1: 正在运行的工作流（与显示分离）
         self._running_workflow_name = None  # R6-#1: 缓存的运行工作流名，避免重复查 DB
         self._pending_retry_cb = None  # R8-#1: F5「停止并运行新的」的待重试回调
+        self._watching_workflows: dict[int, list] = {}  # M1: workflow_id -> 监听目录（指示器聚合）
         self._edit_mode = False
 
         settings = QSettings(APP_NAME, "ui")  # U-P3-2: 统一 QSettings 节点
@@ -102,6 +104,9 @@ class MainWindow(QMainWindow):
         self._set_edit_mode(False)
         
         self.workflow_list.load_workflows()
+
+        # M1: 启动后恢复所有 watch_enabled 工作流的监听（事件循环就绪后执行）
+        QTimer.singleShot(0, self._restore_watches_on_startup)
     
     def _setup_ui(self):
         """设置 UI"""
@@ -911,179 +916,36 @@ class MainWindow(QMainWindow):
         return "keep_running"
 
     def _confirm_discard_unsaved(self, *, reason: str, new_target) -> bool:
-        """如果当前上下文有脏改动，弹"保存 / 不保存 / 取消"三选项。
-
-        Returns:
-            True  → 调用方可继续切换
-            False → 调用方应中止切换
-
-        R2-#2: save_step 已返回 bool。验证失败时返回 False，本函数据此重新评估。
-        R2-#3: 取消路径用 blockSignals 包裹 reselect，避免再次触发 _on_workflow_selected
-               造成对话框无限重弹。
-        """
-        try:
-            config_dirty = self._should_check_workflow_config_dirty(reason) and self._is_panel_dirty(
-                self.workflow_config,
-                "workflow_config",
-            )
-            step_dirty = self._is_panel_dirty(self.step_editor, "step_editor")
-        except Exception:
-            self._restore_selection_silently(reason)
-            return False
-        if not config_dirty and not step_dirty:
-            return True
-
-        from PySide6.QtWidgets import QMessageBox
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Question)
-        # R3-#7 / R4-#8: 文案明确「取消」具体取消什么；标题区分工作流/步骤
-        if reason == "switch_workflow":
-            box.setWindowTitle("切换工作流前是否保存？")
-            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-            save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
-            discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
-            cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
-        elif reason == "switch_step":
-            box.setWindowTitle("切换步骤前是否保存？")
-            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-            save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
-            discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
-            cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
-        elif reason == "switch_stage":
-            box.setWindowTitle("切换阶段前是否保存？")
-            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-            save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
-            discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
-            cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
-        elif reason == "close":
-            box.setWindowTitle("关闭前是否保存？")
-            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-            save_btn = box.addButton("保存并关闭", QMessageBox.AcceptRole)
-            discard_btn = box.addButton("不保存直接关闭", QMessageBox.DestructiveRole)
-            cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
-        else:
-            box.setWindowTitle("未保存的修改")
-            box.setText(self._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-            save_btn = box.addButton("保存", QMessageBox.AcceptRole)
-            discard_btn = box.addButton("不保存", QMessageBox.DestructiveRole)
-            cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
-        box.setDefaultButton(save_btn)
-        # Qt 同步对话框：阻塞直到用户做出选择
-        box.exec_()
-        clicked = box.clickedButton()
-        if clicked is save_btn:
-            if not self._save_dirty_panels(config_dirty=config_dirty, step_dirty=step_dirty):
-                self._restore_selection_silently(reason)
-                return False
-            return True
-        if clicked is discard_btn:
-            if not self._discard_dirty_panels(config_dirty=config_dirty, step_dirty=step_dirty):
-                self._restore_selection_silently(reason)
-                return False
-            return True
-        # 取消：恢复 UI 上的选中状态到旧值
-        self._restore_selection_silently(reason)
-        return False
+        """#5: 脏改动"保存 / 不保存 / 取消"三选项确认（实现在 ui.dirty_guard）。"""
+        return dirty_guard.confirm_discard_unsaved(self, reason=reason, new_target=new_target)
 
     def _should_check_workflow_config_dirty(self, reason: str) -> bool:
-        return reason in {"switch_workflow", "close"}
+        """是否需要检查工作流配置脏状态（实现在 ui.dirty_guard）。"""
+        return dirty_guard.should_check_workflow_config_dirty(self, reason)
 
     def _is_panel_dirty(self, panel, panel_name: str) -> bool:
-        if panel is None:
-            return False
-        dirty_getter = getattr(panel, "is_dirty", None)
-        if dirty_getter is None:
-            return False
-        try:
-            return bool(dirty_getter())
-        except Exception as exc:
-            logger.warning("检查 %s dirty 状态失败: %s", panel_name, exc)
-            raise
+        """面板脏状态检查（实现在 ui.dirty_guard）。"""
+        return dirty_guard.is_panel_dirty(self, panel, panel_name)
 
     def _build_dirty_message(self, reason: str, *, config_dirty: bool, step_dirty: bool) -> str:
-        if config_dirty and step_dirty:
-            body = "当前工作流配置和步骤编辑器都有未保存的修改。"
-        elif config_dirty:
-            body = "当前工作流配置有未保存的修改。"
-        else:
-            body = "当前步骤编辑器有未保存的修改。"
-
-        if reason == "switch_workflow":
-            suffix = "切换工作流前要先保存吗？"
-        elif reason == "switch_step":
-            suffix = "切换步骤前要先保存吗？"
-        elif reason == "switch_stage":
-            suffix = "切换阶段前要先保存吗？"
-        elif reason == "close":
-            suffix = "关闭前要先保存吗？"
-        else:
-            suffix = "是否保存？"
-        return f"{body}\n{suffix}"
+        """构造未保存提示文案（实现在 ui.dirty_guard）。"""
+        return dirty_guard.build_dirty_message(self, reason, config_dirty=config_dirty, step_dirty=step_dirty)
 
     def _save_dirty_panels(self, *, config_dirty: bool, step_dirty: bool) -> bool:
-        if config_dirty:
-            try:
-                config_ok = bool(self.workflow_config.save_config())
-            except Exception as exc:
-                logger.warning("自动保存工作流配置失败: %s", exc)
-                return False
-            if not config_ok:
-                return False
-            try:
-                if self.workflow_config.is_dirty():
-                    return False
-            except Exception as exc:
-                logger.warning("保存后复查 workflow_config dirty 失败: %s", exc)
-                return False
-        if step_dirty:
-            try:
-                step_ok = bool(self.step_editor.save_step())
-            except Exception as exc:
-                logger.warning("自动保存步骤失败: %s", exc)
-                return False
-            if not step_ok:
-                return False
-            try:
-                if self.step_editor.is_dirty():
-                    return False
-            except Exception as exc:
-                logger.warning("保存后复查 step_editor dirty 失败: %s", exc)
-                return False
-        return True
+        """保存脏面板并复查（实现在 ui.dirty_guard）。"""
+        return dirty_guard.save_dirty_panels(self, config_dirty=config_dirty, step_dirty=step_dirty)
 
     def _discard_dirty_panels(self, *, config_dirty: bool, step_dirty: bool) -> bool:
-        if config_dirty and not self._discard_panel_changes(self.workflow_config, "workflow_config"):
-            return False
-        if step_dirty and not self._discard_panel_changes(self.step_editor, "step_editor"):
-            return False
-        return True
+        """丢弃脏面板修改（实现在 ui.dirty_guard）。"""
+        return dirty_guard.discard_dirty_panels(self, config_dirty=config_dirty, step_dirty=step_dirty)
 
     def _discard_panel_changes(self, panel, panel_name: str) -> bool:
-        if panel is None:
-            return True
-        discarder = getattr(panel, "discard_changes", None)
-        if discarder is not None:
-            try:
-                discarder()
-                return True
-            except Exception as exc:
-                logger.warning("丢弃 %s 修改失败: %s", panel_name, exc)
-                return False
-        return self._reset_panel_dirty_state(panel, panel_name)
+        """丢弃单个面板修改（实现在 ui.dirty_guard）。"""
+        return dirty_guard.discard_panel_changes(self, panel, panel_name)
 
     def _reset_panel_dirty_state(self, panel, panel_name: str) -> bool:
-        if panel is None:
-            return True
-        resetter = getattr(panel, "reset_dirty_state", None)
-        if resetter is None:
-            logger.warning("%s 缺少公开 dirty reset/discard API", panel_name)
-            return False
-        try:
-            resetter()
-            return True
-        except Exception as exc:
-            logger.warning("重置 %s dirty 状态失败: %s", panel_name, exc)
-            return False
+        """重置单个面板脏状态（实现在 ui.dirty_guard）。"""
+        return dirty_guard.reset_panel_dirty_state(self, panel, panel_name)
 
     def _restore_selection_silently(self, reason: str) -> bool:
         """R2-#3 / R4-#7: 静默回滚 UI 选中状态，避免引发新一轮选中信号。
@@ -1155,63 +1017,30 @@ class MainWindow(QMainWindow):
             return False
 
     def _sync_engine_watch(self, workflow) -> None:
-        """根据 workflow.watch_enabled 启停 engine 监听。
+        """根据 workflow.watch_enabled 启停该工作流的监听（实现在 ui.watch_status_controller）。"""
+        watch_status_controller.sync_engine_watch(self, workflow)
 
-        engine.start_watch 内部已经做：先 stop_watch，再按 watch_enabled / 目录有效性决定启停。
-        这里只负责拉一次起、并把结果反馈到状态栏。
-        """
-        if workflow is None:
-            try:
-                self.engine.stop_watch()
-            except Exception as e:
-                logger.warning("停止监听失败: %s", e)
-            return
-        try:
-            started = self.engine.start_watch(workflow)
-        except Exception as e:
-            logger.warning("启动监听失败: %s", e)
-            self.statusbar.showMessage(f"监听启动失败: {e}", 3000)
-            return
-        if started:
-            folders = workflow.get_watch_folders() or []
-            self.statusbar.showMessage(f"已开始监听 {len(folders)} 个目录", 3000)
-        elif workflow.watch_enabled:
-            # watch_enabled=True 但 start_watch 返回 False：目录无效 / 校验失败
-            self.statusbar.showMessage("监听未启动（目录无效或为空）", 4000)
+    def _restore_watches_on_startup(self) -> None:
+        """M1 启动恢复监听 + M7 修复展示（实现在 ui.watch_status_controller）。"""
+        watch_status_controller.restore_watches_on_startup(self)
+
+    def _update_watch_indicator(self) -> None:
+        """M1: 按当前监听集合刷新指示器（实现在 ui.watch_status_controller）。"""
+        watch_status_controller.update_watch_indicator(self)
 
     @Slot(int, list)
     def _on_watch_started(self, workflow_id: int, folders: list) -> None:
-        """R2-#4: 监听启动 → 更新持久指示器"""
-        try:
-            count = len(folders or [])
-            self._watch_indicator.setText(f"▶ 监听中 ({count})")
-            self._refresh_watch_indicator_theme(running=True)
-            self._watch_indicator.setToolTip("\n".join(folders or []) or "文件监听状态")
-        except Exception as e:
-            logger.warning("更新监听指示器失败: %s", e)
+        """R2-#4 / M1: 监听启动 → 聚合到指示器"""
+        watch_status_controller.on_watch_started(self, workflow_id, folders)
 
     @Slot(int)
     def _on_watch_stopped(self, workflow_id: int) -> None:
-        """R2-#4: 监听停止 → 灰色指示器"""
-        try:
-            self._watch_indicator.setText("⏸ 未监听")
-            self._refresh_watch_indicator_theme(running=False)
-            self._watch_indicator.setToolTip("文件监听状态")
-        except Exception as e:
-            logger.warning("更新监听指示器失败: %s", e)
+        """R2-#4 / M1: 监听停止 → 从聚合中移除"""
+        watch_status_controller.on_watch_stopped(self, workflow_id)
 
     def _refresh_watch_indicator_theme(self, running: bool) -> None:
-        """R3-#6 / R4-#8: 按主题与运行态计算指示器颜色，保证 WCAG AA 对比度"""
-        try:
-            if running:
-                # R4-#8: 浅主题用深一档绿（#248A3D ≈ 4.7:1）、暗主题保持 #34C759
-                color = "#248A3D" if not getattr(self, "_dark_mode", False) else "#34C759"
-            else:
-                # 暗色主题下 #8E8E93 对比 ~3.0:1 不达 AA；改用 #AEAEB2 (~5.4:1)
-                color = "#AEAEB2" if getattr(self, "_dark_mode", False) else "#6E6E73"
-            self._watch_indicator.setStyleSheet(f"color: {color}; padding: 0 8px;")
-        except Exception:
-            pass
+        """R3-#6 / R4-#8: 指示器主题色（实现在 ui.watch_status_controller）。"""
+        watch_status_controller.refresh_watch_indicator_theme(self, running)
 
     def _refresh_bg_running_label_theme(self) -> None:
         """R7-#2 / R8-#2: 后台运行标签——浅主题用 #B25000 (~5.0:1)、暗主题保持 #FF9500；
@@ -1292,6 +1121,11 @@ class MainWindow(QMainWindow):
     @Slot(int)
     def _on_workflow_deleted(self, workflow_id: int):
         """工作流被删除"""
+        # M1: 精确停掉被删工作流的监听（不影响其它工作流）
+        try:
+            self.engine.stop_watch(workflow_id)
+        except Exception as e:
+            logger.warning("停止被删工作流监听失败: %s", e)
         if self._current_workflow_id == workflow_id:
             self._current_workflow_id = None
             self.workflow_config.clear()
@@ -1703,112 +1537,9 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _on_run_requested(self, mode: str, param):
-        """运行请求"""
-        if not self._current_workflow_id:
-            msg_warning(self, self._dark_mode, "警告", "请先选择一个工作流")
-            return
+        """运行请求（实现在 ui.run_dispatch：含运行中三选弹窗与停止重试链）"""
+        run_dispatch.on_run_requested(self, mode, param)
 
-        if mode == "cancel":
-            self.engine.cancel()
-            self.statusbar.showMessage("正在停止...")
-            return
-
-        # R6-#2 / R7-#1: 主线程预检——已有运行时给三按钮弹窗（停止/切回/取消），
-        # 而不是单纯告知（避免用户被迫手工编排）
-        if getattr(self.engine, "is_running", False):
-            running_id = getattr(self, "_running_workflow_id", None)
-            running_name = getattr(self, "_running_workflow_name", None) or (
-                f"#{running_id}" if running_id is not None else "(未知)"
-            )
-            from PySide6.QtWidgets import QMessageBox
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Warning)
-            box.setWindowTitle("已有运行中")
-            box.setText(
-                f"工作流「{running_name}」正在运行中。\n请选择一项操作："
-            )
-            stop_run_new_btn = box.addButton(
-                "停止当前并运行新的", QMessageBox.DestructiveRole
-            )
-            goto_running_btn = box.addButton("切回当前运行", QMessageBox.AcceptRole)
-            cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
-            box.setDefaultButton(cancel_btn)
-            box.exec_()
-            clicked = box.clickedButton()
-            if clicked is cancel_btn:
-                return
-            if clicked is goto_running_btn:
-                # 复用切回逻辑
-                self._on_bg_running_label_clicked(None)
-                return
-            # stop_run_new_btn：先取消，等 finished 信号到再触发新运行
-            try:
-                self.engine.cancel()
-                self.statusbar.showMessage("已请求停止当前运行，等待后再启动新运行...", 5000)
-            except Exception as e:
-                logger.warning("请求停止失败: %s", e)
-
-            target_workflow_id = self._current_workflow_id
-            target_mode = mode
-            target_param = param
-
-            # R8-#1: 多次点「停止并运行新的」时不再累积回调——
-            # 新建前先断开旧的（_pending_retry_cb 持有上次的闭包引用）
-            prev_cb = getattr(self, "_pending_retry_cb", None)
-            if prev_cb is not None:
-                try:
-                    self.engine.workflow_finished.disconnect(prev_cb)
-                except Exception:
-                    pass
-                self._pending_retry_cb = None
-
-            def _retry_after_stop(_wid, _run_id, _status):
-                try:
-                    self.engine.workflow_finished.disconnect(_retry_after_stop)
-                except Exception:
-                    pass
-                self._pending_retry_cb = None
-                # 异步重新触发请求，让 Qt 完整跑完 finished 逻辑
-                from PySide6.QtCore import QTimer as _QTimer
-                if self._current_workflow_id == target_workflow_id:
-                    _QTimer.singleShot(
-                        50,
-                        lambda: self._on_run_requested(target_mode, target_param),
-                    )
-                else:
-                    # R8-#3: 用户在等待期间切了工作流——放弃重试，但显式告知
-                    self.statusbar.showMessage(
-                        "已取消待执行的新运行（工作流已切换）", 4000
-                    )
-
-            try:
-                self.engine.workflow_finished.connect(_retry_after_stop)
-                self._pending_retry_cb = _retry_after_stop
-            except Exception as e:
-                logger.warning("连接 finished 信号失败: %s", e)
-            return
-        
-        workflow_id = self._current_workflow_id
-        
-        def run_in_thread():
-            try:
-                run_engine_mode(
-                    self.engine,
-                    workflow_id=workflow_id,
-                    mode=mode,
-                    param=param,
-                )
-            except Exception as e:
-                from PySide6.QtCore import QMetaObject, Qt, Q_ARG
-                QMetaObject.invokeMethod(
-                    self.engine, "_emit_log",
-                    Qt.QueuedConnection,
-                    Q_ARG(str, f"运行异常: {e}")
-                )
-        
-        self._run_thread = threading.Thread(target=run_in_thread, daemon=True)
-        self._run_thread.start()
-    
     @Slot(int, str)
     def _on_workflow_started(self, workflow_id: int, run_id: str):
         """工作流开始"""
@@ -2015,19 +1746,13 @@ class MainWindow(QMainWindow):
         self._on_run_requested("full", None)
     
     def _stop_workflow(self):
-        """停止工作流"""
-        self.engine.cancel()
-        self.statusbar.showMessage("正在停止...")
+        """停止工作流（实现在 ui.run_dispatch）"""
+        run_dispatch.stop_workflow(self)
 
     @Slot()
     def _on_statusbar_stop_clicked(self):
-        """R5-#5: 状态栏停止按钮过渡态——点击后立即禁用并改文案，与 run_control 一致"""
-        try:
-            self._statusbar_stop_btn.setEnabled(False)
-            self._statusbar_stop_btn.setText("⏹ 正在停止...")
-        except Exception as exc:
-            logger.warning("更新状态栏停止按钮失败", exc_info=exc)
-        self._stop_workflow()
+        """R5-#5: 状态栏停止按钮过渡态（实现在 ui.run_dispatch）"""
+        run_dispatch.on_statusbar_stop_clicked(self)
     
     @Slot(int)
     def _on_force_stop_run(self, run_history_id: int):

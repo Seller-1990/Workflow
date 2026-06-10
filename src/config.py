@@ -7,6 +7,8 @@ import json
 import logging
 from pathlib import Path
 
+from constants import WATCH_COOLDOWN_DEFAULT, WATCH_SETTLE_DEFAULT
+
 logger = logging.getLogger(__name__)
 APP_DATA_DIR_ENV_VAR = "WORKFLOW_APP_DATA_DIR"
 
@@ -60,10 +62,10 @@ DATABASE_PATH = DATA_DIR / "workflows.db"
 APP_NAME = "工作流管理"
 APP_VERSION = "4.1.0"
 
-# 默认配置
+# 默认配置（L3：监听冷却/稳定窗口默认值统一来自 constants.py，避免双源漂移）
 DEFAULT_CONFIG = {
-    "cooldown_seconds": 8,
-    "settle_seconds": 15,
+    "cooldown_seconds": WATCH_COOLDOWN_DEFAULT,
+    "settle_seconds": WATCH_SETTLE_DEFAULT,
     "chart_theme": "default",
     "parallel": {
         "enabled": False,
@@ -92,8 +94,11 @@ def load_user_config() -> dict:
 
 def save_user_config(config: dict):
     """保存用户配置"""
-    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+    # 原子写入：先写临时文件再替换，避免写入中途崩溃损坏 config.json
+    tmp_path = CONFIG_PATH.with_suffix(".json.tmp")
+    with open(tmp_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, CONFIG_PATH)
 
 
 # 合并默认配置和用户配置

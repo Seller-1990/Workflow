@@ -111,10 +111,30 @@ def main(argv=None):
     if args.self_check:
         return _run_self_check(qt_args)
 
+    import logging
+    from logging.handlers import RotatingFileHandler
+
     from PySide6.QtCore import Qt, QTimer
     from PySide6.QtGui import QFont, QIcon
     from PySide6.QtWidgets import QApplication
-    from config import APP_NAME, APP_VERSION, ICON_PATH
+    from config import APP_NAME, APP_VERSION, ICON_PATH, LOG_DIR
+
+    # 打包后的 GUI 没有可见 stderr，logger.warning 在生产环境完全不可见；
+    # 落盘到 LOG_DIR/app.log（config 导入时已创建 LOG_DIR）。
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            handlers=[
+                RotatingFileHandler(
+                    LOG_DIR / "app.log",
+                    maxBytes=1_000_000,
+                    backupCount=2,
+                    encoding="utf-8",
+                )
+            ],
+        )
+
     from ui import MainWindow
     from ui.theme import get_stylesheet
 

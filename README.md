@@ -72,6 +72,10 @@ python src/cli.py export --help
 python _import_and_run.py --help
 ```
 
+本地强制执行（推荐）：执行 `python tools/install_hooks.py` 启用提交/推送前质量门（`git config core.hooksPath .githooks`）。
+提交前自动运行风险调用/宽泛异常/热点基线审计与编译检查，推送前额外运行 `python -m pytest -q`；
+跳过方式与远端分支保护说明见 `docs/development_guardrails.md` 的「本地强制：git hooks」一节。
+
 仓库包含 GitHub Actions 工作流 `.github/workflows/ci.yml`，在 Windows runner 上执行依赖安装、编译检查、仓库卫生检查、测试和 CLI smoke；`.github/workflows/package.yml` 可手动触发 PyInstaller 打包验证，默认使用 `build_slim2.spec`，会在隔离的 `WORKFLOW_APP_DATA_DIR` 下对生成的 exe 执行 `--self-check`，并随 exe 上传 `.sha256` 校验文件。
 
 ### Release / Rollback
@@ -150,6 +154,58 @@ Webhook URL 在管理界面默认遮蔽，普通导出和自动备份默认脱�
 
 模板示例：`【通知】{工作流名称} {运行编号} {状态}`
 
+## 文件监听
+
+监听指定文件夹，文件变化在稳定窗口结束后自动触发工作流。使用时注意以下行为约束：
+
+- **监听目录不得包含工作流自身的输出**（含 Excel/PBIX 原地刷新文件）：检测到冲突时会拒绝启动监听，避免"自己触发自己"的循环运行。
+- **mtime 扫描不完整时只告警不触发**：基线扫描提前终止或部分文件不可读时，监听仅记录告警并等待完整扫描重建基线，不会凭不完整结果触发运行。
+- **运行期间/运行刚结束窗口内的文件变更会被吞并**：这些变更只用于刷新监听基线，不会自动补跑工作流；如确需处理请手动运行一次。
+
+## 超时默认值
+
+步骤超时留空（0）时按步骤类型应用默认超时：
+
+| 步骤类型 | 默认超时 |
+|------|------|
+| Python | 7200 秒 |
+| Excel | 300 秒 |
+| Power BI（桌面模式） | 600 秒 |
+| Power BI（REST 模式） | 1800 秒 |
+| 子工作流 | 3600 秒 |
+
+## Power BI 步骤说明
+
+Power BI 刷新步骤默认为**桌面半自动**模式：执行器打开 `.pbix` 后发送 F5 触发刷新，但刷新确认、保存并关闭需要人工完成；超时后仅强制关闭 Power BI Desktop，不会自动保存。无人值守场景会超时失败，请改用下方的 REST 刷新模式。
+
+### REST 刷新模式（无人值守推荐）
+
+在步骤参数中加入以下参数（仅支持 `--key=value` 形式）即可切换为 REST 刷新，通过 Power BI Service REST API 触发数据集刷新并轮询直至完成：
+
+```text
+--refresh-mode=rest --workspace-id=<工作区GUID> --dataset-id=<数据集GUID>
+```
+
+同时在运行环境中设置环境变量 `POWERBI_ACCESS_TOKEN`（Power BI REST API 访问令牌）。应用不存储 token，也不会把它写入任何日志；令牌过期后需重新获取，例如用 az cli：
+
+```bash
+az account get-access-token --resource https://analysis.windows.net/powerbi/api --query accessToken -o tsv
+```
+
+也可通过 MSAL 以服务主体或交互式登录获取。
+
+前提条件：
+
+- 对目标工作区有 API 访问权限（工作区成员及以上角色）
+- 对目标数据集有刷新权限（数据集读写）
+- 数据集所在容量满足刷新要求：Premium/PPU，或 Pro 且未超出每日刷新配额
+
+行为说明：
+
+- REST 模式不打开本地 `.pbix`、不依赖 Power BI Desktop，刷新全程在 Power BI Service 完成，可真正无人值守
+- 步骤超时留空时默认 1800 秒，轮询间隔 15 秒；超时仅停止本地轮询，服务端刷新可能仍在进行
+- 桌面模式仍为默认；步骤参数不含 `--refresh-mode=rest` 时行为完全不变
+
 ## 目录结构
 
 ```
@@ -191,6 +247,7 @@ Workflow/
 │       ├── python_executor.py  # Python 脚本执行器
 │       ├── excel_executor.py   # Excel 刷新执行器
 │       ├── powerbi_executor.py # Power BI 刷新执行器
+│       ├── powerbi_rest.py     # Power BI Service REST 刷新客户端（无人值守）
 │       └── sub_workflow_executor.py  # 子工作流执行器
 ├── data/                       # SQLite 数据库（自动创建）
 ├── logs/                       # 运行日志（按工作流/运行批次/步骤分级）
@@ -236,6 +293,10 @@ python src/cli.py list
 - 数据库文件：`data/workflows.db`（SQLite）
 - 运行日志：`logs/{workflow_uid}/{run_id}/step_{order}_{step_uid}/stdout.txt`
 - 打包后数据目录：`%LOCALAPPDATA%/工作流管理/`
+
+## 日志
+
+GUI 运行日志会写入 `%LOCALAPPDATA%/工作流管理/logs/app.log`（开发模式为项目 `logs/app.log`），排障时优先查看该文件；步骤级输出日志位置见上方「数据存储」。
 
 ## License
 

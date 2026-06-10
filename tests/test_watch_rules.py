@@ -15,13 +15,18 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from engine import WorkflowEngine
-from watch_rules import detect_watch_output_conflicts, sanitize_workflow_watch_config
+from watch_rules import (
+    collect_workflow_output_roots,
+    detect_watch_output_conflicts,
+    sanitize_workflow_watch_config,
+)
 
 
 @dataclass
 class MockStep:
     script_path: str | None = None
     args: str | None = None
+    step_type: str | None = None
 
     def get_args(self) -> list[str]:
         if not self.args:
@@ -93,6 +98,33 @@ def test_detect_watch_output_conflicts_ignores_shallow_monthly_script_path():
     assert conflicts == []
 
 
+def test_collect_workflow_output_roots_includes_excel_powerquery_workbook_dir():
+    steps = [MockStep(script_path="D:/data/报表/月报.xlsx", step_type="excel_powerquery")]
+
+    output_roots = collect_workflow_output_roots(steps)
+
+    assert output_roots == [Path("D:/data/报表").resolve()]
+    assert detect_watch_output_conflicts(["D:/data/报表"], steps) == ["D:\\data\\报表"]
+    assert detect_watch_output_conflicts(["D:/data/输入"], steps) == []
+
+
+def test_collect_workflow_output_roots_includes_powerbi_refresh_report_dir():
+    steps = [MockStep(script_path="D:/data/报表/经营分析.pbix", step_type="powerbi_refresh")]
+
+    output_roots = collect_workflow_output_roots(steps)
+
+    assert output_roots == [Path("D:/data/报表").resolve()]
+    assert detect_watch_output_conflicts(["D:/data/报表"], steps) == ["D:\\data\\报表"]
+    assert detect_watch_output_conflicts(["D:/data/输入"], steps) == []
+
+
+def test_collect_workflow_output_roots_ignores_python_step_script_dir():
+    steps = [MockStep(script_path="D:/data/报表/处理脚本.py", step_type="python")]
+
+    assert collect_workflow_output_roots(steps) == []
+    assert detect_watch_output_conflicts(["D:/data/报表"], steps) == []
+
+
 def test_sanitize_workflow_watch_config_rewrites_monthly_output_watchers():
     changed, sanitized_folders, enabled = sanitize_workflow_watch_config(
         workflow_name="月度数据处理",
@@ -129,7 +161,8 @@ def test_start_watch_rejects_output_directory_overlap(monkeypatch, tmp_path: Pat
     started = engine.start_watch(workflow)
 
     assert started is False
-    assert engine._watcher._thread is None
+    # M1: 监听器按 workflow_id 管理；冲突拒绝后不应留下任何 watcher
+    assert engine._watchers == {}
 
 
 def test_sanitize_workflow_watch_config_updates_sqlite_row(tmp_path: Path):
@@ -176,3 +209,88 @@ def test_sanitize_workflow_watch_config_updates_sqlite_row(tmp_path: Path):
         ]
     finally:
         conn.close()
+
+# ==================== ROI-2: 显式输出声明优先模型 ====================
+
+
+@dataclass
+class DeclaredOutputStep(MockStep):
+    """带显式输出声明的步骤替身（模拟 models.Step.get_output_paths 契约）。"""
+
+    declared_outputs: list[str] | None = None
+
+    def get_output_paths(self) -> list[str]:
+        return list(self.declared_outputs or [])
+
+
+def test_collect_workflow_output_roots_prefers_declared_outputs():
+    # (a) 显式声明优先：python 步骤声明输出后，监听该目录冲突，监听其他目录不冲突
+    steps = [
+        DeclaredOutputStep(
+            script_path="D:/x/job.py",
+            step_type="python",
+            declared_outputs=["D:/x/out"],
+        )
+    ]
+
+    assert collect_workflow_output_roots(steps) == [Path("D:/x/out").resolve()]
+    assert detect_watch_output_conflicts(["D:/x/out"], steps) == [str(Path("D:/x/out").resolve())]
+    assert detect_watch_output_conflicts(["D:/x/in"], steps) == []
+
+
+def test_collect_workflow_output_roots_ignores_blank_declared_entries():
+    # 空白声明不得被 resolve 成当前工作目录（避免误判全仓库冲突）
+    steps = [DeclaredOutputStep(script_path="D:/x/job.py", declared_outputs=["", "   "])]
+
+    assert collect_workflow_output_roots(steps) == []
+
+
+def test_collect_workflow_output_roots_excludes_legacy_monthly_hardcode():
+    # (b) 月度脚本后缀 + 无显式声明：通用推断路径不再包含 基础文件 业务硬编码
+    assert collect_workflow_output_roots([_monthly_refresh_step()]) == []
+
+
+def test_detect_watch_output_conflicts_keeps_legacy_monthly_net_by_default():
+    # (b) 运行期检测默认仍叠加旧版月度兜底（存量库步骤未声明输出，
+    # engine.start_watch / 配置保存防呆依赖该兜底）；关闭兜底后为声明+通用推断纯净路径
+    folders = ["D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/基础文件/收入成本表"]
+    steps = [_monthly_refresh_step()]
+
+    assert detect_watch_output_conflicts(folders, steps) == [
+        "D:\\OneDrive - PowerBI学谦\\Data Analysis\\经营分析\\基础文件\\收入成本表"
+    ]
+    assert detect_watch_output_conflicts(folders, steps, include_legacy_monthly=False) == []
+
+
+def test_declared_outputs_flag_monthly_conflict_without_legacy_net():
+    # 迁移路径：月度步骤补齐显式声明后，即使关闭旧版兜底也能识别 基础文件 重叠
+    step = DeclaredOutputStep(
+        script_path=_monthly_refresh_step().script_path,
+        declared_outputs=["D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/基础文件"],
+    )
+
+    conflicts = detect_watch_output_conflicts(
+        ["D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/基础文件/收入成本表"],
+        [step],
+        include_legacy_monthly=False,
+    )
+
+    assert conflicts == [
+        "D:\\OneDrive - PowerBI学谦\\Data Analysis\\经营分析\\基础文件\\收入成本表"
+    ]
+
+
+def test_sanitize_workflow_watch_config_still_repairs_undeclared_monthly_config():
+    # (b) 存量库修复：月度工作流无显式声明时，sanitize 仍识别 基础文件 重叠并改写监听目录
+    changed, folders, enabled = sanitize_workflow_watch_config(
+        workflow_name="月度数据处理",
+        watch_enabled=True,
+        watch_folders=["D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/基础文件/收入成本表"],
+        steps=[_monthly_refresh_step()],
+    )
+
+    assert changed is True
+    assert enabled is True
+    assert folders == [
+        "D:\\OneDrive - PowerBI学谦\\Data Analysis\\经营分析\\月度接收\\1账务信息"
+    ]

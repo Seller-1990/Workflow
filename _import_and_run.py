@@ -34,6 +34,7 @@ if str(src_dir) not in sys.path:
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 import argparse
+import logging
 from PySide6.QtWidgets import QApplication
 
 from database import (
@@ -147,10 +148,23 @@ def cmd_run(workflow_name):
                 if sl.status == "failure":
                     print(f"  失败: {sl.error_message}", flush=True)
 
+    # 钉钉通知由引擎提交到内部线程池异步发送；若不先 shutdown(wait=True) 等通知任务收尾、
+    # 再刷一轮事件队列，进程退出时"钉钉通知…"成功/失败反馈日志会直接丢失。
+    try:
+        engine.shutdown(wait=True)
+    except (RuntimeError, OSError) as exc:
+        print(f"警告: 引擎收尾失败: {exc}", flush=True)
+    for _ in range(100):
+        _app.processEvents()
+
     sys.exit(0 if result else 1)
 
 
 def main():
+    # 让 logger.warning（如导入脱敏 webhook 跳过创建提示）对 CLI 用户可见（默认输出到 stderr）
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+
     init_db()
 
     parser = argparse.ArgumentParser(

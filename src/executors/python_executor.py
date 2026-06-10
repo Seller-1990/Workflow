@@ -12,13 +12,15 @@ from typing import Dict, List, Optional
 
 from executors.base import BaseExecutor, ExecutorResult
 from runtime.process_runner import build_subprocess_kwargs, start_process
+from constants import PYTHON_STEP_TIMEOUT
 
 
-def _get_python_executable() -> str:
+def _get_python_executable() -> Optional[str]:
     """获取 Python 解释器路径
-    
+
     在打包后的 exe 中，sys.executable 指向 exe 本身，
     需要使用系统的 Python 解释器来运行脚本。
+    打包环境下找不到可用解释器时返回 None，由调用方给出明确错误。
     """
     # 检查是否在打包环境中运行
     if getattr(sys, 'frozen', False):
@@ -37,8 +39,8 @@ def _get_python_executable() -> str:
         ]:
             if os.path.exists(candidate):
                 return candidate
-        # 最后尝试：直接使用 'python' 命令
-        return 'python'
+        # 未找到系统 Python：返回 None，由 execute() 返回明确错误而非晦涩的 WinError
+        return None
     else:
         # 开发环境：使用当前 Python
         return sys.executable
@@ -215,7 +217,8 @@ class PythonExecutor(BaseExecutor):
             cwd: 工作目录
             env: 额外环境变量
             log_dir: 日志目录
-            timeout: 超时时间（秒）
+            timeout: 超时时间（秒）；None 时使用默认值 PYTHON_STEP_TIMEOUT（7200 秒），
+                显式传 0 保持历史语义"不限制"
             chart_theme: 图表主题
             
         Returns:
@@ -265,12 +268,23 @@ class PythonExecutor(BaseExecutor):
         
         stdout_path = log_dir / "stdout.txt"
         stderr_path = log_dir / "stderr.txt"
-        
+
+        # 默认超时（M9：来自 constants.py）
+        # 仅替换 None（未配置）；显式 timeout=0 沿用历史语义"不限制"，不在此覆盖
+        if timeout is None:
+            timeout = PYTHON_STEP_TIMEOUT
+
         # 准备环境变量
         run_env = _build_subprocess_env(log_dir, chart_theme=chart_theme, env=env)
         
         # 构建命令 - 使用 _get_python_executable() 而不是 sys.executable
         python_exe = _get_python_executable()
+        if python_exe is None:
+            return ExecutorResult(
+                success=False,
+                exit_code=1,
+                error_message="未找到系统 Python 解释器：请安装 Python 并加入 PATH，或在打包环境旁提供 python.exe"
+            )
         cmd = [python_exe, '-u', str(script)] + list(args)
         
         start_time = datetime.now()
@@ -281,7 +295,9 @@ class PythonExecutor(BaseExecutor):
         try:
             with open(stdout_path, 'w', encoding='utf-8-sig') as f_out, \
                  open(stderr_path, 'w', encoding='utf-8-sig') as f_err:
-                
+                # 在日志首行记录实际使用的解释器，便于排查环境问题
+                f_out.write(f"[PythonExecutor] interpreter: {python_exe}\n")
+
                 # Windows 下隐藏控制台窗口
                 creation_flags = 0
                 if sys.platform == 'win32':

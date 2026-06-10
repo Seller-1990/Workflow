@@ -23,6 +23,7 @@ Workflow CLI - 无需 GUI 即可操作工作流
 
 import sys
 import argparse
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -54,7 +55,7 @@ from database import (
     get_step_by_name, search_steps,
     get_stage_by_name, search_stages, list_stages,
     delete_workflow, clone_workflow,
-    export_to_json, import_from_json,
+    export_to_json, import_from_json_with_warnings,
     get_run_histories_by_workflow, get_step_logs_by_run,
     get_steps_by_workflow, auto_backup_workflows,
 )
@@ -415,12 +416,12 @@ class CLIEngine:
     def _send_cli_notification(self, workflow, success, notify_on_complete, notify_on_error, cancelled=False):
         """CLI模式下发送通知"""
         from database import get_webhook_by_id
-        from notifier import send_workflow_notification
+        from notifier import resolve_workflow_notification_target, send_workflow_notification
         from datetime import datetime
-        
+
         # 检查是否需要发送通知
         should_notify = False
-        
+
         if cancelled and notify_on_complete:
             status = "cancelled"
             should_notify = True
@@ -430,31 +431,25 @@ class CLIEngine:
         elif success and notify_on_complete:
             status = "success"
             should_notify = True
-        
+
         if not should_notify:
             return
-        
-        # 获取通知配置
-        notify_config = workflow.get_notify_config()
-        if not notify_config.get("enabled"):
+
+        # L2: 通知目标解析（enabled / webhook_id / 机器人查询 / 模板默认值）
+        # 统一走 notifier.resolve_workflow_notification_target，消除与
+        # engine_core/notification.py 的模板默认值漂移
+        target = resolve_workflow_notification_target(workflow, get_webhook_by_id)
+        if target is None:
             return
-        
-        webhook_id = notify_config.get("webhook_id")
-        if not webhook_id:
-            return
-        
-        webhook = get_webhook_by_id(webhook_id)
-        if not webhook:
-            return
-        
+        webhook, template = target
+
         # 构建错误信息
         error_msg = ""
         if self._error_messages:
-            error_parts = [f"{e.get('step_name', '未知步骤')}: {e.get('error_message', '')}" 
+            error_parts = [f"{e.get('step_name', '未知步骤')}: {e.get('error_message', '')}"
                           for e in self._error_messages[:3]]
             error_msg = "\n".join(error_parts)
-        
-        template = notify_config.get("message_template", "{工作流名称} - {状态} - 编号={运行编号}")
+
         run_id = self._last_run_id or ("cli_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
         start_time = self._last_start_time or datetime.now()
         end_time = self._last_end_time or datetime.now()
@@ -481,6 +476,9 @@ class CLIEngine:
         
         if success_send:
             print(f"[通知] 已发送运行状态通知到【{webhook.name}】")
+        else:
+            # msg 已在 notifier 内脱敏 access_token，可直接展示
+            print(f"[通知] 发送失败: {msg}")
 
     def dry_run(self, workflow_id):
         """预览执行计划"""
@@ -686,8 +684,11 @@ def cmd_import(args):
         print(f"文件不存在: {json_path}")
         raise SystemExit(1)
 
-    count = import_from_json(json_path)
-    print(f"成功导入 {count} 个工作流")
+    result = import_from_json_with_warnings(json_path)
+    print(f"成功导入 {result.imported_count} 个工作流")
+    # M2: 导入告警（脱敏 webhook 跳过、通知未绑定机器人等）必须对 CLI 用户可见
+    for warning in result.warnings:
+        print(f"[警告] {warning}")
 
 
 def cmd_backup(args):
@@ -744,6 +745,10 @@ def cmd_dry_run(args):
 # ============== 主入口 ==============
 
 def main():
+    # 让 logger.warning（如 webhook 导入脱敏跳过提示）对 CLI 用户可见（默认输出到 stderr）
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+
     parser = argparse.ArgumentParser(
         description="Workflow CLI - 工作流命令行工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,

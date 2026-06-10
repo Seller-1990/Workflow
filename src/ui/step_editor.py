@@ -344,8 +344,13 @@ class StepEditorPanel(QWidget):
         self.edit_target_search = advanced_section.target_search_edit
         self.combo_target_scope = advanced_section.target_scope_combo
         self.edit_args = advanced_section.args_edit
+        # ROI-2: 步骤显式输出声明（分号分隔），监听冲突检测优先使用声明
+        self.edit_output_paths = advanced_section.output_paths_edit
         self.edit_theme = advanced_section.theme_edit
         self.edit_timeout = advanced_section.timeout_spin
+        # M9: 编辑器保存时 0 会落库为 NULL，执行器按类型应用默认超时；提示文案与执行器语义保持一致
+        self.edit_timeout.setToolTip("留空使用默认超时：Python 7200s / Excel 300s / Power BI 600s / 子工作流 3600s")
+        self.edit_timeout.setSpecialValueText("默认")
         self.edit_retry = advanced_section.retry_spin
         self.check_skip_on_success = advanced_section.skip_on_success_check
         self.dep_list = advanced_section.dependency_list
@@ -499,6 +504,7 @@ class StepEditorPanel(QWidget):
             lambda: (
                 self.combo_type.setEnabled(can_edit_step),
                 self.edit_args.setReadOnly(not can_edit_step),
+                self.edit_output_paths.setReadOnly(not can_edit_step),
                 self.edit_cwd.setReadOnly(not can_edit_step),
                 self.edit_theme.setReadOnly(not can_edit_step),
                 self.edit_timeout.setReadOnly(not can_edit_step),
@@ -761,6 +767,8 @@ class StepEditorPanel(QWidget):
 
             self.edit_script.setText(step.script_path or "")
             self.edit_args.setText(step.args or "")
+            # ROI-2: 显式输出声明用「; 」拼接展示，保存时按「;」拆分
+            self.edit_output_paths.setText("; ".join(str(p) for p in step.get_output_paths()))
             self.edit_cwd.setText(step.cwd or "")
             self.edit_theme.setText(step.chart_theme or "")
             self.edit_timeout.setValue(int(step.timeout_seconds) if step.timeout_seconds else 0)
@@ -938,6 +946,7 @@ class StepEditorPanel(QWidget):
                 self._suppress_type_override = False
             self.edit_script.clear()
             self.edit_args.clear()
+            self.edit_output_paths.clear()
             self.edit_cwd.clear()
             self.edit_theme.clear()
             self.edit_timeout.setValue(0)
@@ -989,7 +998,7 @@ class StepEditorPanel(QWidget):
                 msg_warning(self, self._dark, "参数格式错误", f"参数必须是有效的 JSON 数组\n{e}")
                 return False
 
-        # 验证超时时间（U-P2-5: QSpinBox 已限制 0..86400，0 表示不限制）
+        # 验证超时时间（U-P2-5: QSpinBox 已限制 0..86400；M9: 0 落库为 NULL，由执行器按类型应用默认超时）
         timeout_value = int(self.edit_timeout.value())
         timeout = timeout_value if timeout_value > 0 else None
 
@@ -1031,6 +1040,9 @@ class StepEditorPanel(QWidget):
             if item.checkState() == Qt.Checked:
                 deps.append(item.data(Qt.UserRole))
 
+        # ROI-2: 显式输出声明，分号分隔；留空保存为 NULL（监听冲突检测回退到推断）
+        output_paths = [p.strip() for p in self.edit_output_paths.text().split(";") if p.strip()]
+
         try:
             update_step(
                 self._step_id,
@@ -1045,6 +1057,7 @@ class StepEditorPanel(QWidget):
                 is_gate=self.check_gate.isChecked(),
                 skip_on_success=self.check_skip_on_success.isChecked(),
                 depends_on=json.dumps(deps, ensure_ascii=False) if deps else None,
+                output_paths=json.dumps(output_paths, ensure_ascii=False) if output_paths else None,
                 stage_uid=self.combo_stage.currentData() if self.combo_stage.count() else None,
             )
         except Exception as e:
@@ -1085,7 +1098,7 @@ class StepEditorPanel(QWidget):
         统一变体签名用 *args / **kwargs 容忍。
         """
         # 文本输入
-        for w in (self.edit_name, self.edit_script, self.edit_args, self.edit_cwd, self.edit_theme):
+        for w in (self.edit_name, self.edit_script, self.edit_args, self.edit_output_paths, self.edit_cwd, self.edit_theme):
             try:
                 w.textChanged.connect(self._mark_dirty)
             except Exception:

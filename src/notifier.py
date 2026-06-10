@@ -5,10 +5,20 @@ try:
     import requests
 except ImportError:
     requests = None
-from typing import Optional
+import time
+from typing import Callable, Optional
 from datetime import datetime
 
 from webhook_url_policy import is_valid_dingtalk_webhook_url, mask_webhook_url_for_log
+
+
+# 瞬时失败重试前的等待秒数（测试可 monkeypatch 为 0）
+NOTIFY_TRANSIENT_RETRY_DELAY_SECONDS = 2
+
+# 通知消息模板的默认值。
+# L2: 这里是默认模板的唯一权威定义，engine_core/notification.py 与 cli.py
+# 的通知装配共用同一字符串，避免两处手写常量产生漂移。
+DEFAULT_NOTIFY_MESSAGE_TEMPLATE = "{工作流名称} - {状态} - 编号={运行编号}"
 
 
 # 可用的模板变量
@@ -221,6 +231,16 @@ def send_dingtalk_message(
         return False, f"未知错误: {_redact_access_tokens(e)}"
 
 
+def _is_transient_send_failure(message: str) -> bool:
+    """判断失败是否为瞬时故障（超时 / 网络错误 / HTTP 5xx），可安全重试。"""
+    text = str(message or "")
+    return (
+        text.startswith("请求超时")
+        or text.startswith("请求错误")
+        or "HTTP 5" in text
+    )
+
+
 def send_workflow_notification(
     webhook_url: str,
     keyword: str,
@@ -254,7 +274,47 @@ def send_workflow_notification(
         failure_summary=failure_summary,
     )
     
-    return send_dingtalk_message(webhook_url, message, keyword)
+    ok, msg = send_dingtalk_message(webhook_url, message, keyword)
+    # 瞬时失败（超时 / 网络错误 / HTTP 5xx）等待后重试一次；
+    # URL 非法、errcode 业务错误、HTTP 4xx 等非瞬时失败立即返回。
+    if not ok and _is_transient_send_failure(msg):
+        time.sleep(NOTIFY_TRANSIENT_RETRY_DELAY_SECONDS)
+        ok, msg = send_dingtalk_message(webhook_url, message, keyword)
+    return ok, msg
+
+
+def resolve_workflow_notification_target(
+    workflow,
+    get_webhook_by_id: Callable[[int], object],
+) -> Optional[tuple[object, str]]:
+    """解析工作流的通知发送目标（规范实现 / canonical resolver）。
+
+    封装「读取 notify 配置 → enabled 检查 → webhook_id 检查 → webhook 查询 →
+    模板提取（含默认模板）」这段在 cli.py 与 engine_core/notification.py 中
+    重复出现的流程；engine_core 后续可直接改用本函数。
+
+    Args:
+        workflow: 提供 ``get_notify_config()`` 的工作流对象
+        get_webhook_by_id: webhook 查询函数（注入依赖，避免 notifier 反向依赖 database）
+
+    Returns:
+        (webhook, template) 元组；未启用通知 / 未绑定 webhook_id /
+        机器人配置缺失时返回 None。
+    """
+    notify_config = workflow.get_notify_config()
+    if not isinstance(notify_config, dict) or not notify_config.get("enabled"):
+        return None
+
+    webhook_id = notify_config.get("webhook_id")
+    if not webhook_id:
+        return None
+
+    webhook = get_webhook_by_id(webhook_id)
+    if not webhook:
+        return None
+
+    template = notify_config.get("message_template", DEFAULT_NOTIFY_MESSAGE_TEMPLATE)
+    return webhook, template
 
 
 def get_template_variables_help() -> str:

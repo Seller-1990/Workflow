@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Optional
 
@@ -20,6 +21,21 @@ from webhook_url_policy import (
 logger = logging.getLogger(__name__)
 EXPORT_SCHEMA_VERSION = 1
 WORKFLOW_PAYLOAD_SCHEMA_VERSION = 1
+
+
+@dataclass
+class ImportResult:
+    """JSON 导入结果。
+
+    Attributes:
+        imported_count: 实际新建的工作流数量。
+        warnings: 面向用户的中文告警明细（脱敏 webhook 跳过创建、
+            通知已启用但未绑定可用机器人、工作流 UID 重复跳过等），
+            供 CLI / UI 展示，避免导入问题只留在日志里被静默吞掉。
+    """
+
+    imported_count: int = 0
+    warnings: list[str] = field(default_factory=list)
 
 
 def normalize_single_script_args(value) -> list[str]:
@@ -292,6 +308,8 @@ def _validate_import_payload(data) -> dict:
             _expect_bool_if_present(step, "skip_on_success", step_path)
             _expect_optional_list(step, "args", step_path)
             _expect_optional_list(step, "depends_on", step_path)
+            # ROI-2: 可选的显式输出声明（字符串数组）；旧 JSON 不带该字段同样合法
+            _expect_str_list_if_present(step, "output_paths", step_path)
 
     return data
 
@@ -308,20 +326,21 @@ def import_from_json_impl(
     generate_uid: Callable[[], str],
     ensure_default_stage: Callable[[Session, int], WorkflowStage],
     masked_webhook_url: str,
-) -> int:
-    """从 JSON 文件导入工作流。"""
+) -> ImportResult:
+    """从 JSON 文件导入工作流，返回导入数量与告警明细。"""
     with open(json_path, "r", encoding="utf-8") as f:
         data = _validate_import_payload(json.load(f))
 
     webhooks_data = data.get("webhooks", [])
     workflows_data = data.get("workflows", [])
-    imported_count = 0
+    result = ImportResult()
 
     with get_session() as session:
-        webhook_name_to_id = _import_webhooks(
+        webhook_name_to_id, masked_skipped_names = _import_webhooks(
             session,
             webhooks_data,
             masked_webhook_url=masked_webhook_url,
+            warnings=result.warnings,
         )
 
         existing_uids = {
@@ -332,11 +351,21 @@ def import_from_json_impl(
             workflow_uid = _workflow_import_uid(wf_data, generate_uid)
             if workflow_uid in existing_uids:
                 logger.warning("导入工作流 UID 已存在，跳过: uid=%r", workflow_uid)
+                result.warnings.append(
+                    f"工作流「{wf_data.get('name') or workflow_uid}」UID 已存在（{workflow_uid}），已跳过导入"
+                )
                 continue
 
             workflow = _build_workflow(wf_data, workflow_uid)
             _mark_risky_import_paths(workflow, wf_data)
-            _apply_notify_config(session, workflow, wf_data, webhook_name_to_id)
+            _apply_notify_config(
+                session,
+                workflow,
+                wf_data,
+                webhook_name_to_id,
+                masked_skipped_names=masked_skipped_names,
+                warnings=result.warnings,
+            )
             if "watch" in wf_data:
                 folders = wf_data.get("watch", {}).get("folders", [])
                 if folders:
@@ -363,12 +392,12 @@ def import_from_json_impl(
                 default_stage.uid,
                 generate_uid,
             )
-            imported_count += 1
+            result.imported_count += 1
             existing_uids.add(workflow_uid)
 
         session.commit()
 
-    return imported_count
+    return result
 
 
 def export_to_json_impl(
@@ -440,10 +469,17 @@ def _import_webhooks(
     webhooks_data,
     *,
     masked_webhook_url: str,
-) -> dict[str, int]:
-    webhook_name_to_id = {}
+    warnings: list[str],
+) -> tuple[dict[str, int], set[str]]:
+    """导入 webhook 列表。
+
+    Returns:
+        (名称 -> 本机 webhook id 映射, 因脱敏且本机无同名配置而被跳过创建的名称集合)
+    """
+    webhook_name_to_id: dict[str, int] = {}
+    masked_skipped_names: set[str] = set()
     if not isinstance(webhooks_data, list) or not webhooks_data:
-        return webhook_name_to_id
+        return webhook_name_to_id, masked_skipped_names
 
     for wh in webhooks_data:
         if not isinstance(wh, dict):
@@ -466,6 +502,11 @@ def _import_webhooks(
                 webhook_name_to_id[name] = existing.id
             else:
                 logger.info("导入 webhook 已脱敏且本机无同名配置，跳过创建: name=%r", name)
+                masked_skipped_names.add(name)
+                warnings.append(
+                    f"webhook「{name}」的 URL 已脱敏且本机无同名配置，已跳过创建；"
+                    "如需通知请在本机重新配置同名机器人"
+                )
             continue
 
         if not url:
@@ -486,7 +527,7 @@ def _import_webhooks(
             session.flush()
             webhook_name_to_id[name] = item.id
 
-    return webhook_name_to_id
+    return webhook_name_to_id, masked_skipped_names
 
 
 def _update_existing_masked_webhook(
@@ -572,6 +613,9 @@ def _apply_notify_config(
     workflow: Workflow,
     wf_data: dict,
     webhook_name_to_id: dict[str, int],
+    *,
+    masked_skipped_names: set[str],
+    warnings: list[str],
 ) -> None:
     if "notify" not in wf_data:
         return
@@ -600,6 +644,19 @@ def _apply_notify_config(
                 notify.get("webhook_id"),
             )
         notify["webhook_id"] = None
+
+    if notify.get("enabled") and not notify.get("webhook_id"):
+        # M2: 通知启用但没有可用机器人时运行期会静默不发送，必须把原因显式告知用户
+        workflow_name = workflow.name or wf_data.get("name") or workflow.uid
+        if wh_name and wh_name in masked_skipped_names:
+            reason = f"webhook「{wh_name}」被脱敏跳过"
+        elif wh_name:
+            reason = f"本机不存在名为「{wh_name}」的机器人"
+        else:
+            reason = "导入数据未提供可用的机器人绑定"
+        warnings.append(
+            f"工作流「{workflow_name}」通知已启用但未绑定可用机器人（{reason}），通知将不会发送"
+        )
     workflow.set_notify_config(notify)
 
 
@@ -676,6 +733,10 @@ def _import_steps(
         deps = step_data.get("depends_on", [])
         if deps:
             step.set_depends_on(deps)
+        # ROI-2: 显式输出声明；缺省（旧 JSON）保持 NULL，监听冲突检测回退到推断
+        output_paths = step_data.get("output_paths", [])
+        if output_paths:
+            step.set_output_paths(output_paths)
         session.add(step)
 
 
@@ -752,6 +813,8 @@ def _export_steps(workflow: Workflow) -> list[dict]:
             "timeout_seconds": step.timeout_seconds,
             "retry_count": step.retry_count,
             "skip_on_success": step.skip_on_success,
+            # ROI-2: 显式输出声明（schema version 不变：可选字段，旧 JSON 缺省合法）
+            "output_paths": step.get_output_paths(),
         }
         for step in sorted(workflow.steps, key=lambda s: s.order)
     ]

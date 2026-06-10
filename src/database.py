@@ -27,6 +27,7 @@ from database_field_guards import (
     validate_update_fields as _validate_update_fields,
 )
 from database_import_export import (
+    ImportResult,
     export_to_json_impl,
     import_from_json_impl,
 )
@@ -205,6 +206,8 @@ SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
     (3, "_migrate_v3_step_logs_step_run_index"),
     (4, "_migrate_v4_workflow_version_unique"),
     (5, "_migrate_v5_webhook_name_unique"),
+    (6, "_migrate_v6_run_history_notify_status"),
+    (7, "_migrate_v7_step_output_paths"),
 ]
 
 
@@ -248,8 +251,20 @@ def _run_pending_migrations(engine):
             raise RuntimeError(f"schema 迁移 v{version} 失败，应用已停止启动以避免写入半升级数据库") from e
 
 
+# M7: 启动期监听配置自动修复记录。
+# _repair_legacy_watch_configurations 每次执行都会先清空再追加中文修复摘要；
+# init_db 完成后 UI / 调用方读取 database.LAST_WATCH_CONFIG_REPAIRS 即可向用户展示。
+LAST_WATCH_CONFIG_REPAIRS: list[str] = []
+
+
 def _repair_legacy_watch_configurations() -> None:
-    """修正旧版本遗留的高风险监听配置。"""
+    """修正旧版本遗留的高风险监听配置。
+
+    修复明细会写入模块级 LAST_WATCH_CONFIG_REPAIRS（每个被修复的工作流一条
+    中文摘要），供 init_db 之后的 UI 提示使用；同时以 warning 级别记录日志，
+    避免自动改动用户配置却无人知晓。
+    """
+    LAST_WATCH_CONFIG_REPAIRS.clear()
     with get_session() as session:
         workflows = session.query(Workflow).filter(Workflow.watch_enabled.is_(True)).all()
         changed = False
@@ -266,7 +281,12 @@ def _repair_legacy_watch_configurations() -> None:
             workflow.set_watch_folders(folders)
             workflow.updated_at = datetime.now()
             changed = True
-            logger.info(
+            if enabled:
+                summary = f"工作流「{workflow.name}」：监听目录与输出目录重叠，已自动改用推荐监听目录"
+            else:
+                summary = f"工作流「{workflow.name}」：监听目录与输出目录重叠，已自动停用监听"
+            LAST_WATCH_CONFIG_REPAIRS.append(summary)
+            logger.warning(
                 "已自动修正旧监听配置: workflow=%s, watch_enabled=%s, watch_folders=%s",
                 workflow.name,
                 workflow.watch_enabled,
@@ -281,6 +301,28 @@ def _migrate_v1_workflow_step_runhistory_columns(engine):
     _ensure_workflow_columns(engine)
     _ensure_step_columns(engine)
     _ensure_run_history_columns(engine)
+
+
+def _migrate_v6_run_history_notify_status(engine):
+    """v6 (ROI-1): run_histories 增加 notify_status 列（通知结果回写）。
+
+    新建库由 Base.metadata.create_all 直接带列；老库按 PRAGMA 探测后 ALTER，
+    两种路径都安全幂等。
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(run_histories)")).fetchall()
+        existing = {row[1] for row in rows}
+        if "notify_status" not in existing:
+            conn.execute(text("ALTER TABLE run_histories ADD COLUMN notify_status VARCHAR(255)"))
+
+
+def _migrate_v7_step_output_paths(engine):
+    """v7 (ROI-2): steps 增加 output_paths 列（显式输出声明，JSON 数组）。"""
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(steps)")).fetchall()
+        existing = {row[1] for row in rows}
+        if "output_paths" not in existing:
+            conn.execute(text("ALTER TABLE steps ADD COLUMN output_paths TEXT"))
 
 
 def _migrate_v2_version_table_and_step_uid_unique(engine):
@@ -618,18 +660,6 @@ def cleanup_session():
         _scoped_session.remove()
     except Exception:
         pass
-
-
-def _wal_checkpoint(session: Session) -> None:
-    """跨 session 一致性兜底：将 WAL 写入主数据库（PASSIVE 不阻塞）
-
-    在终态写入（status=success/failure/cancelled）后调用，
-    确保跨线程读 session 能立刻看到最新状态。
-    """
-    try:
-        session.execute(text("PRAGMA wal_checkpoint(PASSIVE)"))
-    except Exception as e:
-        logger.debug("WAL checkpoint 失败（不影响当前事务）: %s", e)
 
 
 def generate_uid() -> str:
@@ -1165,327 +1195,25 @@ def reorder_steps(workflow_id: int, step_orders: dict) -> bool:
         return True
 
 
-# ============== RunHistory CRUD ==============
-
-def create_run_history(
-    workflow_id: int,
-    run_mode: str = "full",
-    run_mode_param: str = None,
-    reason: str = "manual",
-    trace_id: str = None,
-    parent_run_id: str = None
-) -> RunHistory:
-    """创建运行历史
-
-    Args:
-        workflow_id: 工作流 ID
-        run_mode: 运行模式 (full/from_step/only_step/retry_failed)
-        run_mode_param: 运行模式参数
-        reason: 触发原因 (manual/watch/sub_workflow)
-        trace_id: 追踪 ID（同一次完整执行的顶级 ID，子工作流继承父级）
-        parent_run_id: 父运行 ID（子工作流设置，用于关联父工作流）
-    """
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
-    with get_session() as session:
-        run_history = RunHistory(
-            workflow_id=workflow_id,
-            run_id=run_id,
-            status="pending",
-            reason=reason,
-            run_mode=run_mode,
-            run_mode_param=run_mode_param,
-            trace_id=trace_id or run_id,
-            parent_run_id=parent_run_id
-        )
-        session.add(run_history)
-        session.flush()
-        fallback = RunHistory(
-            workflow_id=workflow_id,
-            run_id=run_id,
-            status="pending",
-            reason=reason,
-            run_mode=run_mode,
-            run_mode_param=run_mode_param,
-            trace_id=trace_id or run_id,
-            parent_run_id=parent_run_id,
-        )
-        fallback.id = run_history.id
-        session.commit()
-        _wal_checkpoint(session)
-        try:
-            session.refresh(run_history)
-        except Exception as exc:
-            logger.warning("RunHistory 已提交但刷新失败，返回已知字段: id=%s, error=%s", fallback.id, exc)
-            try:
-                session.rollback()
-            except Exception:
-                pass
-            return fallback
-        return run_history
-
-
-def get_run_histories_by_workflow(
-    workflow_id: int, 
-    limit: int = 20
-) -> List[RunHistory]:
-    """获取工作流的运行历史"""
-    with get_session() as session:
-        return session.query(RunHistory).filter(
-            RunHistory.workflow_id == workflow_id
-        ).order_by(RunHistory.start_time.desc()).limit(limit).all()
-
-
-def get_latest_run_history(
-    workflow_id: int,
-    include_statuses: Optional[List[str]] = None,
-    exclude_statuses: Optional[List[str]] = None,
-    only_finished: bool = False,
-    exclude_run_history_id: Optional[int] = None,
-) -> Optional[RunHistory]:
-    """获取最新的运行历史"""
-    with get_session() as session:
-        query = session.query(RunHistory).filter(
-            RunHistory.workflow_id == workflow_id
-        )
-        if include_statuses:
-            query = query.filter(RunHistory.status.in_(list(include_statuses)))
-        if exclude_statuses:
-            query = query.filter(~RunHistory.status.in_(list(exclude_statuses)))
-        if only_finished:
-            query = query.filter(RunHistory.end_time.isnot(None))
-        if exclude_run_history_id is not None:
-            query = query.filter(RunHistory.id != exclude_run_history_id)
-        return query.order_by(RunHistory.start_time.desc(), RunHistory.id.desc()).first()
-
-
-def update_run_history(run_history_id: int, **kwargs) -> Optional[RunHistory]:
-    """更新运行历史"""
-    _validate_update_fields("RunHistory", kwargs, RUN_HISTORY_UPDATE_FIELDS)
-    with get_session() as session:
-        run_history = session.query(RunHistory).filter(
-            RunHistory.id == run_history_id
-        ).first()
-        if run_history:
-            for key, value in kwargs.items():
-                setattr(run_history, key, value)
-            session.commit()
-            # 终态写入后触发 WAL checkpoint，保证跨 session 一致性
-            if kwargs.get("status") in ("success", "failure", "cancelled"):
-                _wal_checkpoint(session)
-            session.refresh(run_history)
-        return run_history
-
-
-# ============== StepLog CRUD ==============
-
-
-def clear_run_histories(workflow_id: int) -> int:
-    """清除指定工作流的所有运行历史（优化：使用批量删除，避免加载所有对象）
-
-    Returns:
-        删除的记录数
-    """
-    with get_session() as session:
-        # 先获取所有历史ID（仅查询ID，不加载完整对象）
-        history_ids = [
-            h.id for h in session.query(RunHistory.id).filter(
-                RunHistory.workflow_id == workflow_id
-            )
-        ]
-
-        if not history_ids:
-            return 0
-
-        # 批量删除关联的步骤日志
-        session.query(StepLog).filter(
-            StepLog.run_history_id.in_(history_ids)
-        ).delete(synchronize_session=False)
-
-        # 批量删除运行历史
-        count = session.query(RunHistory).filter(
-            RunHistory.workflow_id == workflow_id
-        ).delete(synchronize_session=False)
-
-        session.commit()
-        return count
-
-def create_step_log(
-    run_history_id: int,
-    step_id: int,
-    order: int = 0
-) -> StepLog:
-    """创建步骤日志"""
-    last_error = None
-    for attempt in range(3):
-        with get_session() as session:
-            step_log = StepLog(
-                run_history_id=run_history_id,
-                step_id=step_id,
-                order=order,
-                status="pending"
-            )
-            session.add(step_log)
-            fallback = None
-            try:
-                session.flush()
-                fallback = StepLog(
-                    run_history_id=run_history_id,
-                    step_id=step_id,
-                    order=order,
-                    status="pending",
-                )
-                fallback.id = step_log.id
-                session.commit()
-            except Exception as e:
-                session.rollback()
-                last_error = e
-                if attempt < 2:
-                    _wal_checkpoint(session)
-                    time.sleep(0.1 * (attempt + 1))
-                continue
-            try:
-                session.refresh(step_log)
-            except Exception as exc:
-                logger.warning("StepLog 已提交但刷新失败，返回已知字段: id=%s, error=%s", fallback.id, exc)
-                try:
-                    session.rollback()
-                except Exception:
-                    pass
-                return fallback
-            return step_log
-    raise last_error
-
-
-def get_step_logs_by_run(run_history_id: int) -> List[StepLog]:
-    """获取运行的所有步骤日志"""
-    with get_session() as session:
-        return session.query(StepLog).options(joinedload(StepLog.step)).filter(
-            StepLog.run_history_id == run_history_id
-        ).order_by(StepLog.order).all()
-
-
-def get_recent_step_logs_for_step(workflow_id: int, step_id: int, limit: int = 20) -> List[StepLog]:
-    """P-11: 一次查询拿到指定 step 在最近 N 个 run 中的所有 StepLog（按 run 创建时间倒序）。
-
-    替代"循环 RunHistory → 每条查 StepLog"的 N+1 模式，给 UI 找最近一次日志路径用。
-    """
-    with get_session() as session:
-        recent_run_ids_subq = (
-            session.query(RunHistory.id)
-            .filter(RunHistory.workflow_id == workflow_id)
-            .order_by(RunHistory.start_time.desc().nullslast(), RunHistory.id.desc())
-            .limit(limit)
-            .subquery()
-        )
-        return (
-            session.query(StepLog)
-            .filter(
-                StepLog.step_id == step_id,
-                StepLog.run_history_id.in_(recent_run_ids_subq),
-            )
-            .order_by(StepLog.run_history_id.desc())
-            .all()
-        )
-
-
-def get_step_log_summary_by_runs(run_history_ids: List[int]) -> dict[int, dict[str, int]]:
-    """批量汇总多个运行的步骤状态统计。"""
-    if not run_history_ids:
-        return {}
-
-    base_statuses = ["success", "failure", "skipped", "cancelled", "running", "pending"]
-    summary = {
-        int(run_history_id): {status: 0 for status in base_statuses}
-        for run_history_id in run_history_ids
-    }
-
-    with get_session() as session:
-        rows = session.query(
-            StepLog.run_history_id,
-            StepLog.status,
-            func.count(StepLog.id)
-        ).filter(
-            StepLog.run_history_id.in_(run_history_ids)
-        ).group_by(
-            StepLog.run_history_id,
-            StepLog.status
-        ).all()
-
-    for run_history_id, status, count in rows:
-        bucket = summary.setdefault(int(run_history_id), {key: 0 for key in base_statuses})
-        status_key = str(status or "pending")
-        bucket.setdefault(status_key, 0)
-        bucket[status_key] = int(count or 0)
-
-    return summary
-
-
-def cancel_pending_step_logs(run_history_id: int, error_message: str = "用户强制停止") -> int:
-    """R4-#9: 批量把指定 run 下所有 pending/running 的 step_logs 改为 cancelled。
-
-    使用单次 UPDATE 替代 N 次 update_step_log，避免 N+1 commit。
-    返回被改动的行数。
-    """
-    now = datetime.now()
-    try:
-        with get_session() as session:
-            affected = (
-                session.query(StepLog)
-                .filter(
-                    StepLog.run_history_id == run_history_id,
-                    StepLog.status.in_(("pending", "running")),
-                )
-                .update(
-                    {
-                        StepLog.status: "cancelled",
-                        StepLog.end_time: now,
-                        StepLog.error_message: error_message,
-                    },
-                    synchronize_session=False,
-                )
-            )
-            session.commit()
-            return int(affected or 0)
-    except Exception as e:
-        logger.warning("批量取消 step_logs 失败: %s", e)
-        return 0
-
-
-def update_step_log(step_log_id: int, **kwargs) -> Optional[StepLog]:
-    """更新步骤日志
-
-    R4-#4: 终态写入不再每次触发 WAL checkpoint，依赖 SQLite 默认 auto-checkpoint
-    (wal_autocheckpoint=1000 pages)；run_history 终结时由 update_run_history 一次性
-    checkpoint，足以保证跨进程一致性。
-    """
-    _validate_update_fields("StepLog", kwargs, STEP_LOG_UPDATE_FIELDS)
-    with get_session() as session:
-        step_log = session.query(StepLog).filter(StepLog.id == step_log_id).first()
-        if step_log:
-            for key, value in kwargs.items():
-                setattr(step_log, key, value)
-            session.commit()
-            session.refresh(step_log)
-        return step_log
-
-
 # ============== JSON 导入导出 ==============
 
-def is_masked_webhook_url(value: str | None) -> bool:
-    """判断导入值是否为脱敏占位符。"""
-    return _is_masked_webhook_url(value, MASKED_WEBHOOK_URL)
-
-
-def validate_webhook_url(webhook_url: str) -> str:
-    """校验并规范化钉钉机器人 Webhook URL。"""
-    url = (webhook_url or "").strip()
-    if not is_valid_dingtalk_webhook_url(url):
-        raise ValueError("Webhook URL 必须是钉钉机器人 HTTPS 地址")
-    return url
-
-
 def import_from_json(json_path: Path) -> int:
-    """从 JSON 文件导入工作流。"""
+    """从 JSON 文件导入工作流（兼容旧 API：仅返回导入数量）。
+
+    旧调用方（如 _import_and_run.py）把返回值当整数用于输出，
+    因此保持 int 返回不变；需要导入告警明细请改用
+    import_from_json_with_warnings。
+    """
+    return import_from_json_with_warnings(json_path).imported_count
+
+
+def import_from_json_with_warnings(json_path: Path) -> ImportResult:
+    """从 JSON 文件导入工作流，返回 ImportResult（数量 + 中文告警明细）。
+
+    告警覆盖：脱敏 webhook 因本机无同名配置被跳过创建、
+    工作流通知已启用但未绑定可用机器人（运行期将静默不发送）、
+    工作流 UID 重复被跳过导入。
+    """
     return import_from_json_impl(
         json_path,
         get_session=get_session,
@@ -1508,108 +1236,6 @@ def export_to_json(
         get_session=get_session,
         masked_webhook_url=MASKED_WEBHOOK_URL,
     )
-
-
-# ============== Webhook CRUD ==============
-
-def list_webhooks() -> List[WebhookConfig]:
-    """获取所有 Webhook 配置
-
-    M8: 返回前 expunge，确保对象在 session 之外的属性访问不会触发刷新。
-    """
-    with get_session() as session:
-        rows = session.query(WebhookConfig).order_by(WebhookConfig.name).all()
-        for row in rows:
-            session.expunge(row)
-        return rows
-
-
-def get_webhook_by_id(webhook_id: int) -> Optional[WebhookConfig]:
-    """根据 ID 获取 Webhook
-
-    M8: 返回前 expunge，确保对象在 session 之外的属性访问不会触发刷新。
-    """
-    with get_session() as session:
-        webhook = session.query(WebhookConfig).filter(WebhookConfig.id == webhook_id).first()
-        if webhook:
-            session.expunge(webhook)
-        return webhook
-
-
-def create_webhook(
-    name: str,
-    webhook_url: str,
-    keyword: str = "",
-    description: str = ""
-) -> WebhookConfig:
-    """创建 Webhook 配置"""
-    name = (name or "").strip()
-    if not name:
-        raise ValueError("Webhook 名称不能为空")
-    webhook_url = validate_webhook_url(webhook_url)
-    with get_session() as session:
-        existing = session.query(WebhookConfig).filter(WebhookConfig.name == name).first()
-        if existing:
-            raise ValueError(f"Webhook 名称已存在: {name}")
-        webhook = WebhookConfig(
-            name=name,
-            webhook_url=webhook_url,
-            keyword=keyword,
-            description=description
-        )
-        session.add(webhook)
-        session.commit()
-        session.refresh(webhook)
-        session.expunge(webhook)
-        return webhook
-
-
-def update_webhook(webhook_id: int, **kwargs) -> Optional[WebhookConfig]:
-    """更新 Webhook 配置"""
-    _validate_update_fields("WebhookConfig", kwargs, WEBHOOK_UPDATE_FIELDS)
-    if "name" in kwargs:
-        kwargs["name"] = (kwargs["name"] or "").strip()
-        if not kwargs["name"]:
-            raise ValueError("Webhook 名称不能为空")
-    if "webhook_url" in kwargs:
-        kwargs["webhook_url"] = validate_webhook_url(kwargs["webhook_url"])
-    with get_session() as session:
-        webhook = session.query(WebhookConfig).filter(WebhookConfig.id == webhook_id).first()
-        if webhook:
-            if "name" in kwargs:
-                duplicate = (
-                    session.query(WebhookConfig)
-                    .filter(WebhookConfig.name == kwargs["name"], WebhookConfig.id != webhook_id)
-                    .first()
-                )
-                if duplicate:
-                    raise ValueError(f"Webhook 名称已存在: {kwargs['name']}")
-            for key, value in kwargs.items():
-                setattr(webhook, key, value)
-            webhook.updated_at = datetime.now()
-            session.commit()
-            session.refresh(webhook)
-            session.expunge(webhook)
-        return webhook
-
-
-def delete_webhook(webhook_id: int) -> bool:
-    """删除 Webhook 配置"""
-    with get_session() as session:
-        webhook = session.query(WebhookConfig).filter(WebhookConfig.id == webhook_id).first()
-        if webhook:
-            session.delete(webhook)
-            session.commit()
-            return True
-        return False
-
-
-def get_webhooks_by_ids(webhook_ids: List[int]) -> List[WebhookConfig]:
-    """根据 ID 列表获取多个 Webhook"""
-    if not webhook_ids:
-        return []
-    with get_session() as session:
-        return session.query(WebhookConfig).filter(WebhookConfig.id.in_(webhook_ids)).all()
 
 
 # ============== 工作流克隆 ==============
@@ -1684,3 +1310,30 @@ def auto_backup_workflows(backup_dir: Path = None, include_secrets: bool = False
         include_secrets=include_secrets,
         export_to_json=export_to_json,
     )
+# ============== L1 巨型文件治理：门面再导出 ==============
+# 运行历史/StepLog 与 Webhook CRUD 已拆分到 database_runs / database_webhooks；
+# 此处再导出以保持既有 `from database import X` 调用方与测试完全不变。
+from database_runs import (  # noqa: E402
+    _wal_checkpoint,
+    create_run_history,
+    get_run_histories_by_workflow,
+    get_latest_run_history,
+    update_run_history,
+    clear_run_histories,
+    create_step_log,
+    get_step_logs_by_run,
+    get_recent_step_logs_for_step,
+    get_step_log_summary_by_runs,
+    cancel_pending_step_logs,
+    update_step_log,
+)
+from database_webhooks import (  # noqa: E402
+    is_masked_webhook_url,
+    validate_webhook_url,
+    list_webhooks,
+    get_webhook_by_id,
+    create_webhook,
+    update_webhook,
+    delete_webhook,
+    get_webhooks_by_ids,
+)

@@ -33,7 +33,10 @@ ALLOWED_RISKY_CALLS: dict[tuple[str, str], str] = {
     ("tests/test_cli_contracts.py", "subprocess.run"): "CLI contract test executes the repository CLI in a child interpreter.",
     ("tests/test_cli_subprocess.py", "subprocess.run"): "CLI subprocess regression test validates command behavior.",
     ("tests/test_dependency_manifest.py", "subprocess.run"): "Dependency manifest test invokes the checker script.",
+    ("tests/test_import_warnings.py", "subprocess.run"): "Import-warning tests run CLI import in a child interpreter for WORKFLOW_APP_DATA_DIR isolation (same pattern as test_cli_contracts).",
+    ("tests/test_install_hooks.py", "subprocess.run"): "Hook installer tests run git and the installer CLI against a throwaway temp repository using explicit args.",
     ("tests/test_main_self_check.py", "subprocess.run"): "Self-check test runs the packaged entrypoint contract.",
+    ("tools/install_hooks.py", "subprocess.run"): "Hook installer sets/unsets git core.hooksPath via argument-list git invocations, never shell=True.",
     ("tools/repo_hygiene.py", "subprocess.run"): "Repository hygiene tool shells out to git using explicit args.",
     ("tools/run_tests.py", "subprocess.run"): "Test runner wrapper delegates to pytest/collect commands using explicit args.",
 }

@@ -45,6 +45,7 @@ class AdvancedSettingsSection:
     target_search_edit: QLineEdit
     target_scope_combo: QComboBox
     args_edit: QLineEdit
+    output_paths_edit: QLineEdit
     theme_edit: QLineEdit
     timeout_spin: QSpinBox
     retry_spin: QSpinBox
@@ -62,6 +63,7 @@ class AdvancedSettingsControls:
     target_search_edit: QLineEdit
     target_scope_combo: QComboBox
     args_edit: QLineEdit
+    output_paths_edit: QLineEdit
     theme_edit: QLineEdit
     timeout_spin: QSpinBox
     retry_spin: QSpinBox
@@ -156,6 +158,7 @@ def create_advanced_settings_section(
         target_search_edit=controls.target_search_edit,
         target_scope_combo=controls.target_scope_combo,
         args_edit=controls.args_edit,
+        output_paths_edit=controls.output_paths_edit,
         theme_edit=controls.theme_edit,
         timeout_spin=controls.timeout_spin,
         retry_spin=controls.retry_spin,
@@ -201,6 +204,11 @@ def _create_advanced_controls(
             placeholder='例如: ["--output", "result.txt"]',
             tooltip='传给脚本或执行器的 JSON 数组参数，例如 ["--output", "result.txt"]',
         ),
+        # ROI-2: 显式输出声明；监听冲突检测优先使用声明，推断仅作未声明步骤的兜底
+        output_paths_edit=_create_line_edit(
+            placeholder="例如: D:/数据/基础文件; D:/报表/月报.xlsx（多个用 ; 分隔）",
+            tooltip="声明本步骤写出的目录/文件；监听冲突检测优先使用此声明（留空则按参数与步骤类型推断）",
+        ),
         theme_edit=_create_line_edit(
             placeholder="留空使用工作流默认主题",
             tooltip="图表类步骤可覆盖工作流默认主题；留空则继承工作流配置",
@@ -233,6 +241,12 @@ def _layout_advanced_controls(grid: QGridLayout, controls: AdvancedSettingsContr
     grid.addWidget(controls.sub_workflow_filter, row, 0, 1, 2)
     row += 1
     row = _add_labeled_widget(grid, row, _fixed_label("参数", tooltip="JSON 数组"), controls.args_edit)
+    row = _add_labeled_widget(
+        grid,
+        row,
+        _fixed_label("输出目录", tooltip="本步骤写出的目录/文件，多个用 ; 分隔"),
+        controls.output_paths_edit,
+    )
     row = _add_labeled_widget(grid, row, _fixed_label("主题"), controls.theme_edit)
     row = _add_labeled_widget(grid, row, _fixed_label("超时"), controls.timeout_spin)
     row = _add_labeled_widget(grid, row, _fixed_label("重试"), controls.retry_spin)

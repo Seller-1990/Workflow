@@ -38,6 +38,7 @@ STEP_UPDATE_FIELDS = {
     "timeout_seconds",
     "retry_count",
     "skip_on_success",
+    "output_paths",
 }
 RUN_HISTORY_UPDATE_FIELDS = {
     "status",
@@ -49,6 +50,7 @@ RUN_HISTORY_UPDATE_FIELDS = {
     "run_mode_param",
     "trace_id",
     "parent_run_id",
+    "notify_status",
 }
 STEP_LOG_UPDATE_FIELDS = {
     "order",

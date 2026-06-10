@@ -65,6 +65,9 @@ def _wait_for_refresh_completion(excel, workbook, timeout: int, cancel_event, lo
                 f"[{datetime.now().isoformat()}] 异步查询等待失败，改为轮询: {wait_errors[-1]}"
             )
 
+    # 连续两个状态探针都抛异常的迭代计数（COM 失效可见性，25 次 ≈ 5 秒）
+    consecutive_probe_failures = 0
+
     while True:
         if cancel_event and cancel_event.is_set():
             log_messages.append(f"[{datetime.now().isoformat()}] 用户取消，正在关闭 Excel...")
@@ -73,20 +76,35 @@ def _wait_for_refresh_completion(excel, workbook, timeout: int, cancel_event, lo
         if timeout is not None and time.monotonic() - start_wait > timeout:
             raise WorkflowTimeoutError(f"刷新超时 ({timeout}秒)")
 
+        calc_probe_failed = False
         try:
             calc_state = getattr(excel, "CalculationState", None)
+            consecutive_probe_failures = 0
             if calc_state not in (None, 0):
                 time.sleep(poll_interval)
                 continue
         except Exception:
-            pass
+            # 仅记录本轮探针失败，保持原有吞异常行为
+            calc_probe_failed = True
 
         try:
             if bool(getattr(workbook, "Refreshing")):
+                consecutive_probe_failures = 0
                 time.sleep(poll_interval)
                 continue
+            consecutive_probe_failures = 0
         except Exception:
-            pass
+            if calc_probe_failed:
+                consecutive_probe_failures += 1
+                if consecutive_probe_failures >= 25:
+                    # 连续 25 次（≈5 秒）两个探针都失败：写一条警告后照旧返回，不抛异常
+                    log_messages.append(
+                        f"[{datetime.now().isoformat()}] 警告：连续无法读取 Excel 刷新状态（COM 可能已失效），将依赖保存步骤暴露真实错误"
+                    )
+                    consecutive_probe_failures = 0
+                else:
+                    time.sleep(poll_interval)
+                    continue
 
         return
 

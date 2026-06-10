@@ -27,6 +27,8 @@ from engine_core.watcher import (
     FileWatcher,
     validate_watch_folders as _validate_watch_folders,
 )
+# M1: 多 watcher 管理（start/stop/restore）已抽到 engine_core.watch_manager
+from engine_core.watch_manager import WatchManager
 from engine_core.notification import send_run_notification
 from engine_core.lifecycle import (
     begin_run as _begin_run,
@@ -175,10 +177,20 @@ class WorkflowEngine(QObject):
         max_workers = min(32, (os.cpu_count() or 4) + 4)
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         # CA2: 监听器子系统抽到 engine_core.watcher
-        self._watcher = FileWatcher(
+        # M1: 多 watcher 管理抽到 engine_core.watch_manager.WatchManager。
+        # 回调用 lambda 在本模块内定义（late-bound）：
+        # get_steps_by_workflow / detect_watch_output_conflicts / _validate_watch_folders
+        # 在调用时才从 engine 模块全局解析，保持模块级 monkeypatch 语义；
+        # watch_started / watch_stopped Qt 信号仍挂在引擎上，经 emit 回调转发。
+        self._watch_manager = WatchManager(
             log_cb=self._emit_log,
             trigger_cb=lambda wf_id, reason: self.run_all(wf_id, reason=reason),
             is_running_cb=lambda: self.is_running,
+            emit_started_cb=lambda wf_id, folders: self.watch_started.emit(wf_id, folders),
+            emit_stopped_cb=lambda wf_id: self.watch_stopped.emit(wf_id),
+            validate_folders_cb=lambda folders: _validate_watch_folders(folders),
+            detect_conflicts_cb=lambda folders, steps: detect_watch_output_conflicts(folders, steps),
+            get_steps_cb=lambda wf_id: get_steps_by_workflow(wf_id),
         )
 
     @staticmethod
@@ -323,93 +335,30 @@ class WorkflowEngine(QObject):
         )
 
     # ============== 监听触发 ==============
+    # M1: _make_watcher / start_watch / stop_watch / restore_watches（含 _safe_int）
+    # 已整体移至 engine_core.watch_manager.WatchManager；此处仅保留薄委托与
+    # ``_watchers`` 属性契约（测试/调用方按 dict 读取，也可整体赋值替换）。
+
+    @property
+    def _watchers(self) -> dict[int, FileWatcher]:
+        """M1: 按 workflow_id 的监听器字典（实际由 WatchManager 持有）"""
+        return self._watch_manager.watchers
+
+    @_watchers.setter
+    def _watchers(self, value: dict[int, FileWatcher]) -> None:
+        self._watch_manager.watchers = value
 
     def start_watch(self, workflow: Workflow) -> bool:
-        """启动文件监听（委托给 FileWatcher）
+        """启动该工作流的文件监听（M1: 每工作流独立 watcher；委托 WatchManager）"""
+        return self._watch_manager.start_watch(workflow)
 
-        R2-#4: 启停信号在状态切换时发出，UI 据此更新持续指示灯。
-        幂等：若当前已对同 workflow + 同 folders 启动监听，则跳过 stop+restart 抖动。
-        """
-        # R2-#4 / R4-#1 / R4-#10 / R5-#2 幂等：避免点同一 workflow 多次造成监听抖动
-        # 目录顺序变化不视为目标变化；但 cooldown/settle/mode 任一改变都视为需重启
-        prev_workflow_id = getattr(self._watcher, "_workflow_id", None)
-        prev_folders = list(getattr(self._watcher, "_folders", []) or [])
-        prev_cooldown = int(getattr(self._watcher, "_cooldown", 0) or 0)
-        prev_settle = int(getattr(self._watcher, "_settle", 0) or 0)
-        prev_mode = str(getattr(self._watcher, "_mode", "") or "")
-        new_folders = list(workflow.get_watch_folders() or [])
-        # R6-#5: DB 中若存在脏数据（字符串/None/异常类型）也兜底为默认值
-        def _safe_int(value, default: int, minimum: int = 0) -> int:
-            try:
-                v = int(value) if value is not None else default
-            except (TypeError, ValueError):
-                v = default
-            return max(minimum, v)
-        new_cooldown = _safe_int(workflow.cooldown_seconds, default=8, minimum=1)
-        new_settle = _safe_int(workflow.settle_seconds, default=15, minimum=0)
-        new_mode = workflow.watch_mode or "any_change"
-        if (
-            workflow.watch_enabled
-            and prev_workflow_id == workflow.id
-            and sorted(prev_folders) == sorted(new_folders)
-            and prev_cooldown == new_cooldown
-            and prev_settle == new_settle
-            and prev_mode == new_mode
-            and getattr(self._watcher, "_thread", None) is not None
-        ):
-            return True  # 已在监听同样目标 + 同样参数，无需重启
+    def stop_watch(self, workflow_id: int | None = None, join_timeout: float = 1.0):
+        """停止文件监听（M1: ``workflow_id=None`` 停止全部；委托 WatchManager）"""
+        return self._watch_manager.stop_watch(workflow_id, join_timeout)
 
-        # R4-#1: stop_watch 内部已发 watch_stopped；不再重复 emit，避免指示器抖动
-        self.stop_watch()
-
-        if not workflow.watch_enabled:
-            return False
-        if not new_folders:
-            return False
-        try:
-            folders = _validate_watch_folders(new_folders)
-        except ValueError as e:
-            self._emit_log(f"监听未启动: {e}")
-            return False
-        conflicts = detect_watch_output_conflicts(
-            folders,
-            get_steps_by_workflow(workflow.id),
-        )
-        if conflicts:
-            joined = "；".join(conflicts)
-            self._emit_log(f"监听未启动: 监听目录与工作流输出目录重叠：{joined}")
-            return False
-        ok = self._watcher.start(
-            workflow_id=workflow.id,
-            folders=folders,
-            cooldown=new_cooldown,
-            settle=new_settle,
-            mode=new_mode,
-        )
-        if ok:
-            try:
-                self.watch_started.emit(workflow.id, folders)
-            except Exception:
-                pass
-        return ok
-
-    def stop_watch(self, join_timeout: float = 1.0):
-        """停止文件监听（委托给 FileWatcher）"""
-        previous_thread = getattr(self._watcher, "_thread", None)
-        was_watching = previous_thread is not None
-        prev_workflow_id = getattr(self._watcher, "_workflow_id", None)
-        self._watcher.stop(join_timeout)
-        current_thread = getattr(self._watcher, "_thread", None)
-        old_thread_alive = bool(
-            previous_thread is not None
-            and getattr(previous_thread, "is_alive", lambda: False)()
-        )
-        stopped = current_thread is None or current_thread is not previous_thread or not old_thread_alive
-        if was_watching and stopped:
-            try:
-                self.watch_stopped.emit(prev_workflow_id or 0)
-            except Exception:
-                pass
+    def restore_watches(self) -> list[tuple[str, bool]]:
+        """应用启动时恢复所有 watch_enabled 工作流的监听（M1；委托 WatchManager）"""
+        return self._watch_manager.restore_watches()
 
     def shutdown(self, wait: bool = True):
         """关闭引擎，释放资源

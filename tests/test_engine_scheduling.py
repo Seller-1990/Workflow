@@ -7,6 +7,9 @@
 
 import sys
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -40,6 +43,13 @@ class MockWorkflow:
     """模拟 Workflow 对象"""
     parallel_enabled: bool = True
     max_workers: int = 4
+
+
+@dataclass
+class MockResult:
+    """模拟 StepResult 对象，仅保留排序与断言所需字段"""
+    step_id: int
+    status: str = "success"
 
 
 # ───────────── 调用真实实现（compute_batches 为真相源）─────────────
@@ -223,6 +233,141 @@ class TestPurposeStages:
         from engine import DependencyError
         with pytest.raises(DependencyError, match="跨阶段依赖不允许"):
             compute_batches(wf, steps, stage_map)
+
+
+# ───────────── run_steps_parallel 滑动窗口调度（M6）─────────────
+
+class TestRunStepsParallel:
+    """run_steps_parallel 提交侧滑动窗口语义
+
+    M6 修复：并发上限改由提交侧滑动窗口控制，等待执行的步骤
+    不再占用共享池线程，嵌套子工作流可正常拿到线程。
+    """
+
+    @staticmethod
+    def _make_steps(n: int) -> List[MockStep]:
+        return [
+            MockStep(id=i, uid=f"S{i}", name=f"步骤{i}", order=i)
+            for i in range(1, n + 1)
+        ]
+
+    def test_window_caps_in_flight_concurrency(self):
+        """max_workers=2 跑 6 个步骤：同时在跑的步骤数 <= 2，结果按 order 返回"""
+        from engine_core.scheduler import run_steps_parallel
+
+        steps = self._make_steps(6)
+        lock = threading.Lock()
+        in_flight = 0
+        max_in_flight = 0
+
+        def step_runner(step):
+            nonlocal in_flight, max_in_flight
+            with lock:
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+            time.sleep(0.05)
+            with lock:
+                in_flight -= 1
+            return MockResult(step_id=step.id)
+
+        # 池容量（8）远大于窗口（2），若窗口失效会观察到 >2 的并发
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = run_steps_parallel(
+                list(reversed(steps)),  # 故意乱序传入，验证按 order 排序而非完成/提交顺序
+                executor=pool,
+                max_workers=2,
+                step_runner=step_runner,
+            )
+
+        assert max_in_flight <= 2
+        assert [r.step_id for r in results] == [1, 2, 3, 4, 5, 6]
+
+    def test_nested_submission_to_shared_pool_no_starvation(self):
+        """步骤内部向同一共享池提交子任务并等待时不得死锁（池饥饿回归）
+
+        旧实现一次性提交 3 个步骤到 2 线程池（信号量上限 1）：
+        一个线程跑步骤并等子任务、另一个线程在信号量上阻塞等待，
+        子任务永远拿不到线程 → 死锁。滑动窗口实现同一时刻只占 1 个
+        池线程，剩余线程可服务嵌套子任务。子任务带 5 秒超时，
+        回归时测试快速失败而不是挂死 pytest。
+        """
+        from engine_core.scheduler import run_steps_parallel
+
+        steps = self._make_steps(3)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            def step_runner(step):
+                # 模拟嵌套子工作流：占用同一共享池的一个槽位并等待结果
+                inner = pool.submit(lambda: step.id * 10)
+                assert inner.result(timeout=5) == step.id * 10
+                return MockResult(step_id=step.id)
+
+            results = run_steps_parallel(
+                steps,
+                executor=pool,
+                max_workers=1,
+                step_runner=step_runner,
+            )
+
+        assert [r.step_id for r in results] == [1, 2, 3]
+        assert all(r.status == "success" for r in results)
+
+    def test_on_exception_converts_step_failure(self):
+        """步骤抛异常时走 on_exception 兜底，其余步骤结果不受影响"""
+        from engine_core.scheduler import run_steps_parallel
+
+        steps = self._make_steps(4)
+
+        def step_runner(step):
+            if step.id == 2:
+                raise RuntimeError(f"步骤{step.id}失败")
+            return MockResult(step_id=step.id)
+
+        def on_exception(step, exc):
+            return MockResult(step_id=step.id, status=f"failure:{exc}")
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = run_steps_parallel(
+                steps,
+                executor=pool,
+                max_workers=2,
+                step_runner=step_runner,
+                on_exception=on_exception,
+            )
+
+        assert [r.step_id for r in results] == [1, 2, 3, 4]
+        assert results[1].status == "failure:步骤2失败"
+        assert all(r.status == "success" for r in results if r.step_id != 2)
+
+    def test_exception_reraised_without_on_exception(self):
+        """未提供 on_exception 时步骤异常原样向上抛"""
+        from engine_core.scheduler import run_steps_parallel
+
+        steps = self._make_steps(2)
+
+        def step_runner(step):
+            raise ValueError(f"boom-{step.id}")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with pytest.raises(ValueError, match="boom-"):
+                run_steps_parallel(
+                    steps,
+                    executor=pool,
+                    max_workers=2,
+                    step_runner=step_runner,
+                )
+
+    def test_empty_steps_returns_empty_list(self):
+        """空步骤列表直接返回 []，不触碰线程池"""
+        from engine_core.scheduler import run_steps_parallel
+
+        results = run_steps_parallel(
+            [],
+            executor=None,  # 空列表分支不应使用 executor
+            max_workers=4,
+            step_runner=lambda s: s,
+        )
+        assert results == []
 
 
 if __name__ == "__main__":

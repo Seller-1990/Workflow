@@ -2,13 +2,15 @@
 """Webhook 管理对话框"""
 
 import logging
+import threading
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFormLayout,
     QHeaderView, QMessageBox, QFrame, QToolButton
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor
 
 from database import list_webhooks, create_webhook, update_webhook, delete_webhook
 from notifier import send_dingtalk_message
@@ -18,22 +20,32 @@ from webhook_url_policy import is_valid_dingtalk_webhook_url
 
 logger = logging.getLogger(__name__)
 
+# M3: 存量非法 URL 的提示文案（列表行 tooltip 与详情面板共用）
+_INVALID_WEBHOOK_URL_HINT = (
+    "Webhook URL 非法或不受信任（4.1.0 起发送前校验），发送将失败，请重新保存有效地址"
+)
+
 
 class WebhookManagerDialog(QDialog):
     """Webhook 管理对话框"""
-    
+
+    # M8: 后台测试发送完成信号（worker 线程发出，自动以队列方式回到 GUI 线程）
+    _test_finished = Signal(bool, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Webhook 管理")
         self.setMinimumSize(660, 440)
         self._current_webhook_id = None
         self._test_result_timer = None
+        self._test_in_flight = False
         self._is_dirty = False
         self._suppress_dirty = False
         self._suppress_selection_change = False
         # 产品已固定浅色主题，Webhook 设置也强制浅色，避免系统/旧偏好带回深色界面。
         self._dark = False
         self._setup_ui()
+        self._test_finished.connect(self._on_test_finished)
         self._connect_dirty_tracking()
         self._load_webhooks()
         self.setStyleSheet(self._build_stylesheet(False))
@@ -174,7 +186,8 @@ class WebhookManagerDialog(QDialog):
         action_layout.addWidget(self.btn_save)
         self.btn_close = QPushButton("关闭")
         self.btn_close.setObjectName("ghostRect")
-        self.btn_close.clicked.connect(self.accept)
+        # 走 close() 触发 closeEvent，保证未保存确认与窗口 X 行为一致
+        self.btn_close.clicked.connect(self.close)
         action_layout.addWidget(self.btn_close)
         right_layout.addLayout(action_layout)
 
@@ -298,6 +311,11 @@ class WebhookManagerDialog(QDialog):
 
             name_item = QTableWidgetItem(webhook.name)
             name_item.setData(Qt.UserRole, webhook.id)
+            # M3: 存量非法 URL（4.1.0 之前可能保存）发送时会被拒绝，列表中直接标红提示
+            if not is_valid_dingtalk_webhook_url(webhook.webhook_url):
+                danger_color = get_colors(self._dark)["danger"]
+                name_item.setForeground(QBrush(QColor(danger_color)))
+                name_item.setToolTip(_INVALID_WEBHOOK_URL_HINT)
             self.table.setItem(row, 0, name_item)
 
             keyword_item = QTableWidgetItem(webhook.keyword or "")
@@ -474,13 +492,13 @@ class WebhookManagerDialog(QDialog):
         return True
     
     def _on_test(self):
-        """测试发送"""
+        """测试发送（M8: 网络请求在后台线程执行，避免阻塞 GUI 最长 10 秒）"""
         if not self._ensure_edit_mode():
             return
 
         url = self.edit_url.text().strip()
         keyword = self.edit_keyword.text().strip()
-        
+
         if not url:
             msg_warning(self, self._dark, "提示", "请先输入 Webhook URL")
             return
@@ -488,13 +506,39 @@ class WebhookManagerDialog(QDialog):
         if not self._validate_webhook_url(url):
             msg_warning(self, self._dark, "提示", "Webhook URL 格式无效，请使用钉钉机器人 HTTPS URL")
             return
-        
-        success, msg = send_dingtalk_message(
-            url,
-            f"【工作流管理】测试消息 - 来自「{self.edit_name.text() or '未命名'}」",
-            keyword
+
+        message = f"【工作流管理】测试消息 - 来自「{self.edit_name.text() or '未命名'}」"
+        self._test_in_flight = True
+        self.btn_test.setEnabled(False)
+        hint_color = get_colors(getattr(self, "_dark", False))["text_tertiary"]
+        self.lbl_test_result.setStyleSheet(
+            f"font-size: 12px; padding-left: 8px; color: {hint_color};"
         )
-        
+        self.lbl_test_result.setText("发送中...")
+        self._restart_test_result_timer()
+
+        # 在启动线程前解析发送函数，确保测试中 monkeypatch 的替身不会与
+        # 线程启动时序竞争（生产环境两者等价）
+        send_func = send_dingtalk_message
+
+        def _send_in_background():
+            ok, msg = send_func(url, message, keyword)
+            try:
+                self._test_finished.emit(ok, msg)
+            except RuntimeError:
+                # 对话框已被销毁（C++ 对象释放），结果无处投递，直接丢弃
+                pass
+
+        threading.Thread(
+            target=_send_in_background,
+            name="webhook-test-send",
+            daemon=True,
+        ).start()
+
+    def _on_test_finished(self, success: bool, msg: str):
+        """测试发送结果回到 GUI 线程后的展示逻辑（由 _test_finished 信号触发）"""
+        self._test_in_flight = False
+        self.btn_test.setEnabled(True)
         if success:
             ok_color = get_colors(getattr(self, "_dark", False))["success"]
             self.lbl_test_result.setStyleSheet(
@@ -511,6 +555,10 @@ class WebhookManagerDialog(QDialog):
 
     def _clear_test_result(self):
         """清除测试结果标签"""
+        if self._test_in_flight:
+            # 后台发送仍在进行，保留"发送中..."提示并顺延清除时间
+            self._restart_test_result_timer()
+            return
         self.lbl_test_result.clear()
         if self._test_result_timer is not None:
             self._test_result_timer.stop()
@@ -568,7 +616,11 @@ class WebhookManagerDialog(QDialog):
             self.edit_keyword.setText(webhook.keyword or "")
             self.edit_desc.setPlainText(webhook.description or "")
             self.btn_delete.setEnabled(True)
-            self.detail_state.setText("当前正在编辑")
+            # M3: 加载到表单时同样提示存量非法 URL，发送将失败
+            if not is_valid_dingtalk_webhook_url(webhook.webhook_url):
+                self.detail_state.setText(_INVALID_WEBHOOK_URL_HINT)
+            else:
+                self.detail_state.setText("当前正在编辑")
         finally:
             self._suppress_dirty = False
         self._is_dirty = False
