@@ -87,3 +87,35 @@ gh api -X PUT repos/Seller-1990/Workflow/branches/main/protection \
   -F restrictions=null
 ```
 
+## 本地真实外设集成测试
+
+既有测试对 Excel COM 与钉钉网络全部使用 mock，真实外设路径此前只能在生产环境验证。`tests/test_local_integration.py` 补上这一层 OPT-IN 的本地集成测试，统一使用 pytest marker `local_integration`（已在 `pytest.ini` 注册）：
+
+- `test_excel_executor_real_com_roundtrip`：通过真实 COM 创建临时 `.xlsx`，再用 `ExcelExecutor` 真实启动 Excel 刷新并保存，校验执行结果、stdout 日志与文件 mtime 前进。
+- `test_dingtalk_real_send`：调用 `notifier.send_dingtalk_message` 向真实机器人发送一条测试消息，断言发送成功（返回信息已做 token 脱敏）。
+- `test_local_integration_marker_registered_in_pytest_ini`：廉价 wiring 自检，CI 中照常执行，防止 marker 注册被误删。
+
+### 运行方式（Windows cmd）
+
+```bash
+set WORKFLOW_LOCAL_INTEGRATION=1 && python -m pytest tests/test_local_integration.py -m local_integration -q
+```
+
+钉钉测试需要额外提供真实机器人地址（必须是 `https://oapi.dingtalk.com/robot/send` 下的地址，URL 策略会拒绝其他主机）：
+
+```bash
+set WORKFLOW_TEST_DINGTALK_WEBHOOK=<真实机器人URL>
+set WORKFLOW_TEST_DINGTALK_WEBHOOK_KEYWORD=<可选：机器人自定义关键词>
+python -m pytest tests/test_local_integration.py -m local_integration -q
+```
+
+### 安全注意
+
+- Excel 测试**会真实启动 Excel**（创建与执行阶段各启动并退出一次），整体约需 20 秒；运行期间不要手工操作 Excel，避免干扰 COM 会话。
+- 钉钉测试**会真实发送一条钉钉消息**到目标机器人群，内容为「【集成测试】Workflow 本地集成测试消息」。
+- 真实 Webhook 地址只允许通过环境变量注入，不要写入任何仓库文件；`tools/repo_hygiene.py` 会扫描 token 残留。
+
+### 默认跳过（CI / hooks 不受影响）
+
+两个真实外设测试均通过 `skipif` 环境变量门控：CI（`pytest -q`）、git hooks（pre-push 的 `python -m pytest -q`）与未设置环境变量的本地运行只会显示 skipped，不会启动 Excel、也不会发起任何网络请求，质量门保持绿色；`tools/run_tests.py --collect-only` 的收集数随之增加属预期，无固定数量断言。
+

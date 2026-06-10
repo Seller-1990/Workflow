@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QLayout, QStyle, QApplication, QTabWidget,
     QStackedWidget, QButtonGroup
 )
-from PySide6.QtCore import Qt, Slot, QSize, QSettings, QPoint, QTimer
+from PySide6.QtCore import Qt, Slot, QSize, QSettings, QTimer
 from PySide6.QtGui import QAction, QIcon
 
 logger = logging.getLogger(__name__)
@@ -57,10 +57,9 @@ from ui.main_window_theme import (
     mode_tabs_stylesheet,
     right_panel_stylesheet,
 )
-from ui.panel_layout import expanded_splitter_sizes, panel_toggle_text, run_splitter_sizes
 from ui.run_actions import run_engine_mode
 from ui.run_state import compute_run_lock_state
-from ui import dirty_guard, run_dispatch, watch_status_controller
+from ui import dirty_guard, panel_controller, run_dispatch, watch_status_controller
 
 
 class MainWindow(QMainWindow):
@@ -471,23 +470,8 @@ class MainWindow(QMainWindow):
         self.btn_toggle_right.raise_()
 
     def _update_border_widget_positions(self):
-        """更新浮动折叠按钮位置（基于 center_scroll 边缘定位）"""
-        cw = self.centralWidget()
-        if not cw:
-            return
-        cw_pos = cw.mapTo(self, QPoint(0, 0))
-        center_pos = self.center_scroll.mapTo(self, QPoint(0, 0))
-        center_h = self.center_scroll.height()
-
-        if hasattr(self, 'btn_toggle_left'):
-            x = center_pos.x() - 10
-            y = center_pos.y() + (center_h - 40) // 2
-            self.btn_toggle_left.move(x, y)
-
-        if hasattr(self, 'btn_toggle_right'):
-            x = center_pos.x() + self.center_scroll.width() - 10
-            y = center_pos.y() + (center_h - 40) // 2
-            self.btn_toggle_right.move(x, y)
+        """更新浮动折叠按钮位置（实现在 ui.panel_controller）。"""
+        panel_controller.update_border_widget_positions(self)
 
     def _refresh_border_fold_buttons(self):
         """刷新边框折叠按钮样式"""
@@ -582,21 +566,12 @@ class MainWindow(QMainWindow):
             btn.style().polish(btn)
 
     def _on_run_splitter_moved(self, *_args):
-        self._run_splitter_user_adjusted = True
+        """运行页分栏被用户拖动（实现在 ui.panel_controller）。"""
+        panel_controller.on_run_splitter_moved(self, *_args)
 
     def _apply_run_splitter_profile(self, profile: str, *, force: bool = False):
-        if not hasattr(self, "run_splitter"):
-            return
-        if self._run_splitter_user_adjusted and not force:
-            return
-        sizes = run_splitter_sizes(profile)
-        self.run_splitter.blockSignals(True)
-        try:
-            self.run_splitter.setSizes(sizes)
-        finally:
-            self.run_splitter.blockSignals(False)
-        if force:
-            self._run_splitter_user_adjusted = False
+        """按运行状态应用运行页分栏尺寸（实现在 ui.panel_controller）。"""
+        panel_controller.apply_run_splitter_profile(self, profile, force=force)
 
     def _toggle_dark_mode(self, checked):
         self._dark_mode = False
@@ -1789,44 +1764,12 @@ class MainWindow(QMainWindow):
             self.workflow_config.refresh_webhooks()
 
     def _toggle_left_panel(self):
-        """折叠/展开左侧面板"""
-        if self.left_panel.isVisible():
-            self._left_last_size = self.left_panel.width()
-            self.left_panel.setVisible(False)
-            self.btn_toggle_left.setText(panel_toggle_text("left", visible=False))
-        else:
-            self.left_panel.setVisible(True)
-            self.left_panel.setMinimumWidth(200)
-            sizes = expanded_splitter_sizes(
-                self.main_splitter.sizes(),
-                panel_index=0,
-                last_size=self._left_last_size,
-                minimum_size=200,
-            )
-            if sizes:
-                self.main_splitter.setSizes(sizes)
-            self.btn_toggle_left.setText(panel_toggle_text("left", visible=True))
-        QTimer.singleShot(50, self._update_border_widget_positions)
+        """折叠/展开左侧面板（实现在 ui.panel_controller）。"""
+        panel_controller.toggle_left_panel(self)
 
     def _toggle_right_panel(self):
-        """折叠/展开右侧面板"""
-        if self.right_panel.isVisible():
-            self._right_last_size = self.right_panel.width()
-            self.right_panel.setVisible(False)
-            self.btn_toggle_right.setText(panel_toggle_text("right", visible=False))
-        else:
-            self.right_panel.setVisible(True)
-            self.right_panel.setMinimumWidth(320)
-            sizes = expanded_splitter_sizes(
-                self.main_splitter.sizes(),
-                panel_index=-1,
-                last_size=self._right_last_size,
-                minimum_size=320,
-            )
-            if sizes:
-                self.main_splitter.setSizes(sizes)
-            self.btn_toggle_right.setText(panel_toggle_text("right", visible=True))
-        QTimer.singleShot(50, self._update_border_widget_positions)
+        """折叠/展开右侧面板（实现在 ui.panel_controller）。"""
+        panel_controller.toggle_right_panel(self)
 
     def resizeEvent(self, event):
         """窗口大小变化时更新边框折叠按钮位置"""
