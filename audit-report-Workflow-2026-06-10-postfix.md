@@ -157,6 +157,26 @@ Overall         ███████░░░  7.1  B   (5.8)
 
 **第五波后最终实测**：`pytest -q` = **400 passed + 2 skipped（门控外设）**；四门禁 + 本地钩子 + 远端 CI 三层验证全绿。三大文件 1822 / 1308 / 914 行（初始 2154 / 1613 / 1686）。总体评分约 **7.9（B+）**——8.5 的剩余缺口仅剩：分支保护需 GitHub Pro 或转公开、大文件第四批、钉钉真发集成的实际启用与长期稳定性数据。
 
+## 9. 终批（2026-06-11 第六波）：大文件问题一次性终结
+
+| 文件 | 初始（首轮审查时） | 终态 | 拆出模块 |
+|------|------|------|---------|
+| `ui/main_window.py` | 2154 | **973** | main_window_setup(648) / run_lifecycle_controller(336) / watch_status_controller / run_dispatch / dirty_guard / panel_controller |
+| `engine.py` | 1613 | **922** | watch_manager(212) / step_execution(553) / run_orchestration(719) |
+| `ui/step_table/panel.py` | 1451 | **727** | panel_build(425) / panel_actions(612) |
+| `ui/step_editor.py` | ~1100→1242（修复期增长） | **861** | step_editor_build(309) / step_editor_io(149) |
+| `database.py` | 1686 | **914** | database_runs(351) / database_webhooks(141) / database_workflows(512) |
+| `tests/test_executor_policies.py` | 1465 | **380+527+582** | 三分（powerbi / engine 主题） |
+| `tests/test_schema_guards.py` / `test_ui_main_window_actions.py` | 1014 / 1034 | **603+412 / 502+518** | 主题二分 + 非收集助手模块 |
+
+**防回潮机制（本批核心交付）**：`--max-lines 1000 --fail-on-threshold` 已烧入 pre-commit、pre-push、ci.yml、package.yml 四处——超千行文件从此在提交阶段被物理拦截，远端 CI 第二道复验。该硬门禁已在 `2525ed3` 的本地钩子与远端 CI 中实际运行通过。
+
+全部拆分为纯移动（AST/字节级核验，broad-except 跨文件守恒登记），测试零改动：**400 passed + 2 skipped**，整仓 0 个超千行文件。
+
+---
+
+*终批后总体评分约 **8.0（B+/A- 边界）**：Maintainability 升至 ~8.0（全部文件达标且有硬门禁防回潮）。剩余到 8.5：分支保护（需 GitHub Pro 或转公开）、钉钉真发集成启用、长期稳定性数据。*
+
 ---
 
 *复审结论（四波累计）：首轮 26 项发现全部闭合，"冲 8.5"路线前 4 项亦已落地。总体评分 5.8 → 7.7（C+ → B+）。两个用户报告的生产 bug 的代码级根因均已修复，并由回归测试、端到端集成测试与通知状态落库三重保障；质量门已具备本地不可绕过性，远端强制只差一次推送决定。*
