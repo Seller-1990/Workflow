@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import database
 from models import RunHistory, Step, StepLog, WebhookConfig
 
+from _schema_guard_utils import _use_temp_database
+
 
 def test_step_model_declares_unique_workflow_uid_index():
     indexes = {index.name: index for index in Step.__table__.indexes}
@@ -46,17 +48,6 @@ def test_schema_version_record_is_committed(tmp_path: Path):
         rows = conn.execute(text("SELECT version FROM schema_versions")).fetchall()
 
     assert rows == [(7,)]
-
-
-def _use_temp_database(monkeypatch, tmp_path: Path):
-    database.cleanup_session()
-    monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "workflows.db")
-    monkeypatch.setattr(database, "_engine", None)
-    monkeypatch.setattr(database, "_SessionFactory", None)
-    monkeypatch.setattr(database, "_scoped_session", None)
-    monkeypatch.setattr(database, "_init_done", False)
-    database.init_db()
-    return database
 
 
 def test_json_import_export_preserves_execution_policy(monkeypatch, tmp_path: Path):
@@ -103,66 +94,6 @@ def test_json_import_export_preserves_execution_policy(monkeypatch, tmp_path: Pa
     assert '"timeout_seconds": 123' in exported
     assert '"retry_count": 2' in exported
     assert '"skip_on_success": true' in exported
-
-
-
-def test_import_rejects_unsupported_step_type(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "bad_step_type.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "workflows": [
-                    {
-                        "id": "wf_bad_step_type",
-                        "name": "非法步骤类型",
-                        "steps": [
-                            {
-                                "id": "step_bad",
-                                "name": "Bad",
-                                "step_type": "cmd_shell",
-                                "script": "calc.exe",
-                            }
-                        ],
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"\$\.workflows\[0\]\.steps\[0\]\.step_type"):
-        db.import_from_json(payload_path)
-
-
-def test_import_rejects_unsupported_single_script_type(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "bad_single_type.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "workflows": [
-                    {
-                        "id": "wf_bad_single_type",
-                        "name": "非法单脚本类型",
-                        "single_script": {
-                            "enabled": True,
-                            "type": "cmd_shell",
-                            "path": "calc.exe",
-                        },
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"\$\.workflows\[0\]\.single_script\.type"):
-        db.import_from_json(payload_path)
 
 
 def test_clone_workflow_remaps_dependencies_to_later_steps(monkeypatch, tmp_path: Path):
@@ -283,158 +214,6 @@ def test_import_masked_webhook_does_not_overwrite_existing_url(monkeypatch, tmp_
     assert updated.description == "新备注"
 
 
-def test_create_and_update_webhook_reject_non_dingtalk_urls(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-
-    with pytest.raises(ValueError, match="Webhook URL 必须是钉钉机器人"):
-        db.create_webhook("外部地址", "https://example.com/robot/send?access_token=local-token")
-
-    webhook = db.create_webhook(
-        "财务机器人",
-        "https://oapi.dingtalk.com/robot/send?access_token=local-token",
-    )
-
-    with pytest.raises(ValueError, match="Webhook URL 必须是钉钉机器人"):
-        db.update_webhook(webhook.id, webhook_url="http://oapi.dingtalk.com/robot/send?access_token=abc")
-
-
-def test_create_and_update_webhook_reject_duplicate_names(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    first = db.create_webhook(
-        "财务机器人",
-        "https://oapi.dingtalk.com/robot/send?access_token=local-token",
-    )
-    second = db.create_webhook(
-        "研发机器人",
-        "https://oapi.dingtalk.com/robot/send?access_token=dev-token",
-    )
-
-    with pytest.raises(ValueError, match="Webhook 名称已存在: 财务机器人"):
-        db.create_webhook(
-            " 财务机器人 ",
-            "https://oapi.dingtalk.com/robot/send?access_token=other-token",
-        )
-
-    with pytest.raises(ValueError, match="Webhook 名称已存在: 财务机器人"):
-        db.update_webhook(second.id, name=first.name)
-
-
-def test_import_rejects_non_dingtalk_webhook_url(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "bad-webhook.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "webhooks": [
-                    {
-                        "name": "恶意地址",
-                        "webhook_url": "https://example.com/collect?access_token=local-token",
-                    }
-                ],
-                "workflows": [],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="Webhook URL 必须是钉钉机器人地址"):
-        db.import_from_json(payload_path)
-
-
-def test_import_reports_schema_path_for_bad_webhook_field_type(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "bad-webhook-field.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "webhooks": [
-                    {
-                        "name": ["财务机器人"],
-                        "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=token",
-                    }
-                ],
-                "workflows": [],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"\$\.webhooks\[0\]\.name"):
-        db.import_from_json(payload_path)
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "expected_path"),
-    [
-        ("id", 123, r"\$\.workflows\[0\]\.id"),
-        ("name", ["坏名字"], r"\$\.workflows\[0\]\.name"),
-        ("description", {"bad": "type"}, r"\$\.workflows\[0\]\.description"),
-        ("single_script.type", 99, r"\$\.workflows\[0\]\.single_script\.type"),
-        ("single_script.path", False, r"\$\.workflows\[0\]\.single_script\.path"),
-        ("single_script.cwd", [], r"\$\.workflows\[0\]\.single_script\.cwd"),
-        ("steps[0].id", 456, r"\$\.workflows\[0\]\.steps\[0\]\.id"),
-        ("steps[0].name", {"bad": "type"}, r"\$\.workflows\[0\]\.steps\[0\]\.name"),
-        ("steps[0].stage_uid", 789, r"\$\.workflows\[0\]\.steps\[0\]\.stage_uid"),
-        ("steps[0].step_type", True, r"\$\.workflows\[0\]\.steps\[0\]\.step_type"),
-        ("steps[0].script", {"bad": "type"}, r"\$\.workflows\[0\]\.steps\[0\]\.script"),
-        ("steps[0].cwd", 3.14, r"\$\.workflows\[0\]\.steps\[0\]\.cwd"),
-    ],
-)
-def test_import_reports_schema_path_for_string_field_type_errors(monkeypatch, tmp_path: Path, field, value, expected_path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload = {
-        "version": 1,
-        "workflows": [
-            {
-                "id": "wf_bad_string",
-                "name": "坏字段",
-                "description": "ok",
-                "single_script": {
-                    "enabled": True,
-                    "type": "python",
-                    "path": "job.py",
-                    "cwd": "jobs",
-                },
-                "steps": [
-                    {
-                        "id": "step_1",
-                        "name": "步骤A",
-                        "stage_uid": "stage_1",
-                        "step_type": "python",
-                        "script": "job.py",
-                        "cwd": "jobs",
-                    }
-                ],
-            }
-        ],
-    }
-
-    current = payload["workflows"][0]
-    parts = field.replace("]", "").split(".")
-    for part in parts[:-1]:
-        if "[" in part:
-            key, index = part.split("[")
-            current = current[key][int(index)]
-        else:
-            current = current[part]
-    leaf = parts[-1]
-    if "[" in leaf:
-        key, index = leaf.split("[")
-        current[key][int(index)] = value
-    else:
-        current[leaf] = value
-
-    payload_path = tmp_path / "bad-string-field.json"
-    payload_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
-    with pytest.raises(ValueError, match=expected_path):
-        db.import_from_json(payload_path)
-
-
 def test_import_rejects_ambiguous_local_webhook_name(monkeypatch, tmp_path: Path):
     db = _use_temp_database(monkeypatch, tmp_path)
     with db.get_session() as session:
@@ -535,167 +314,6 @@ def test_json_import_duplicate_workflow_uid_is_idempotent(monkeypatch, tmp_path:
     assert db.import_from_json(payload_path) == 1
     assert db.import_from_json(payload_path) == 0
     assert len([wf for wf in db.list_workflows() if wf.uid == "wf_once"]) == 1
-
-
-def test_json_import_reports_schema_path_for_bad_boolean(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "bad-schema.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "workflows": [
-                    {
-                        "id": "wf_bad",
-                        "name": "坏结构",
-                        "steps": [{"name": "A", "skip_on_success": "false"}],
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"\$\.workflows\[0\]\.steps\[0\]\.skip_on_success"):
-        db.import_from_json(payload_path)
-
-
-def test_json_import_rejects_bad_notify_field_types(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "bad-notify.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "workflows": [
-                    {
-                        "id": "wf_bad_notify",
-                        "name": "坏通知",
-                        "notify": {"enabled": "yes", "message_template": ["bad"]},
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"\$\.workflows\[0\]\.notify\.enabled"):
-        db.import_from_json(payload_path)
-
-
-def test_json_import_rejects_bad_notify_json_string(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "bad-notify-string.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "workflows": [
-                    {
-                        "id": "wf_bad_notify_string",
-                        "name": "坏通知字符串",
-                        "notify": json.dumps({"enabled": True, "extra": "unexpected"}),
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"\$\.workflows\[0\]\.notify\.extra"):
-        db.import_from_json(payload_path)
-
-
-def test_json_import_rejects_legacy_notify_fields(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "legacy-notify.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "workflows": [
-                    {
-                        "id": "wf_legacy_notify",
-                        "name": "旧通知字段",
-                        "notify": {
-                            "enabled": True,
-                            "ding_talk_webhook": "https://oapi.dingtalk.com/robot/send?access_token=token",
-                        },
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"\$\.workflows\[0\]\.notify\.ding_talk_webhook"):
-        db.import_from_json(payload_path)
-
-
-@pytest.mark.parametrize(
-    ("watch", "expected_path"),
-    [
-        ({"mode": 123}, r"\$\.workflows\[0\]\.watch\.mode"),
-        ({"mode": "unsupported"}, r"\$\.workflows\[0\]\.watch\.mode"),
-        ({"folders": ["D:/ok", 99]}, r"\$\.workflows\[0\]\.watch\.folders\[1\]"),
-    ],
-)
-def test_json_import_rejects_bad_watch_config(monkeypatch, tmp_path: Path, watch, expected_path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "bad-watch.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "workflows": [
-                    {
-                        "id": "wf_bad_watch",
-                        "name": "坏监听",
-                        "watch": watch,
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=expected_path):
-        db.import_from_json(payload_path)
-
-
-def test_json_import_rejects_unsupported_version(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "future-version.json"
-    payload_path.write_text(
-        json.dumps(
-            {
-                "version": 999,
-                "workflows": [{"id": "future", "name": "未来格式"}],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"\$\.version"):
-        db.import_from_json(payload_path)
-
-
-def test_json_import_rejects_missing_version(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "missing-version.json"
-    payload_path.write_text(
-        json.dumps({"workflows": [{"id": "missing", "name": "缺版本"}]}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"\$\.version"):
-        db.import_from_json(payload_path)
 
 
 def test_import_ignores_bare_webhook_id_without_name_mapping(monkeypatch, tmp_path: Path, caplog):
@@ -820,7 +438,6 @@ def test_import_marks_risky_script_paths_for_review(monkeypatch, tmp_path: Path,
     assert "[导入提示]" in workflow.description
     assert "首次运行前请确认" in workflow.description
     assert "需复核的脚本路径" in caplog.text
-
 
 
 def test_single_script_args_export_as_array(monkeypatch, tmp_path: Path):
@@ -984,31 +601,3 @@ def test_webhook_name_unique_migration_deduplicates_and_repoints_notify_config(t
     assert webhooks == [(1, "财务机器人")]
     assert json.loads(notify_config)["webhook_id"] == 1
     assert "uq_webhook_configs_name" in index_names
-
-
-def test_update_step_rejects_unknown_fields(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    workflow = db.create_workflow("字段契约测试")
-    step = db.create_step(workflow.id, "A", order=1)
-
-    with pytest.raises(ValueError, match="Step 不支持更新字段: timeout_second"):
-        db.update_step(step.id, timeout_second=30)
-
-
-def test_update_workflow_rejects_unknown_fields(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    workflow = db.create_workflow("工作流字段契约测试")
-
-    with pytest.raises(ValueError, match="Workflow 不支持更新字段: max_worker"):
-        db.update_workflow(workflow.id, max_worker=3)
-
-
-def test_update_webhook_rejects_unknown_fields(monkeypatch, tmp_path: Path):
-    db = _use_temp_database(monkeypatch, tmp_path)
-    webhook = db.create_webhook(
-        "字段契约机器人",
-        "https://oapi.dingtalk.com/robot/send?access_token=token",
-    )
-
-    with pytest.raises(ValueError, match="WebhookConfig 不支持更新字段: url"):
-        db.update_webhook(webhook.id, url="https://example.com")
