@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QMessageBox
 
 from ui.error_summary import ErrorSummaryDialog
+from ui.main_window_setup import set_header_run_button_state
 from ui.run_state import compute_run_lock_state
 from ui.theme import msg_information, msg_warning, msg_question
 
@@ -154,17 +155,11 @@ def on_workflow_started(window, workflow_id: int, run_id: str):
     window.statusbar.showMessage(f"运行中... ({run_id})", 5000)
     window.lbl_run_state.setText("● 运行中")
     window.lbl_run_state.setToolTip(f"当前运行中：{run_id}")
-    window.btn_header_run.setEnabled(False)
-    window.btn_header_stop.setEnabled(True)
+    set_header_run_button_state(window, "running")
     window._apply_run_splitter_profile("running")
 
     window.run_control.set_running(True)
     window.log_panel.set_running(True)
-    # R2-#8: 状态栏显眼停止按钮
-    try:
-        window._statusbar_stop_btn.setVisible(True)
-    except Exception:
-        pass
     # R3-#5: 启用 Shift+F5 停止快捷键
     try:
         window.action_stop_shortcut.setEnabled(True)
@@ -179,9 +174,6 @@ def on_workflow_started(window, workflow_id: int, run_id: str):
     if len(sizes) >= 3 and sizes[2] <= 0:
         sizes[2] = max(getattr(window, "_right_last_size", 340), 320)
         window.main_splitter.setSizes(sizes)
-    window.btn_toggle_right.setEnabled(False)
-
-    window.dag_view.reset_all_status()
     window.step_table.reset_all_status()
     window.workbench_board.reset_all_status()
 
@@ -196,18 +188,8 @@ def on_workflow_finished(window, workflow_id: int, run_id: str, status: str):
     window.log_panel.set_running(False)
     window.lbl_run_state.setText("● 就绪")
     window.lbl_run_state.setToolTip("当前运行状态：就绪")
-    window.btn_header_run.setEnabled(True)
-    window.btn_header_stop.setEnabled(False)
+    set_header_run_button_state(window, "idle")
     window._apply_run_splitter_profile("idle")
-    window.btn_toggle_right.setEnabled(True)
-    # R2-#8: 隐藏状态栏停止按钮
-    try:
-        window._statusbar_stop_btn.setVisible(False)
-        # R5-#5: 复位按钮文案/可用性，供下次运行使用
-        window._statusbar_stop_btn.setEnabled(True)
-        window._statusbar_stop_btn.setText("⏹ 停止运行")
-    except Exception:
-        pass
     # R3-#5: 禁用 Shift+F5 停止快捷键
     try:
         window.action_stop_shortcut.setEnabled(False)
@@ -234,7 +216,6 @@ def on_workflow_finished(window, workflow_id: int, run_id: str, status: str):
 def on_step_started(window, step_id: int, step_name: str):
     """步骤开始"""
     window.step_table.highlight_step(step_id, "running")
-    window.dag_view.update_step_status(step_id, "running")
     if hasattr(window, "workbench_board"):
         window.workbench_board.highlight_step(step_id, "running")
 
@@ -242,7 +223,6 @@ def on_step_started(window, step_id: int, step_name: str):
 def on_step_finished(window, step_id: int, step_name: str, status: str, duration_seconds=None):
     """步骤结束"""
     window.step_table.highlight_step(step_id, status)
-    window.dag_view.update_step_status(step_id, status, duration_seconds)
     if hasattr(window, "workbench_board"):
         window.workbench_board.highlight_step(step_id, status, duration_seconds)
 

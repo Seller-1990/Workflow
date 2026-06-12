@@ -7,27 +7,47 @@
 
 from PySide6.QtCore import QPoint, QTimer
 
-from ui.panel_layout import expanded_splitter_sizes, panel_toggle_text, run_splitter_sizes
+from ui.panel_layout import (
+    border_button_x,
+    expanded_splitter_sizes,
+    panel_toggle_text,
+    run_splitter_sizes,
+    visible_run_splitter_sizes,
+)
 
 
 def update_border_widget_positions(window):
-    """更新浮动折叠按钮位置（基于 center_scroll 边缘定位）"""
+    """更新浮动折叠按钮位置（基于主分栏边缘定位）。"""
     cw = window.centralWidget()
-    if not cw:
+    if not cw or not hasattr(window, "main_splitter") or not hasattr(window, "center_container"):
         return
-    cw_pos = cw.mapTo(window, QPoint(0, 0))
-    center_pos = window.center_scroll.mapTo(window, QPoint(0, 0))
-    center_h = window.center_scroll.height()
+    splitter_pos = window.main_splitter.mapTo(cw, QPoint(0, 0))
+    center_geo = window.center_container.geometry()
+    center_left = splitter_pos.x() + center_geo.left()
+    center_right = splitter_pos.x() + center_geo.right()
+    button_height = 40
+    center_y = splitter_pos.y() + center_geo.top() + max(0, (center_geo.height() - button_height) // 2)
+    center_y = min(max(0, center_y), max(0, cw.height() - button_height))
 
     if hasattr(window, 'btn_toggle_left'):
-        x = center_pos.x() - 10
-        y = center_pos.y() + (center_h - 40) // 2
-        window.btn_toggle_left.move(x, y)
+        left_x = border_button_x(
+            edge_x=center_left,
+            button_width=window.btn_toggle_left.width(),
+            parent_width=cw.width(),
+        )
+        window.btn_toggle_left.move(left_x, center_y)
+        window.btn_toggle_left.raise_()
+        window.btn_toggle_left.show()
 
     if hasattr(window, 'btn_toggle_right'):
-        x = center_pos.x() + window.center_scroll.width() - 10
-        y = center_pos.y() + (center_h - 40) // 2
-        window.btn_toggle_right.move(x, y)
+        right_x = border_button_x(
+            edge_x=center_right,
+            button_width=window.btn_toggle_right.width(),
+            parent_width=cw.width(),
+        )
+        window.btn_toggle_right.move(right_x, center_y)
+        window.btn_toggle_right.raise_()
+        window.btn_toggle_right.show()
 
 
 def on_run_splitter_moved(window, *_args):
@@ -49,6 +69,23 @@ def apply_run_splitter_profile(window, profile: str, *, force: bool = False):
         window._run_splitter_user_adjusted = False
 
 
+def ensure_run_log_visible(window) -> None:
+    """确保运行页中的实时日志区域不会被 splitter 压到不可见。"""
+    if not hasattr(window, "run_splitter"):
+        return
+    sizes = visible_run_splitter_sizes(
+        window.run_splitter.sizes(),
+        available_height=window.run_splitter.height(),
+    )
+    if sizes:
+        window.run_splitter.blockSignals(True)
+        try:
+            window.run_splitter.setSizes(sizes)
+        finally:
+            window.run_splitter.blockSignals(False)
+        window._run_splitter_user_adjusted = False
+
+
 def toggle_left_panel(window):
     """折叠/展开左侧面板"""
     if window.left_panel.isVisible():
@@ -67,6 +104,8 @@ def toggle_left_panel(window):
         if sizes:
             window.main_splitter.setSizes(sizes)
         window.btn_toggle_left.setText(panel_toggle_text("left", visible=True))
+    window._update_border_widget_positions()
+    QTimer.singleShot(0, window._update_border_widget_positions)
     QTimer.singleShot(50, window._update_border_widget_positions)
 
 
@@ -88,4 +127,6 @@ def toggle_right_panel(window):
         if sizes:
             window.main_splitter.setSizes(sizes)
         window.btn_toggle_right.setText(panel_toggle_text("right", visible=True))
+    window._update_border_widget_positions()
+    QTimer.singleShot(0, window._update_border_widget_positions)
     QTimer.singleShot(50, window._update_border_widget_positions)

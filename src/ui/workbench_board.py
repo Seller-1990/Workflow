@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
+from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QDrag, QFont
 from PySide6.QtWidgets import (
     QFrame,
@@ -22,36 +22,18 @@ from database import get_stage_order_map, get_steps_by_workflow, get_workflow_by
 from duration_utils import format_duration_short
 from engine import WorkflowEngine
 from ui.theme import get_colors
-
-
-MIME_STEP_ID = "application/x-workflow-step-id"
-STAGE_LANE_MIN_WIDTH = 260
-
-
-TYPE_LABELS = {
-    "python": "Python",
-    "excel_powerquery": "Power Query",
-    "powerbi_refresh": "Power BI",
-    "sub_workflow": "子工作流",
-}
-
-STATUS_LABELS = {
-    "running": "运行中",
-    "success": "成功",
-    "failure": "失败",
-    "cancelled": "已取消",
-    "skipped": "跳过",
-}
-
-COMPLETED_STATUSES = {"success", "skipped"}
-
-
-TYPE_CLASSES = {
-    "python": "python",
-    "excel_powerquery": "excel",
-    "powerbi_refresh": "powerbi",
-    "sub_workflow": "subworkflow",
-}
+from ui.workbench_board_constants import (
+    COMPLETED_STATUSES,
+    MIME_STEP_ID,
+    QT_MAX_WIDGET_SIZE,
+    STAGE_LANE_BORDER_HEIGHT,
+    STAGE_LANE_GAP,
+    STAGE_LANE_MIN_HEIGHT,
+    STAGE_LANE_MIN_WIDTH,
+    STATUS_LABELS,
+    TYPE_CLASSES,
+    TYPE_LABELS,
+)
 
 
 class StepCard(QFrame):
@@ -146,6 +128,16 @@ class StepCard(QFrame):
             f"文件：{getattr(step, 'script_path', '') or '未设置'}\n{dep_text}"
         )
         self.setAccessibleName(f"步骤：{step.name}")
+        self.refresh_minimum_height()
+
+    def refresh_minimum_height(self) -> None:
+        layout = self.layout()
+        if layout is None:
+            return
+        self.setMinimumHeight(0)
+        self.updateGeometry()
+        self.setMinimumHeight(self.sizeHint().height())
+        self.updateGeometry()
 
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", bool(selected))
@@ -164,12 +156,14 @@ class StepCard(QFrame):
         self.status_badge.style().polish(self.status_badge)
         self.style().unpolish(self)
         self.style().polish(self)
+        self.refresh_minimum_height()
 
     def set_duration_seconds(self, duration_seconds) -> None:
         self._duration_seconds = duration_seconds
         duration_text = format_duration_short(duration_seconds)
         self.duration_badge.setText(f"耗时 {duration_text}" if duration_text else "")
         self.duration_badge.setVisible(bool(duration_text))
+        self.refresh_minimum_height()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -221,7 +215,9 @@ class StageLane(QFrame):
         self.setAcceptDrops(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumWidth(STAGE_LANE_MIN_WIDTH)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setFixedWidth(STAGE_LANE_MIN_WIDTH)
+        self.setMinimumHeight(STAGE_LANE_MIN_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(12, 12, 12, 12)
@@ -265,7 +261,6 @@ class StageLane(QFrame):
         self.cards_box.setContentsMargins(0, 0, 0, 0)
         self.cards_box.setSpacing(10)
         self.layout.addLayout(self.cards_box)
-        self.layout.addStretch(1)
 
         self.setToolTip(f"S{index + 1} {stage.name}\n点击选中阶段；拖入步骤可变更阶段或顺序")
         self.setAccessibleName(f"阶段：S{index + 1} {stage.name}")
@@ -275,6 +270,21 @@ class StageLane(QFrame):
         self.cards_box.addWidget(card)
         self.count_label.setText(f"{len(self._cards)} 步")
         self.update_progress()
+        self.refresh_minimum_height()
+
+    def refresh_minimum_height(self) -> None:
+        for card in self._cards:
+            card.refresh_minimum_height()
+        self.layout.invalidate()
+        self.layout.activate()
+        self.setMaximumHeight(QT_MAX_WIDGET_SIZE)
+        content_height = max(
+            STAGE_LANE_MIN_HEIGHT,
+            self.layout.minimumSize().height() + STAGE_LANE_BORDER_HEIGHT,
+            self.sizeHint().height(),
+        )
+        self.setFixedHeight(content_height)
+        self.updateGeometry()
 
     def ordered_step_ids(self) -> list[int]:
         return [card.step_id for card in self._cards]
@@ -393,18 +403,6 @@ class WorkbenchBoardPanel(QWidget):
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
         toolbar_layout.setSpacing(10)
 
-        mode_group = QFrame()
-        mode_group.setObjectName("SegmentGroup")
-        mode_layout = QHBoxLayout(mode_group)
-        mode_layout.setContentsMargins(3, 3, 3, 3)
-        mode_layout.setSpacing(3)
-        self.btn_stage_view = QPushButton("阶段")
-        self.btn_stage_view.setObjectName("SegmentActive")
-        self.btn_stage_view.setToolTip("按阶段泳道查看和拖拽编排步骤")
-        self.btn_stage_view.setAccessibleName("阶段视图")
-        mode_layout.addWidget(self.btn_stage_view)
-        toolbar_layout.addWidget(mode_group)
-
         self.selection_hint = QLabel("选择一个工作流后开始编排")
         self.selection_hint.setObjectName("SelectionHint")
         toolbar_layout.addWidget(self.selection_hint, stretch=1)
@@ -426,16 +424,18 @@ class WorkbenchBoardPanel(QWidget):
 
         self.scroll = QScrollArea()
         self.scroll.setObjectName("StageBoardScroll")
-        self.scroll.setWidgetResizable(True)
+        self.scroll.setWidgetResizable(False)
         self.scroll.setFrameShape(QFrame.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         self.board_widget = QWidget()
         self.board_widget.setObjectName("StageBoard")
+        self.board_widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         self.board_layout = QHBoxLayout(self.board_widget)
         self.board_layout.setContentsMargins(0, 0, 0, 0)
-        self.board_layout.setSpacing(14)
+        self.board_layout.setSpacing(STAGE_LANE_GAP)
+        self.board_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.scroll.setWidget(self.board_widget)
         root.addWidget(self.scroll, stretch=1)
 
@@ -447,25 +447,25 @@ class WorkbenchBoardPanel(QWidget):
 
         self.refresh_theme(False)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._queue_board_size_sync()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._queue_board_size_sync()
+
+    def refresh_after_view_shown(self) -> None:
+        self._sync_board_minimum_size()
+        self._queue_board_size_sync()
+        self._queue_selected_scroll()
+
     def refresh_theme(self, dark: bool):
         self._dark = bool(dark)
         c = self._tokens()
         self.setStyleSheet(f"""
             QFrame#BoardToolbar {{
                 background: transparent;
-            }}
-            QFrame#SegmentGroup {{
-                background: {c["panel_soft"]};
-                border-radius: 10px;
-            }}
-            QPushButton#SegmentActive {{
-                min-height: 30px;
-                padding: 0 12px;
-                color: {c["ink"]};
-                background: {c["panel"]};
-                border: 1px solid {c["line"]};
-                border-radius: 8px;
-                font-weight: 700;
             }}
             QLabel#SelectionHint {{
                 min-height: 34px;
@@ -668,6 +668,9 @@ class WorkbenchBoardPanel(QWidget):
         workflow = get_workflow_by_id(workflow_id)
         stage_map = get_stage_order_map(workflow_id)
 
+        stage_uids = {stage.uid for stage in stages}
+        if self._selected_stage_uid not in stage_uids:
+            self._selected_stage_uid = stages[0].uid if stages else ""
         if not self._selected_stage_uid and stages:
             self._selected_stage_uid = stages[0].uid
 
@@ -683,7 +686,7 @@ class WorkbenchBoardPanel(QWidget):
             lane.selected.connect(self._on_lane_selected)
             lane.step_dropped.connect(self._on_step_dropped)
             self._lanes[stage.uid] = lane
-            self.board_layout.addWidget(lane, stretch=1)
+            self.board_layout.addWidget(lane, 0, Qt.AlignTop)
 
             stage_steps = [
                 step for step in ordered_steps if (getattr(step, "stage_uid", "") or "") == stage.uid
@@ -697,6 +700,8 @@ class WorkbenchBoardPanel(QWidget):
                 self._cards[int(step.id)] = card
                 self._step_stage[int(step.id)] = stage.uid
 
+        self._sync_board_minimum_size()
+        self._queue_board_size_sync()
         self.empty_state.setVisible(not steps)
         if self._selected_step_id in self._cards:
             self.select_step(self._selected_step_id, emit_signal=False)
@@ -713,6 +718,8 @@ class WorkbenchBoardPanel(QWidget):
         self._step_stage.clear()
         self._ordered_step_ids.clear()
         self._clear_layout()
+        self._sync_board_minimum_size()
+        self._queue_board_size_sync()
         self.selection_hint.setText("选择一个工作流后开始编排")
         self.empty_state.setVisible(False)
         self._refresh_button_state()
@@ -731,6 +738,7 @@ class WorkbenchBoardPanel(QWidget):
             self.selection_hint.setText(
                 f"已选中 S{lane.index + 1} {lane.stage_name}，新增步骤会加入该阶段"
             )
+            self._queue_lane_scroll(stage_uid)
         if emit_signal:
             self.stage_selected.emit(stage_uid)
 
@@ -750,6 +758,7 @@ class WorkbenchBoardPanel(QWidget):
             self.selection_hint.setText(
                 f"已选中 S{lane.index + 1} {lane.stage_name}，新增步骤会加入该阶段"
             )
+            self._queue_step_scroll(step_id)
         if emit_signal:
             self.step_selected.emit(step_id)
 
@@ -769,6 +778,7 @@ class WorkbenchBoardPanel(QWidget):
             card.set_status("idle")
             card.set_duration_seconds(None)
         self._refresh_stage_progress()
+        self._sync_board_minimum_size()
 
     def highlight_step(self, step_id: int, status: str, duration_seconds=None):
         card = self._cards.get(int(step_id))
@@ -780,6 +790,8 @@ class WorkbenchBoardPanel(QWidget):
             lane = self._lanes.get(stage_uid)
             if lane:
                 lane.update_progress()
+                lane.refresh_minimum_height()
+                self._sync_board_minimum_size()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Left:
@@ -834,6 +846,70 @@ class WorkbenchBoardPanel(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def _sync_board_minimum_size(self) -> None:
+        stage_count = len(self._lanes)
+        if stage_count <= 0:
+            self.board_widget.setMinimumSize(0, 0)
+            self.board_widget.resize(0, 0)
+            self.board_widget.updateGeometry()
+            return
+        margins = self.board_layout.contentsMargins()
+        for lane in self._lanes.values():
+            lane.refresh_minimum_height()
+        total_width = (
+            margins.left()
+            + margins.right()
+            + stage_count * STAGE_LANE_MIN_WIDTH
+            + max(0, stage_count - 1) * STAGE_LANE_GAP
+        )
+        total_height = (
+            margins.top()
+            + margins.bottom()
+            + max(lane.minimumHeight() for lane in self._lanes.values())
+        )
+        self.board_widget.setMinimumSize(total_width, total_height)
+        self.board_widget.resize(self.board_widget.minimumSize())
+        self.board_widget.updateGeometry()
+
+    def _queue_lane_scroll(self, stage_uid: str) -> None:
+        QTimer.singleShot(0, lambda uid=stage_uid: self._scroll_lane_into_view(uid))
+
+    def _queue_step_scroll(self, step_id: int) -> None:
+        QTimer.singleShot(0, lambda sid=int(step_id): self._scroll_step_into_view(sid))
+
+    def _queue_board_size_sync(self) -> None:
+        QTimer.singleShot(0, self._sync_board_minimum_size)
+
+    def _queue_selected_scroll(self) -> None:
+        if self._selected_step_id in self._cards:
+            self._queue_step_scroll(int(self._selected_step_id))
+        elif self._selected_stage_uid in self._lanes:
+            self._queue_lane_scroll(self._selected_stage_uid)
+
+    def _scroll_lane_into_view(self, stage_uid: str) -> None:
+        lane = self._lanes.get(stage_uid)
+        if lane:
+            self._scroll_widget_into_view(lane, vertical_margin=12)
+
+    def _scroll_step_into_view(self, step_id: int) -> None:
+        card = self._cards.get(int(step_id))
+        if card:
+            self._scroll_widget_into_view(card, vertical_margin=12)
+
+    def _scroll_widget_into_view(self, widget: QWidget, *, vertical_margin: int = 12) -> None:
+        hbar = self.scroll.horizontalScrollBar()
+        viewport_width = self.scroll.viewport().width()
+        if hbar is not None and viewport_width > 0:
+            left = widget.mapTo(self.board_widget, QPoint(0, 0)).x()
+            right = left + widget.width()
+            current = hbar.value()
+            margin = 24
+            if left < current + margin:
+                hbar.setValue(max(hbar.minimum(), left - margin))
+            elif right > current + viewport_width - margin:
+                hbar.setValue(min(hbar.maximum(), right - viewport_width + margin))
+        self.scroll.ensureWidgetVisible(widget, 0, vertical_margin)
 
     def _select_adjacent_stage(self, offset: int) -> bool:
         stage_uids = list(self._lanes.keys())

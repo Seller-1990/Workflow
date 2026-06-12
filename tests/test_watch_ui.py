@@ -83,7 +83,7 @@ def make_window_stub(engine=None):
     window.workflow_config = DummyPanel()
     window.step_table = DummyPanel()
     window.step_editor = DummyPanel()
-    window.dag_view = DummyPanel()
+    window.workbench_board = DummyPanel()
     window.run_history = DummyPanel()
     window.log_panel = DummyPanel()
     window.statusbar = DummyStatusBar()
@@ -115,13 +115,13 @@ def test_cancel_request_keeps_running_controls_until_workflow_finished():
     assert window.statusbar.messages[-1].startswith("正在停止")
 
 
-def test_step_finished_propagates_duration_to_dag_view():
+def test_step_finished_propagates_duration_to_workbench_board():
     window = make_window_stub()
 
     MainWindow._on_step_finished(window, 7, "步骤A", "success", 83.0)
 
     assert ("highlight_step", (7, "success"), {}) in window.step_table.calls
-    assert ("update_step_status", (7, "success", 83.0), {}) in window.dag_view.calls
+    assert ("highlight_step", (7, "success", 83.0), {}) in window.workbench_board.calls
 
 
 def test_confirm_discard_unsaved_saves_and_blocks_on_step_save_failure(monkeypatch):

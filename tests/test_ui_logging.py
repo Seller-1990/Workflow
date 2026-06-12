@@ -10,7 +10,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from PySide6.QtWidgets import QApplication, QTableWidgetItem
+from PySide6.QtWidgets import QApplication, QPushButton, QTableWidgetItem
 from PySide6.QtGui import QColor
 
 import ui.run_history as run_history_module
@@ -20,7 +20,7 @@ import ui.main_window as main_window_module
 import ui.error_summary as error_summary_module
 import database as database_module
 from ui.run_history import RunHistoryPanel
-from ui.theme import get_menu_stylesheet, get_status_tokens, get_colors
+from ui.theme import get_menu_stylesheet, get_status_tokens
 from ui.log_panel import LogPanel
 from ui.main_window import MainWindow
 from ui.error_summary import ErrorSummaryDialog
@@ -268,23 +268,42 @@ def test_run_history_uses_theme_status_tokens_for_row_colors():
     assert app is not None
 
 
-def test_main_window_statusbar_stop_button_stays_light_when_theme_toggle_called():
+def test_main_window_header_run_button_keeps_single_action_after_theme_toggle():
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
         window._toggle_dark_mode(False)
-        light_style = window._statusbar_stop_btn.styleSheet()
-        assert get_colors(False)["danger"] in light_style
+        assert window.btn_header_run.text() == "▶ 运行全流程"
+        assert window.btn_header_run.objectName() == "PrimaryAction"
+        assert not hasattr(window, "_statusbar_stop_btn")
 
         window._toggle_dark_mode(True)
 
-        forced_light_style = window._statusbar_stop_btn.styleSheet()
-        assert get_colors(False)["danger"] in forced_light_style
-        assert forced_light_style == light_style
+        assert window.btn_header_run.text() == "▶ 运行全流程"
+        assert window.btn_header_run.objectName() == "PrimaryAction"
         assert not window.action_dark_mode.isVisible()
     finally:
         window.close()
         assert app is not None
+
+
+def test_header_run_button_stops_when_engine_is_running():
+    app = QApplication.instance() or QApplication([])
+    window = type("WindowStub", (), {})()
+    stop_calls = []
+    window.engine = type("EngineStub", (), {"is_running": True})()
+    window.btn_header_run = QPushButton("▶ 运行全流程")
+    window._stopping_in_progress = False
+    window._stop_workflow = lambda: stop_calls.append("stop")
+
+    MainWindow._on_header_run_clicked(window)
+
+    assert stop_calls == ["stop"]
+    assert window._stopping_in_progress is True
+    assert window.btn_header_run.text() == "■ 正在停止..."
+    assert window.btn_header_run.objectName() == "DangerAction"
+    assert window.btn_header_run.isEnabled() is False
+    assert app is not None
 
 
 def test_node_card_shows_duration_badge_and_hides_it_when_empty():
@@ -310,33 +329,6 @@ def test_node_card_shows_duration_badge_and_hides_it_when_empty():
         assert card.duration_badge.isHidden() is True
     finally:
         card.deleteLater()
-        assert app is not None
-
-
-def test_statusbar_stop_click_logs_button_update_failure(caplog):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow()
-
-    class BrokenStopButton:
-        def setEnabled(self, _value):
-            raise RuntimeError("button disabled failed")
-
-        def setText(self, _text):
-            raise AssertionError("setText should not run after setEnabled failure")
-
-    try:
-        stop_calls = []
-        window._statusbar_stop_btn = BrokenStopButton()
-        window._stop_workflow = lambda: stop_calls.append("stop")
-
-        with caplog.at_level(logging.WARNING, logger="ui.main_window"):
-            window._on_statusbar_stop_clicked()
-
-        assert stop_calls == ["stop"]
-        assert "更新状态栏停止按钮失败" in caplog.text
-        assert "button disabled failed" in caplog.text
-    finally:
-        window.close()
         assert app is not None
 
 

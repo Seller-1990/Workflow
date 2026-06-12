@@ -32,10 +32,10 @@ class MainWindow(QMainWindow):
     布局结构：
     - 左侧（可折叠）：工作流列表 + 运行控制
     - 中区：
-        - 上部：基础配置（折叠）
-        - 中部：DAG + 步骤列表
-        - 下部：步骤详情编辑器
-    - 右侧（可折叠）：实时日志 + 运行历史
+        - 顶部：当前工作流与运行/停止主操作
+        - 编排：阶段看板 + 步骤列表
+        - 运行/配置：历史日志与工作流配置
+    - 右侧（可折叠）：Inspector + 步骤详情编辑器
     """
     
     def __init__(self):
@@ -89,6 +89,8 @@ class MainWindow(QMainWindow):
             btn.setObjectName("ViewSwitchActive" if stack_index == index else "ViewSwitch")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+        if index == 0 and hasattr(self, "workbench_board"):
+            self.workbench_board.refresh_after_view_shown()
 
     def _on_run_splitter_moved(self, *_args):
         """运行页分栏被用户拖动（实现在 ui.panel_controller）。"""
@@ -97,6 +99,10 @@ class MainWindow(QMainWindow):
     def _apply_run_splitter_profile(self, profile: str, *, force: bool = False):
         """按运行状态应用运行页分栏尺寸（实现在 ui.panel_controller）。"""
         panel_controller.apply_run_splitter_profile(self, profile, force=force)
+
+    def _ensure_run_log_visible(self):
+        """确保运行页日志区可见（实现在 ui.panel_controller）。"""
+        panel_controller.ensure_run_log_visible(self)
 
     def _toggle_dark_mode(self, checked):
         self._dark_mode = False
@@ -183,6 +189,10 @@ class MainWindow(QMainWindow):
                 # R6-#3: 标记一个"正在停止中"窗口，让 _refresh_run_lock_panels 暂时不显示
                 # 「↻ 后台运行」标签——用户感知就是"已请求停止"而不是"还在后台运行"
                 self._stopping_in_progress = True
+                try:
+                    main_window_setup.set_header_run_button_state(self, "stopping")
+                except (AttributeError, RuntimeError):
+                    pass
                 self.statusbar.showMessage("已请求停止当前运行...", 3000)
             except Exception as e:
                 logger.warning("请求停止失败: %s", e)
@@ -190,9 +200,8 @@ class MainWindow(QMainWindow):
         # R5-#1: 切换显示后立刻按 running 状态刷新面板锁
         self._refresh_run_lock_panels()
 
-        # P-4: 先把"用户立即关注"的内容加载完（workflow_config + step_table 配置开关），
-        # 然后把更重的 dag_view / run_history 推到下一轮事件循环异步加载，
-        # 让切换工作流的视觉响应从 ~80-400ms 降到 ~50ms。
+        # P-4: 先把"用户立即关注"的内容加载完（workflow_config + 编排视图配置开关），
+        # 然后把更重的运行历史推到下一轮事件循环异步加载。
         self.workflow_config.load_workflow(workflow_id)
 
         workflow = get_workflow_by_id(workflow_id)
@@ -208,8 +217,7 @@ class MainWindow(QMainWindow):
         self.workbench_board.load_workflow(workflow_id)
         self._refresh_workbench_header(workflow_id)
 
-        # P-4: 异步推迟下面两个相对重的 panel；先让 UI 把已加载内容渲染出来
-        QTimer.singleShot(0, lambda wid=workflow_id: self._async_load_dag(wid))
+        # P-4: 异步推迟相对重的运行历史；先让 UI 把已加载内容渲染出来
         QTimer.singleShot(0, lambda wid=workflow_id: self._async_load_history(wid))
 
         self.log_panel.set_context(workflow_id=workflow_id, step_id=None)
@@ -223,15 +231,6 @@ class MainWindow(QMainWindow):
 
         # #1: 切换工作流时同步监听状态——engine.start_watch 内部会先 stop，再按 watch_enabled 决定是否启动
         self._sync_engine_watch(workflow)
-
-    def _async_load_dag(self, workflow_id: int) -> None:
-        # 如果用户在异步加载触发前又切了工作流，跳过陈旧加载
-        if workflow_id != self._current_workflow_id:
-            return
-        try:
-            self.dag_view.update_dag(workflow_id)
-        except Exception as e:
-            logger.warning("异步加载 DAG 失败: %s", e)
 
     def _async_load_history(self, workflow_id: int) -> None:
         if workflow_id != self._current_workflow_id:
@@ -398,7 +397,6 @@ class MainWindow(QMainWindow):
             self.workflow_config.clear()
             self.step_table.clear()
             self.workbench_board.clear()
-            self.dag_view.clear()
             self.step_editor.clear()
             self.run_history.clear()
             self.log_panel.set_context(workflow_id=None, step_id=None)
@@ -524,7 +522,6 @@ class MainWindow(QMainWindow):
         self.step_table.load_steps(wid)
         self.workbench_board.load_workflow(wid)
         self._refresh_workbench_header(wid)
-        QTimer.singleShot(0, lambda w=wid: self._async_load_dag(w))
         if select_step_id:
             self.step_table.select_step(select_step_id)
             self.workbench_board.select_step(select_step_id, emit_signal=False)
@@ -611,7 +608,6 @@ class MainWindow(QMainWindow):
         if self._current_workflow_id:
             wid = self._current_workflow_id
             self.step_table.load_steps(wid)
-            QTimer.singleShot(0, lambda w=wid: self._async_load_dag(w))
         self._on_step_deleted(step_id)
         self.statusbar.showMessage("已删除步骤", 5000)
 
@@ -641,7 +637,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_dag_step_activated(self, step_id: int):
-        """DAG 双击节点：定位到步骤列表并打开编辑器"""
+        """定位到步骤列表并打开编辑器（保留给编辑器/失败弹窗复用）。"""
         if not step_id:
             return
         self.step_table.select_step(step_id)
@@ -693,7 +689,6 @@ class MainWindow(QMainWindow):
         self.step_table.load_steps(workflow_id)
         self.workbench_board.load_workflow(workflow_id)
         self._refresh_workbench_header(workflow_id)
-        QTimer.singleShot(0, lambda w=workflow_id: self._async_load_dag(w))
 
         def _clear_step_context() -> None:
             try:
@@ -796,8 +791,7 @@ class MainWindow(QMainWindow):
             self.step_table.load_steps(wid)
             self.workbench_board.load_workflow(wid)
             self._refresh_workbench_header(wid)
-            # R3-#9 / #15: 把较重的 DAG / history 异步刷新，避免一次性触发 4-5 个 DB 查询阻塞主线程
-            QTimer.singleShot(0, lambda w=wid: self._async_load_dag(w))
+            # R3-#9 / #15: 把较重的 history 异步刷新，避免一次性触发 DB 查询阻塞主线程
             QTimer.singleShot(0, lambda w=wid: self._async_load_history(w))
             # #1: 配置变更后重启监听以应用新的 watch_enabled / 目录 / 模式
             self._sync_engine_watch(workflow)
@@ -877,15 +871,22 @@ class MainWindow(QMainWindow):
     def _run_workflow(self):
         """运行工作流"""
         self._on_run_requested("full", None)
+
+    def _on_header_run_clicked(self):
+        """顶部主按钮：空闲时运行，运行中切换为停止。"""
+        if getattr(self.engine, "is_running", False):
+            self._stopping_in_progress = True
+            try:
+                main_window_setup.set_header_run_button_state(self, "stopping")
+            except (AttributeError, RuntimeError):
+                pass
+            self._stop_workflow()
+            return
+        self._run_workflow()
     
     def _stop_workflow(self):
         """停止工作流（实现在 ui.run_dispatch）"""
         run_dispatch.stop_workflow(self)
-
-    @Slot()
-    def _on_statusbar_stop_clicked(self):
-        """R5-#5: 状态栏停止按钮过渡态（实现在 ui.run_dispatch）"""
-        run_dispatch.on_statusbar_stop_clicked(self)
     
     @Slot(int)
     def _on_force_stop_run(self, run_history_id: int):

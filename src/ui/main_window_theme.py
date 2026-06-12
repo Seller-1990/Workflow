@@ -125,6 +125,26 @@ def center_panel_stylesheet(tokens: dict) -> str:
         QPushButton#PrimaryAction:hover {{
             background: {w["blue_hover"]};
         }}
+        QPushButton#PrimaryAction:disabled {{
+            background: {w["line_strong"]};
+            color: {w["panel_soft"]};
+        }}
+        QPushButton#DangerAction {{
+            min-height: 38px;
+            padding: 0 15px;
+            color: #fffdfa;
+            background: {w["red"]};
+            border: none;
+            border-radius: 8px;
+            font-weight: 760;
+        }}
+        QPushButton#DangerAction:hover {{
+            background: {w["red"]};
+        }}
+        QPushButton#DangerAction:disabled {{
+            background: {w["red_weak"]};
+            color: {w["red"]};
+        }}
         QToolButton#IconButton {{
             min-width: 36px;
             min-height: 36px;

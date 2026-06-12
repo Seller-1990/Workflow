@@ -21,8 +21,7 @@ def on_run_requested(window, mode: str, param):
         return
 
     if mode == "cancel":
-        window.engine.cancel()
-        window.statusbar.showMessage("正在停止...")
+        stop_workflow(window)
         return
 
     # R6-#2 / R7-#1: 主线程预检——已有运行时给三按钮弹窗（停止/切回/取消），
@@ -55,7 +54,7 @@ def on_run_requested(window, mode: str, param):
             return
         # stop_run_new_btn：先取消，等 finished 信号到再触发新运行
         try:
-            window.engine.cancel()
+            stop_workflow(window)
             window.statusbar.showMessage("已请求停止当前运行，等待后再启动新运行...", 5000)
         except Exception as e:
             logger.warning("请求停止失败: %s", e)
@@ -124,15 +123,12 @@ def on_run_requested(window, mode: str, param):
 
 def stop_workflow(window):
     """停止工作流"""
+    window._stopping_in_progress = True
+    try:
+        from ui.main_window_setup import set_header_run_button_state
+
+        set_header_run_button_state(window, "stopping")
+    except Exception:
+        pass
     window.engine.cancel()
     window.statusbar.showMessage("正在停止...")
-
-
-def on_statusbar_stop_clicked(window):
-    """R5-#5: 状态栏停止按钮过渡态——点击后立即禁用并改文案，与 run_control 一致"""
-    try:
-        window._statusbar_stop_btn.setEnabled(False)
-        window._statusbar_stop_btn.setText("⏹ 正在停止...")
-    except Exception as exc:
-        logger.warning("更新状态栏停止按钮失败", exc_info=exc)
-    window._stop_workflow()

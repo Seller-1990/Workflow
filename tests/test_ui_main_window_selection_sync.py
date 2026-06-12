@@ -454,7 +454,7 @@ def test_on_steps_changed_restores_selected_step_context(monkeypatch):
     step_editor = DummyStepEditor(step_id=42)
     run_control = DummyRunControl()
     log_panel = DummyLogPanel()
-    dag_calls = []
+    surface_calls = []
     window = SimpleNamespace(
         _current_workflow_id=11,
         step_editor=step_editor,
@@ -464,8 +464,7 @@ def test_on_steps_changed_restores_selected_step_context(monkeypatch):
         log_panel=log_panel,
         lbl_inspector_kind=DummyLabel(),
         lbl_inspector_title=DummyLabel(),
-        _refresh_workbench_header=lambda workflow_id: dag_calls.append(("header", workflow_id)),
-        _async_load_dag=lambda workflow_id: dag_calls.append(("dag", workflow_id)),
+        _refresh_workbench_header=lambda workflow_id: surface_calls.append(("header", workflow_id)),
     )
     window._reload_steps_views = MainWindow._reload_steps_views.__get__(window, SimpleNamespace)
     monkeypatch.setattr(main_window_module.QTimer, "singleShot", lambda _ms, callback: callback())
@@ -482,7 +481,7 @@ def test_on_steps_changed_restores_selected_step_context(monkeypatch):
     assert log_panel.calls == [{"workflow_id": 11, "step_id": 42}]
     assert window.lbl_inspector_kind.text == "选中步骤"
     assert window.lbl_inspector_title.text == "汇总步骤"
-    assert dag_calls == [("header", 11), ("dag", 11)]
+    assert surface_calls == [("header", 11)]
 
 
 def test_reload_steps_views_clears_missing_restore_target(monkeypatch):
@@ -492,7 +491,7 @@ def test_reload_steps_views_clears_missing_restore_target(monkeypatch):
     step_editor = DummyStepEditor(step_id=42)
     run_control = DummyRunControl()
     log_panel = DummyLogPanel()
-    dag_calls = []
+    surface_calls = []
     window = SimpleNamespace(
         step_table=step_table,
         workbench_board=board,
@@ -501,8 +500,7 @@ def test_reload_steps_views_clears_missing_restore_target(monkeypatch):
         log_panel=log_panel,
         lbl_inspector_kind=DummyLabel(),
         lbl_inspector_title=DummyLabel(),
-        _refresh_workbench_header=lambda workflow_id: dag_calls.append(("header", workflow_id)),
-        _async_load_dag=lambda workflow_id: dag_calls.append(("dag", workflow_id)),
+        _refresh_workbench_header=lambda workflow_id: surface_calls.append(("header", workflow_id)),
     )
     monkeypatch.setattr(main_window_module.QTimer, "singleShot", lambda _ms, callback: callback())
 
@@ -515,4 +513,4 @@ def test_reload_steps_views_clears_missing_restore_target(monkeypatch):
     assert window.lbl_inspector_title.text == "选择步骤或阶段"
     assert run_control.calls == [(None, None)]
     assert log_panel.calls == [{"workflow_id": 11, "step_id": None}]
-    assert dag_calls == [("header", 11), ("dag", 11)]
+    assert surface_calls == [("header", 11)]

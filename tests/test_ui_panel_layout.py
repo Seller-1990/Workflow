@@ -8,7 +8,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from ui.panel_layout import expanded_splitter_sizes, panel_toggle_text, run_splitter_sizes
+from ui.panel_layout import (
+    border_button_x,
+    expanded_splitter_sizes,
+    panel_toggle_text,
+    run_splitter_sizes,
+    visible_run_splitter_sizes,
+)
 
 
 def test_run_splitter_sizes_returns_copies_of_known_profiles():
@@ -54,3 +60,15 @@ def test_expanded_splitter_sizes_returns_none_for_invalid_index():
         last_size=360,
         minimum_size=320,
     ) is None
+
+
+def test_border_button_x_stays_inside_parent_bounds():
+    assert border_button_x(edge_x=0, button_width=20, parent_width=1100) == 0
+    assert border_button_x(edge_x=1099, button_width=20, parent_width=1100) == 1080
+    assert border_button_x(edge_x=240, button_width=20, parent_width=1100) == 230
+
+
+def test_visible_run_splitter_sizes_restores_hidden_log_area():
+    assert visible_run_splitter_sizes([620, 0], available_height=620) == [400, 220]
+    assert visible_run_splitter_sizes([300, 260], available_height=560) is None
+    assert visible_run_splitter_sizes([300, 0], available_height=300) == [150, 150]

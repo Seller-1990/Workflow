@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QStatusBar, QToolBar,
     QScrollArea, QFrame, QLabel, QPushButton, QToolButton,
-    QSizePolicy, QLayout, QStyle, QApplication, QTabWidget,
+    QSizePolicy, QStyle, QApplication, QTabWidget,
     QStackedWidget
 )
 from PySide6.QtCore import Qt
@@ -22,12 +22,10 @@ from config import APP_NAME, APP_VERSION, ICON_PATH
 from ui.theme import (
     get_colors,
     get_stylesheet,
-    get_danger_button_stylesheet,
 )
 from ui.workflow_list import WorkflowListPanel
 from ui.step_table import StepTablePanel
 from ui.step_editor import StepEditorPanel
-from ui.dag_view import DAGViewPanel
 from ui.log_panel import LogPanel
 from ui.run_history import RunHistoryPanel
 from ui.run_control import RunControlPanel
@@ -74,7 +72,6 @@ def setup_ui(window):
     center_layout = QVBoxLayout(window.center_container)
     center_layout.setContentsMargins(22, 20, 22, 22)
     center_layout.setSpacing(16)
-    center_layout.setSizeConstraint(QLayout.SetMinimumSize)
     window.center_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     center_layout.addWidget(create_command_bar(window))
@@ -95,14 +92,9 @@ def setup_ui(window):
 
     window.main_splitter.setSizes([280, 840, 340])
 
-    # 旧折叠按钮不再作为工作台 UI 入口，保留隐藏对象以兼容运行状态逻辑。
-    window.btn_toggle_left = QToolButton(central_widget)
-    window.btn_toggle_left.hide()
-    window.btn_toggle_right = QToolButton(central_widget)
-    window.btn_toggle_right.hide()
-
     window._left_last_size = 280
     window._right_last_size = 340
+    setup_border_fold_buttons(window)
     window._run_splitter_user_adjusted = False
     window._apply_run_splitter_profile("idle", force=True)
 
@@ -112,11 +104,12 @@ def setup_ui(window):
     window.run_control.btn_run_only.setAccessibleName("只运行选中步骤")
     window.run_control.btn_retry.setAccessibleName("重试失败步骤")
     window.run_control.btn_dry_run.setAccessibleName("工作流预演")
-    window.run_control.btn_cancel.setAccessibleName("停止运行")
 
     window.btn_view_board.clicked.connect(lambda: window._set_plan_view(0))
-    window.btn_view_dag.clicked.connect(lambda: window._set_plan_view(1))
-    window.btn_view_table.clicked.connect(lambda: window._set_plan_view(2))
+    window.btn_view_table.clicked.connect(lambda: window._set_plan_view(1))
+    window.mode_tabs.currentChanged.connect(
+        lambda index: window._ensure_run_log_visible() if index == getattr(window, "_run_tab_index", -1) else None
+    )
 
 
 def create_left_panel(window) -> QFrame:
@@ -248,17 +241,35 @@ def create_run_cluster(window) -> QWidget:
     window.btn_header_run.setObjectName("PrimaryAction")
     window.btn_header_run.setToolTip("运行当前工作流的全流程（F5）")
     window.btn_header_run.setAccessibleName("运行全流程")
-    window.btn_header_run.clicked.connect(lambda: window._on_run_requested("full", None))
+    window.btn_header_run.clicked.connect(window._on_header_run_clicked)
     run_layout.addWidget(window.btn_header_run)
-    window.btn_header_stop = QToolButton()
-    window.btn_header_stop.setObjectName("DangerIconButton")
-    window.btn_header_stop.setText("■")
-    window.btn_header_stop.setToolTip("停止当前运行（Shift+F5）")
-    window.btn_header_stop.setAccessibleName("停止运行")
-    window.btn_header_stop.clicked.connect(window._stop_workflow)
-    window.btn_header_stop.setEnabled(False)
-    run_layout.addWidget(window.btn_header_stop)
     return run_cluster
+
+
+def set_header_run_button_state(window, state: str) -> None:
+    button = getattr(window, "btn_header_run", None)
+    if button is None:
+        return
+    if state == "running":
+        button.setText("■ 停止运行")
+        button.setObjectName("DangerAction")
+        button.setToolTip("停止当前运行（F5 或 Shift+F5）")
+        button.setAccessibleName("停止运行")
+        button.setEnabled(True)
+    elif state == "stopping":
+        button.setText("■ 正在停止...")
+        button.setObjectName("DangerAction")
+        button.setToolTip("正在停止当前运行")
+        button.setAccessibleName("正在停止")
+        button.setEnabled(False)
+    else:
+        button.setText("▶ 运行全流程")
+        button.setObjectName("PrimaryAction")
+        button.setToolTip("运行当前工作流的全流程（F5）")
+        button.setAccessibleName("运行全流程")
+        button.setEnabled(True)
+    button.style().unpolish(button)
+    button.style().polish(button)
 
 
 def add_plan_tab(window) -> None:
@@ -268,13 +279,8 @@ def add_plan_tab(window) -> None:
     plan_layout.setSpacing(12)
     plan_layout.addWidget(window._create_plan_switch())
     plan_layout.addWidget(create_plan_stack(window), stretch=1)
-
-    window.plan_scroll = QScrollArea()
-    window.plan_scroll.setWidgetResizable(True)
-    window.plan_scroll.setFrameShape(QFrame.NoFrame)
-    window.plan_scroll.setWidget(plan_page)
-    window.center_scroll = window.plan_scroll
-    window.mode_tabs.addTab(window.plan_scroll, "编排")
+    window.center_scroll = window.workbench_board.scroll
+    window.mode_tabs.addTab(plan_page, "编排")
 
 
 def create_plan_switch(window) -> QWidget:
@@ -286,21 +292,15 @@ def create_plan_switch(window) -> QWidget:
     window.btn_view_board.setObjectName("ViewSwitchActive")
     window.btn_view_board.setToolTip("阶段泳道编排视图")
     window.btn_view_board.setAccessibleName("阶段视图")
-    window.btn_view_dag = QPushButton("批次")
-    window.btn_view_dag.setObjectName("ViewSwitch")
-    window.btn_view_dag.setToolTip("查看自动计算的批次与依赖图")
-    window.btn_view_dag.setAccessibleName("批次视图")
     window.btn_view_table = QPushButton("列表")
     window.btn_view_table.setObjectName("ViewSwitch")
     window.btn_view_table.setToolTip("使用表格查看和批量调整步骤")
     window.btn_view_table.setAccessibleName("列表视图")
     window._view_buttons = [
         (window.btn_view_board, 0),
-        (window.btn_view_dag, 1),
-        (window.btn_view_table, 2),
+        (window.btn_view_table, 1),
     ]
     switch_layout.addWidget(window.btn_view_board)
-    switch_layout.addWidget(window.btn_view_dag)
     switch_layout.addWidget(window.btn_view_table)
     switch_layout.addStretch(1)
     return plan_switch
@@ -311,9 +311,6 @@ def create_plan_stack(window) -> QStackedWidget:
     window.plan_stack.setObjectName("PlanStack")
     window.workbench_board = WorkbenchBoardPanel()
     window.plan_stack.addWidget(window.workbench_board)
-    window.dag_view = DAGViewPanel()
-    window.dag_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    window.plan_stack.addWidget(window.dag_view)
     window.step_table = StepTablePanel()
     window.step_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     window.plan_stack.addWidget(window.step_table)
@@ -333,14 +330,14 @@ def add_run_tab(window) -> None:
     window.log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     window.run_history = RunHistoryPanel()
     window.run_history.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    window.run_history.setMinimumHeight(240)
-    window.log_panel.setMinimumHeight(300)
+    window.run_history.setMinimumHeight(180)
+    window.log_panel.setMinimumHeight(220)
     window.run_splitter.addWidget(window.run_history)
     window.run_splitter.addWidget(window.log_panel)
     window.run_splitter.setSizes([360, 560])
     window.run_splitter.splitterMoved.connect(window._on_run_splitter_moved)
     run_page_layout.addWidget(window.run_splitter)
-    window.mode_tabs.addTab(run_page, "运行")
+    window._run_tab_index = window.mode_tabs.addTab(run_page, "运行")
 
 
 def add_config_tab(window) -> None:
@@ -490,8 +487,8 @@ def setup_toolbar(window):
 
     window.action_run_shortcut = QAction("运行", window)
     window.action_run_shortcut.setShortcut("F5")
-    window.action_run_shortcut.triggered.connect(window.run_control.btn_run_all.click)
-    window.action_run_shortcut.setToolTip("运行当前工作流")
+    window.action_run_shortcut.triggered.connect(window.btn_header_run.click)
+    window.action_run_shortcut.setToolTip("运行或停止当前工作流")
     window.addAction(window.action_run_shortcut)
 
     # R3-#5: Shift+F5 停止运行（仅运行中可用；状态在 _on_workflow_started/finished 切换）
@@ -529,7 +526,6 @@ def apply_theme(window):
     window.run_control.refresh_theme(window._dark_mode)
     window.log_panel.refresh_theme(window._dark_mode)
     window.run_history.refresh_theme(window._dark_mode)
-    window.dag_view.refresh_theme(window._dark_mode)
     window.step_table.refresh_theme(window._dark_mode)
     window.workbench_board.refresh_theme(window._dark_mode)
     window.step_editor.refresh_theme(window._dark_mode)
@@ -548,7 +544,12 @@ def apply_theme(window):
     except Exception:
         pass
     try:
-        window._statusbar_stop_btn.setStyleSheet(get_danger_button_stylesheet(window._dark_mode))
+        stopping = bool(getattr(window, "_stopping_in_progress", False))
+        running = bool(getattr(window.engine, "is_running", False))
+        set_header_run_button_state(
+            window,
+            "stopping" if stopping else ("running" if running else "idle"),
+        )
     except Exception:
         pass
     # R7-#2: 主题切换同步刷新后台运行标签
@@ -564,15 +565,7 @@ def setup_statusbar(window):
     window.setStatusBar(window.statusbar)
     window.statusbar.setFixedHeight(28)
     window.statusbar.showMessage("就绪")
-    # R2-#8: 持久化的「停止运行」按钮（默认隐藏，运行中显示）
-    from PySide6.QtWidgets import QPushButton, QLabel
-    window._statusbar_stop_btn = QPushButton("⏹ 停止运行")
-    window._statusbar_stop_btn.setVisible(False)
-    window._statusbar_stop_btn.setCursor(Qt.PointingHandCursor)
-    window._statusbar_stop_btn.setToolTip("停止当前运行中的工作流")
-    window._statusbar_stop_btn.setStyleSheet(get_danger_button_stylesheet(window._dark_mode))
-    window._statusbar_stop_btn.clicked.connect(window._on_statusbar_stop_clicked)
-    window.statusbar.addPermanentWidget(window._statusbar_stop_btn)
+    from PySide6.QtWidgets import QLabel
     # R6-#1 / R7-#2: 持久化的"后台运行中"指示器（仅当显示工作流 != 运行工作流时可见）
     # 浅主题用 #B25000（对白底 ~5.0:1 达 AA），暗主题保留 #FF9500（对深底 ~4.9:1）；
     # 加下划线增强"可点击"感知
@@ -596,7 +589,7 @@ def setup_statusbar(window):
     window._refresh_watch_indicator_theme(running=False)
     window._watch_indicator.setToolTip("文件监听状态")
     window.statusbar.addPermanentWidget(window._watch_indicator)
-    window._shortcut_hint = QLabel("快捷键: Ctrl+S 保存 | F5 运行 | Shift+F5 停止")
+    window._shortcut_hint = QLabel("快捷键: Ctrl+S 保存 | F5 运行/停止 | Shift+F5 停止")
     window._shortcut_hint.setToolTip("常用快捷键")
     window.statusbar.addPermanentWidget(window._shortcut_hint)
 
@@ -617,8 +610,6 @@ def connect_signals(window):
     window.workbench_board.add_step_requested.connect(window._on_add_step_requested)
     window.workbench_board.add_stage_requested.connect(window._on_add_stage_requested)
     window.workbench_board.reorder_requested.connect(window._on_board_reorder_requested)
-
-    window.dag_view.step_activated.connect(window._on_dag_step_activated)
 
     window.step_editor.step_saved.connect(window._on_step_saved)
     window.step_editor.step_delete_requested.connect(window._on_step_delete_requested)

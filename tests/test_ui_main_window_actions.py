@@ -9,9 +9,10 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QLayout, QMainWindow, QMessageBox, QWidget
 
 import ui.main_window as main_window_module
+from ui import main_window_setup
 from ui.json_actions import EXPORT_SUCCESS_NOTE, export_json_action, import_json_action
 from ui.main_window import MainWindow
 from ui.run_actions import run_engine_mode
@@ -168,7 +169,7 @@ class DummyWorkflowConfig:
         self.refresh_calls += 1
 
 
-def test_create_plan_switch_registers_dag_button():
+def test_create_plan_switch_registers_stage_and_list_buttons():
     app = QApplication.instance() or QApplication([])
     holder = SimpleNamespace()
 
@@ -177,10 +178,98 @@ def test_create_plan_switch_registers_dag_button():
     assert switch is not None
     assert [(btn.text(), index) for btn, index in holder._view_buttons] == [
         ("阶段", 0),
-        ("批次", 1),
-        ("列表", 2),
+        ("列表", 1),
     ]
     assert app is not None
+
+
+def test_center_layout_keeps_default_size_constraint_for_scroll_pages():
+    app = QApplication.instance() or QApplication([])
+
+    class Shell(QMainWindow):
+        _dark_mode = False
+
+        def _set_edit_mode(self, *_args):
+            pass
+
+        def _action_save(self):
+            pass
+
+        def _on_header_run_clicked(self):
+            pass
+
+        def _toggle_left_panel(self):
+            pass
+
+        def _toggle_right_panel(self):
+            pass
+
+        def _update_border_widget_positions(self):
+            pass
+
+        def _refresh_border_fold_buttons(self):
+            pass
+
+        def _on_run_splitter_moved(self, *_args):
+            pass
+
+        def _apply_run_splitter_profile(self, *_args, **_kwargs):
+            pass
+
+        def _create_plan_switch(self):
+            return main_window_setup.create_plan_switch(self)
+
+    window = Shell()
+    try:
+        main_window_setup.setup_ui(window)
+
+        assert window.center_container.layout().sizeConstraint() == QLayout.SetDefaultConstraint
+    finally:
+        window.close()
+        window.deleteLater()
+        assert app is not None
+
+
+def test_switching_back_to_board_refreshes_board_layout():
+    calls = []
+
+    class DummyStack:
+        def __init__(self):
+            self.index = None
+
+        def setCurrentIndex(self, index):
+            self.index = index
+
+    class DummyButton:
+        def __init__(self):
+            self.object_name = None
+
+        def setObjectName(self, name):
+            self.object_name = name
+
+        def style(self):
+            return self
+
+        def unpolish(self, _widget):
+            pass
+
+        def polish(self, _widget):
+            pass
+
+    window = SimpleNamespace(
+        plan_stack=DummyStack(),
+        _view_buttons=[(DummyButton(), 0), (DummyButton(), 1)],
+        workbench_board=SimpleNamespace(refresh_after_view_shown=lambda: calls.append("refresh")),
+    )
+
+    MainWindow._set_plan_view(window, 1)
+
+    assert calls == []
+
+    MainWindow._set_plan_view(window, 0)
+
+    assert window.plan_stack.index == 0
+    assert calls == ["refresh"]
 
 
 def test_confirm_discard_unsaved_saves_dirty_workflow_config_before_switch(monkeypatch):
@@ -368,25 +457,19 @@ def test_on_board_reorder_requested_uses_step_table_public_facade():
     ]
 
 
-def test_async_workflow_refresh_callbacks_ignore_stale_workflow_id():
+def test_async_history_refresh_callback_ignores_stale_workflow_id():
     window = MainWindow.__new__(MainWindow)
     window._current_workflow_id = 2
 
-    dag_calls = []
     history_calls = []
-    window.dag_view = SimpleNamespace(update_dag=lambda workflow_id: dag_calls.append(workflow_id))
     window.run_history = SimpleNamespace(load_history=lambda workflow_id: history_calls.append(workflow_id))
 
-    window._async_load_dag(1)
     window._async_load_history(1)
 
-    assert dag_calls == []
     assert history_calls == []
 
-    window._async_load_dag(2)
     window._async_load_history(2)
 
-    assert dag_calls == [2]
     assert history_calls == [2]
 
 

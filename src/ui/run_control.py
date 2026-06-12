@@ -123,20 +123,6 @@ class RunControlPanel(QWidget):
         self.btn_dry_run.clicked.connect(self.dry_run_clicked.emit)
         ghost_layout.addWidget(self.btn_dry_run)
 
-        # 停止按钮独立分组，加 6px 分隔间距视觉划分（U-P1-2）
-        ghost_layout.addSpacing(6)
-
-        # 停止运行（运行中启用，红色醒目按钮）
-        self.btn_cancel = QPushButton("⏹  停止运行")
-        self.btn_cancel.setObjectName("runDangerPrimary")
-        self.btn_cancel.setFixedHeight(36)
-        self.btn_cancel.setToolTip("停止当前运行")
-        self.btn_cancel.setAccessibleName("停止运行")
-        self.btn_cancel.setEnabled(False)
-        self._cancel_requested = False
-        self.btn_cancel.clicked.connect(self._on_cancel_clicked)
-        ghost_layout.addWidget(self.btn_cancel)
-
         layout.addWidget(ghost)
 
     def refresh_theme(self, dark: bool):
@@ -149,30 +135,10 @@ class RunControlPanel(QWidget):
                 padding: 2px 0px;
             }}
         """)
-        # U-P2-3: cancel 按钮也走主题 token，避免硬编码
-        danger = colors["danger"]
-        danger_hover = "#FF6961" if dark else "#FF6961"  # 高亮态可保持一致
-        danger_pressed = "#CC362E" if dark else "#CC2F26"
-        disabled_bg = colors["pressed"]
-        disabled_fg = colors["text_tertiary"]
-        white = colors["text_inverse"]
-        self.btn_cancel.setStyleSheet(f"""
-            QPushButton {{
-                background: {danger}; color: {white}; border: none; border-radius: 10px;
-                padding: 0px 14px; font-size: 13px; font-weight: 600; text-align: center;
-            }}
-            QPushButton:hover {{ background: {danger_hover}; }}
-            QPushButton:pressed {{ background: {danger_pressed}; }}
-            QPushButton:disabled {{ background: {disabled_bg}; color: {disabled_fg}; }}
-        """)
 
     def set_running(self, running: bool):
-        """设置运行状态（用于启用/禁用停止入口与避免重复触发运行）"""
+        """设置运行状态（用于避免重复触发运行）"""
         self._is_running = bool(running)
-        if running:
-            self._cancel_requested = False
-            self.btn_cancel.setText("⏹  停止运行")
-        self.btn_cancel.setEnabled(self._is_running)
         # 运行中禁止再次触发运行/预演，避免用户误操作产生「已有工作流正在运行」的错误日志
         can_run = not self._is_running
         self.btn_run_all.setEnabled(can_run)
@@ -227,15 +193,6 @@ class RunControlPanel(QWidget):
         if self._selected_stage_uid:
             self.run_requested.emit("from_stage", self._selected_stage_uid)
     
-    def _on_cancel_clicked(self):
-        """停止按钮点击：切换为「正在停止」状态并防重复点击"""
-        if self._cancel_requested:
-            return
-        self._cancel_requested = True
-        self.btn_cancel.setText("⏹  正在停止...")
-        self.btn_cancel.setEnabled(False)
-        self.run_requested.emit("cancel", None)
-
     def _retry_failed(self):
         """重试失败步骤"""
         self.run_requested.emit("retry_failed", None)
