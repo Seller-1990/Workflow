@@ -281,13 +281,11 @@ def update_group_ranges(panel):
 
 
 def update_table_height(panel):
-    rows = sum(1 for r in range(panel.table.rowCount()) if not panel.table.isRowHidden(r))
     row_h = panel.table.verticalHeader().defaultSectionSize()
     header_h = panel.table.horizontalHeader().height()
     padding = 18
     min_rows = 3
-    visible_rows = max(min_rows, rows)
-    desired = header_h + visible_rows * row_h + padding
+    desired = header_h + min_rows * row_h + padding
     panel.table.setMinimumHeight(desired)
 
 
