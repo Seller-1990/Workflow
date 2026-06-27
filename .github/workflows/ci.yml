@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Repository hygiene
+        run: python tools\repo_hygiene.py --strict
+
+      - name: Test environment guard
+        run: python tools/check_test_env.py
+
+      - name: Risk and architecture guards
+        run: |
+          python tools/check_requirements_consistency.py
+          python tools/audit_risky_calls.py
+          python tools/audit_broad_except.py
+          python tools/module_hotspot_report.py --top 30 --baseline quality/module_hotspot_baseline.json --fail-on-regression --max-lines 1000 --fail-on-threshold
+          python tools/run_tests.py --collect-only
+
+      - name: Requirement consistency
+        run: python tools\check_requirements_consistency.py
+
+      - name: Compile sources
+        run: python -m compileall src tests _import_and_run.py
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
+        run: pytest -q
+
+      - name: CLI smoke
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
+        run: |
+          python src\cli.py --help
+          python src\cli.py export --help
+          python _import_and_run.py --help

@@ -1,0 +1,27 @@
+#!/bin/sh
+# 提交前快速质量门（由 tools/install_hooks.py 通过 core.hooksPath=.githooks 启用）。
+# Git 在仓库根目录执行本钩子，因此可直接使用相对路径。
+# 完整门（含全量测试）见 .githooks/pre-push。
+
+PYTHON="${PYTHON:-python}"
+
+fail() {
+    echo ""
+    echo "质量门未通过，提交被阻止。"
+    echo "如确需跳过用 git commit --no-verify（不推荐）。"
+    exit 1
+}
+
+echo "[pre-commit] audit_broad_except ..."
+"$PYTHON" tools/audit_broad_except.py || fail
+
+echo "[pre-commit] audit_risky_calls ..."
+"$PYTHON" tools/audit_risky_calls.py || fail
+
+echo "[pre-commit] module_hotspot_report (baseline regression) ..."
+"$PYTHON" tools/module_hotspot_report.py --top 0 --baseline quality/module_hotspot_baseline.json --fail-on-regression --max-lines 1000 --fail-on-threshold || fail
+
+echo "[pre-commit] compileall ..."
+"$PYTHON" -m compileall -q src tests _import_and_run.py || fail
+
+exit 0
