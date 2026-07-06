@@ -37,6 +37,21 @@ def test_webhook_model_declares_unique_name_index():
     assert [column.name for column in unique_index.columns] == ["name"]
 
 
+def test_run_history_and_step_log_models_declare_perf_indexes():
+    run_indexes = {index.name: index for index in RunHistory.__table__.indexes}
+    step_indexes = {index.name: index for index in StepLog.__table__.indexes}
+
+    assert [column.name for column in run_indexes["ix_run_histories_wf_start_id"].columns] == [
+        "workflow_id",
+        "start_time",
+        "id",
+    ]
+    assert [column.name for column in step_indexes["ix_step_logs_run_order"].columns] == [
+        "run_history_id",
+        "order",
+    ]
+
+
 def test_schema_version_record_is_committed(tmp_path: Path):
     db_path = tmp_path / "schema.db"
     engine = create_engine(f"sqlite:///{db_path}")
@@ -488,6 +503,37 @@ def test_pending_migration_failure_raises(monkeypatch, tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="schema 迁移 v99 失败"):
         database._run_pending_migrations(engine)
+
+
+def test_perf_index_migration_is_idempotent(tmp_path: Path):
+    db_path = tmp_path / "perf-indexes.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE workflows (id INTEGER PRIMARY KEY)"))
+        conn.execute(text(
+            "CREATE TABLE run_histories ("
+            "id INTEGER PRIMARY KEY,"
+            "workflow_id INTEGER NOT NULL,"
+            "start_time DATETIME"
+            ")"
+        ))
+        conn.execute(text(
+            "CREATE TABLE step_logs ("
+            "id INTEGER PRIMARY KEY,"
+            "run_history_id INTEGER NOT NULL,"
+            "\"order\" INTEGER"
+            ")"
+        ))
+
+    database._migrate_v8_run_history_step_log_perf_indexes(engine)
+    database._migrate_v8_run_history_step_log_perf_indexes(engine)
+
+    with engine.connect() as conn:
+        run_indexes = {row[1] for row in conn.execute(text("PRAGMA index_list(run_histories)"))}
+        step_indexes = {row[1] for row in conn.execute(text("PRAGMA index_list(step_logs)"))}
+
+    assert "ix_run_histories_wf_start_id" in run_indexes
+    assert "ix_step_logs_run_order" in step_indexes
 
 
 def test_step_uid_dedup_migration_repoints_step_logs(tmp_path: Path):

@@ -290,6 +290,8 @@ class RunHistory(Base):
     __table_args__ = (
         Index('ix_run_histories_wf_status_time', 'workflow_id', 'status', 'start_time'),
         Index('ix_run_histories_wf_endtime', 'workflow_id', 'end_time'),  # HA3: 加速 only_finished 路径
+        # P-17: 加速 get_run_histories_by_workflow / get_latest_run_history 的时间倒序列表。
+        Index('ix_run_histories_wf_start_id', 'workflow_id', 'start_time', 'id'),
     )
     
     def __repr__(self):
@@ -334,6 +336,8 @@ class StepLog(Base):
         Index('ix_step_logs_step_status', 'step_id', 'status'),  # HA3: 加速 skip_on_success 检查
         # R2-#5: 加速 get_recent_step_logs_for_step（WHERE step_id=? AND run_history_id IN (...) ORDER BY run_history_id DESC）
         Index('ix_step_logs_step_run', 'step_id', 'run_history_id'),
+        # P-17: 加速 get_step_logs_by_run（WHERE run_history_id=? ORDER BY order）。
+        Index('ix_step_logs_run_order', 'run_history_id', 'order'),
     )
 
     def __repr__(self):

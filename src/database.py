@@ -208,6 +208,7 @@ SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
     (5, "_migrate_v5_webhook_name_unique"),
     (6, "_migrate_v6_run_history_notify_status"),
     (7, "_migrate_v7_step_output_paths"),
+    (8, "_migrate_v8_run_history_step_log_perf_indexes"),
 ]
 
 
@@ -323,6 +324,19 @@ def _migrate_v7_step_output_paths(engine):
         existing = {row[1] for row in rows}
         if "output_paths" not in existing:
             conn.execute(text("ALTER TABLE steps ADD COLUMN output_paths TEXT"))
+
+
+def _migrate_v8_run_history_step_log_perf_indexes(engine):
+    """v8 (P-17): 为运行历史列表和步骤日志详情查询补充组合索引。"""
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_run_histories_wf_start_id "
+            "ON run_histories(workflow_id, start_time, id)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_step_logs_run_order "
+            "ON step_logs(run_history_id, \"order\")"
+        ))
 
 
 def _migrate_v2_version_table_and_step_uid_unique(engine):
