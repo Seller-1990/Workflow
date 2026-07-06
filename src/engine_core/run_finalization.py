@@ -9,6 +9,15 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
+try:
+    from sqlalchemy.exc import SQLAlchemyError
+except ImportError:
+    class SQLAlchemyError(RuntimeError):
+        """Fallback used when tests import this pure helper without SQLAlchemy."""
+
+
+FINALIZATION_ERRORS = (RuntimeError, ValueError, TypeError, OSError, SQLAlchemyError)
+
 
 def finalize_run_record(
     run_history_id: int,
@@ -31,7 +40,7 @@ def finalize_run_record(
     if status_value == cancelled_status_value and cancel_pending_step_logs is not None:
         try:
             cancel_pending_step_logs(run_history_id, cancel_step_message)
-        except Exception as exc:
+        except FINALIZATION_ERRORS as exc:
             _warn(warn_cb, "批量取消未完成 step_logs 失败: %s", exc)
 
     try:
@@ -43,7 +52,7 @@ def finalize_run_record(
             kwargs["error_message"] = safe_msg
         update_run_history(run_history_id, **kwargs)
         return True
-    except Exception as exc:
+    except FINALIZATION_ERRORS as exc:
         _warn(warn_cb, "更新运行历史失败: run_history_id=%s, %s", (run_history_id, exc))
         return False
 
