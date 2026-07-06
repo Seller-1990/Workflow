@@ -23,7 +23,7 @@ from engine import WorkflowEngine
 from ui.theme import msg_information, msg_warning, msg_critical, msg_question
 from ui.webhook_manager import WebhookManagerDialog
 from ui.json_actions import export_json_action, import_json_action
-from ui import dirty_guard, main_window_setup, panel_controller, run_dispatch, run_lifecycle_controller, watch_status_controller
+from ui import dirty_guard, main_window_setup, main_window_steps, panel_controller, run_dispatch, run_lifecycle_controller, watch_status_controller
 
 
 class MainWindow(QMainWindow):
@@ -771,94 +771,15 @@ class MainWindow(QMainWindow):
         restore_stage_uid: str | None = None,
         reload_editor: bool = False,
     ) -> None:
-        self.step_table.load_steps(workflow_id)
-        self.workbench_board.load_workflow(workflow_id)
-        self._refresh_workbench_header(workflow_id)
-
-        def _clear_step_context() -> None:
-            try:
-                self.step_table.set_selected_stage_context(None, clear_step_selection=True)
-            except Exception as exc:
-                logger.warning("清空步骤表阶段上下文失败: workflow_id=%s, error=%s", workflow_id, exc, exc_info=True)
-            self.step_editor.clear()
-            self.lbl_inspector_kind.setText("Inspector")
-            self.lbl_inspector_title.setText("选择步骤或阶段")
-            self.run_control.set_selected_step(None, None)
-            self.log_panel.set_context(workflow_id=workflow_id, step_id=None)
-
-        def _restore_stage_context(stage_uid: str | None) -> None:
-            if not stage_uid:
-                _clear_step_context()
-                return
-            stage_label = stage_uid
-            try:
-                stages = list_stages(workflow_id)
-                for idx, stage in enumerate(stages, start=1):
-                    if stage.uid == stage_uid:
-                        stage_label = f"S{idx} {stage.name}"
-                        break
-            except Exception as exc:
-                logger.warning("恢复阶段标题失败: workflow_id=%s, stage_uid=%s, error=%s", workflow_id, stage_uid, exc)
-            try:
-                self.workbench_board.select_stage(stage_uid, emit_signal=False)
-            except Exception as exc:
-                logger.warning("恢复看板阶段选中失败: stage_uid=%s, error=%s", stage_uid, exc, exc_info=True)
-                return
-            try:
-                self.step_table.set_selected_stage_context(stage_uid, clear_step_selection=True)
-            except Exception as exc:
-                logger.warning("恢复步骤表阶段上下文失败: stage_uid=%s, error=%s", stage_uid, exc, exc_info=True)
-                return
-            self.lbl_inspector_kind.setText("选中阶段")
-            self.lbl_inspector_title.setText(stage_label)
-            self.step_editor.clear()
-            self.run_control.set_selected_step(None, stage_uid)
-            self.log_panel.set_context(workflow_id=workflow_id, step_id=None)
-
-        def _restore_step_context(step_id: int | None, fallback_stage_uid: str | None) -> None:
-            if not step_id:
-                _restore_stage_context(fallback_stage_uid)
-                return
-            if not self.step_table.has_step(int(step_id)):
-                _restore_stage_context(fallback_stage_uid)
-                return
-            try:
-                self.step_table.select_step(int(step_id), emit_signal=False)
-            except Exception as exc:
-                logger.warning("恢复步骤表步骤选中失败: step_id=%s, error=%s", step_id, exc, exc_info=True)
-                _restore_stage_context(fallback_stage_uid)
-                return
-            try:
-                self.workbench_board.select_step(int(step_id), emit_signal=False)
-            except Exception as exc:
-                logger.warning("恢复看板步骤选中失败: step_id=%s, error=%s", step_id, exc, exc_info=True)
-                _restore_stage_context(fallback_stage_uid)
-                return
-            if reload_editor:
-                try:
-                    self.step_editor.load_step(int(step_id))
-                except Exception as exc:
-                    logger.warning("恢复步骤编辑器失败: step_id=%s, error=%s", step_id, exc, exc_info=True)
-                    _restore_stage_context(fallback_stage_uid)
-                    return
-            try:
-                step = get_step_by_id(int(step_id))
-                if step:
-                    self.lbl_inspector_kind.setText("选中步骤")
-                    self.lbl_inspector_title.setText(step.name)
-            except Exception as exc:
-                logger.warning("恢复步骤 Inspector 标题失败: step_id=%s, error=%s", step_id, exc)
-            stage_uid = fallback_stage_uid
-            if stage_uid is None:
-                try:
-                    stage_uid = self.step_table.get_stage_uid_for_step(int(step_id))
-                except Exception as exc:
-                    logger.warning("恢复步骤阶段上下文失败: step_id=%s, error=%s", step_id, exc)
-                    stage_uid = None
-            self.run_control.set_selected_step(int(step_id), stage_uid)
-            self.log_panel.set_context(workflow_id=workflow_id, step_id=int(step_id))
-
-        QTimer.singleShot(0, lambda sid=restore_step_id, stage_uid=restore_stage_uid: _restore_step_context(sid, stage_uid))
+        main_window_steps.reload_steps_views(
+            self,
+            workflow_id,
+            restore_step_id=restore_step_id,
+            restore_stage_uid=restore_stage_uid,
+            reload_editor=reload_editor,
+            get_step_by_id_func=get_step_by_id,
+            list_stages_func=list_stages,
+        )
 
     @Slot()
     def _on_workflow_updated(self):

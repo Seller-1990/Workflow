@@ -40,6 +40,8 @@ if str(src_dir) not in sys.path:
 from PySide6.QtWidgets import QApplication
 from duration_utils import format_duration_short
 from cli_formatting import format_step_finished_line
+from cli_notifications import send_cli_notification
+# Notification target resolution is delegated there via resolve_workflow_notification_target.
 
 _app = None
 
@@ -332,9 +334,6 @@ class CLIEngine:
             notify_on_complete: 运行完成时是否发送通知（默认True）
             notify_on_error: 运行出错时是否发送通知（默认True）
         """
-        from database import get_webhook_by_id
-        from notifier import send_workflow_notification
-        
         workflow = get_workflow_by_id(workflow_id)
         if not workflow:
             print(f"工作流 ID {workflow_id} 不存在")
@@ -428,70 +427,18 @@ class CLIEngine:
     
     def _send_cli_notification(self, workflow, success, notify_on_complete, notify_on_error, cancelled=False):
         """CLI模式下发送通知"""
-        from database import get_webhook_by_id
-        from notifier import resolve_workflow_notification_target, send_workflow_notification
-        from datetime import datetime
-
-        # 检查是否需要发送通知
-        should_notify = False
-
-        if cancelled and notify_on_complete:
-            status = "cancelled"
-            should_notify = True
-        elif not success and notify_on_error:
-            status = "failure"
-            should_notify = True
-        elif success and notify_on_complete:
-            status = "success"
-            should_notify = True
-
-        if not should_notify:
-            return
-
-        # L2: 通知目标解析（enabled / webhook_id / 机器人查询 / 模板默认值）
-        # 统一走 notifier.resolve_workflow_notification_target，消除与
-        # engine_core/notification.py 的模板默认值漂移
-        target = resolve_workflow_notification_target(workflow, get_webhook_by_id)
-        if target is None:
-            return
-        webhook, template = target
-
-        # 构建错误信息
-        error_msg = ""
-        if self._error_messages:
-            error_parts = [f"{e.get('step_name', '未知步骤')}: {e.get('error_message', '')}"
-                          for e in self._error_messages[:3]]
-            error_msg = "\n".join(error_parts)
-
-        run_id = self._last_run_id or ("cli_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
-        start_time = self._last_start_time or datetime.now()
-        end_time = self._last_end_time or datetime.now()
-        duration_seconds = self._last_duration_seconds
-        if duration_seconds is None:
-            duration_seconds = max(0.0, (end_time - start_time).total_seconds())
-        
-        # 发送通知
-        success_send, msg = send_workflow_notification(
-            webhook_url=webhook.webhook_url,
-            keyword=webhook.keyword or "",
-            template=template,
-            workflow_name=workflow.name,
-            workflow_uid=workflow.uid,
-            status=status,
-            run_id=run_id,
-            log_dir="",
-            reason="cli",
-            start_time=start_time,
-            end_time=end_time,
-            duration_seconds=duration_seconds,
-            failure_summary=error_msg if error_msg else ""
+        send_cli_notification(
+            workflow=workflow,
+            success=success,
+            notify_on_complete=notify_on_complete,
+            notify_on_error=notify_on_error,
+            cancelled=cancelled,
+            error_messages=self._error_messages,
+            last_run_id=self._last_run_id,
+            last_start_time=self._last_start_time,
+            last_end_time=self._last_end_time,
+            last_duration_seconds=self._last_duration_seconds,
         )
-        
-        if success_send:
-            print(f"[通知] 已发送运行状态通知到【{webhook.name}】")
-        else:
-            # msg 已在 notifier 内脱敏 access_token，可直接展示
-            print(f"[通知] 发送失败: {msg}")
 
     def dry_run(self, workflow_id):
         """预览执行计划"""
