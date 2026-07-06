@@ -248,6 +248,58 @@ if should_stop():
 
 The correct version stops new submissions without dropping already-running step futures.
 
+### Scenario: Scheduler Metrics and Diagnostics
+
+#### 1. Scope / Trigger
+
+- Trigger: changing `engine_core.scheduler.run_steps_parallel` or parallel
+  execution diagnostics.
+
+#### 2. Signatures
+
+- `SchedulerMetrics(submitted=0, completed=0, cancelled=0, failed=0)`
+- `run_steps_parallel(..., metrics: SchedulerMetrics | None = None) -> list`
+
+#### 3. Contracts
+
+- Metrics are additive diagnostics only; they must not change scheduler return
+  shape or step-result ordering.
+- `submitted` increments only when a future is actually submitted.
+- `completed` increments when a future result is harvested, including
+  exception-to-result conversion through `on_exception`.
+- `cancelled` increments only for futures that `Future.cancel()` reports as
+  cancelled or that are observed as cancelled.
+
+#### 4. Tests Required
+
+- Cancellation-before-submission test asserts zero submissions.
+- Stop-after-in-flight test asserts no extra submissions after cancellation.
+- Exception conversion test asserts `failed` and `completed` counters.
+
+### Scenario: Executor Policy Risk Visibility
+
+#### 1. Scope / Trigger
+
+- Trigger: changing non-retryable executor results, `ExecutorResult.extra`, run
+  history summaries, or run-history diagnostics.
+
+#### 2. Contracts
+
+- `manual_required`, `background_risk`, and `orphan_risk` must remain visible
+  after execution by appending stable diagnostic text to the step log error
+  message.
+- Run-history summary counters may derive from that stable text, but must not
+  expose secrets or raw webhook URLs.
+- Failure diagnostics should prefer user-actionable text such as "需要人工确认"
+  and "可能仍有后台任务".
+
+#### 3. Tests Required
+
+- Executor policy test asserts the step result error message contains the risk
+  note.
+- Pure run-diagnostic test asserts background/manual/orphan risk counts appear
+  in user-facing diagnostic text.
+
 ---
 
 ## Code Review Checklist

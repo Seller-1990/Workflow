@@ -23,14 +23,23 @@ be re-exported by the facade when existing callers need the function.
 
 Use the existing run-history helpers instead of open-coded queries:
 
-- `get_run_histories_by_workflow(workflow_id, limit=100)` for history lists.
+- `get_run_histories_by_workflow(workflow_id, limit=100, offset=0)` for
+  paginated history lists. UI callers should request `page_size + 1` rows to
+  decide whether a "load more" affordance is needed.
 - `get_step_logs_by_run(run_history_id)` for detail rows ordered by `StepLog.order`.
-- `get_step_log_summary_by_runs(run_history_ids)` for history-list summaries.
+- `get_step_log_summary_by_runs(run_history_ids)` for history-list summaries,
+  including risk counters derived from stored step-log diagnostic text:
+  `manual_required`, `background_risk`, and `orphan_risk`.
 - `get_recent_step_logs_for_step(workflow_id, step_id, limit=20)` when looking up
   recent logs for one step.
 
 Do not loop over run histories and query step logs one run at a time. Use the
 batch summary/helper APIs to avoid N+1 database reads in UI refresh paths.
+
+When adding executor policy diagnostics, keep storage additive: append stable
+diagnostic text to `StepLog.error_message`, then derive summary counters through
+the shared run-policy note helper. Do not add a schema column for a diagnostic
+unless multiple workflows need structured querying.
 
 ### Terminal State Updates
 
