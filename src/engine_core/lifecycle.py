@@ -17,6 +17,7 @@ from typing import Optional
 
 from config import LOG_DIR
 from database import (
+    cancel_pending_step_logs,
     create_run_history,
     update_run_history,
     create_step_log,
@@ -24,8 +25,16 @@ from database import (
     get_latest_run_history,
     get_step_logs_by_run,
 )
+from engine_core.run_finalization import finalize_run_record
 
 logger = logging.getLogger(__name__)
+
+
+def _log_finalize_warning(template: str, value: object) -> None:
+    if isinstance(value, tuple):
+        logger.warning(template, *value)
+    else:
+        logger.warning(template, value)
 
 
 @dataclass
@@ -95,18 +104,15 @@ def finalize_run(
     #8: error_message 在 SQLAlchemy 序列化前显式 str() + 截断 4KB，
         避免传入 Exception 实例 / 巨型 traceback 让 update_run_history 自己抛错被吞掉。
     """
-    try:
-        kwargs = {"status": status_value, "end_time": end_time}
-        if error_message is not None:
-            safe_msg = str(error_message)
-            if len(safe_msg) > 4096:
-                safe_msg = safe_msg[:4093] + "..."
-            kwargs["error_message"] = safe_msg
-        update_run_history(run_history_id, **kwargs)
-        return True
-    except Exception as e:
-        logger.warning("更新运行历史失败: run_history_id=%s, %s", run_history_id, e)
-        return False
+    return finalize_run_record(
+        run_history_id,
+        status_value=status_value,
+        end_time=end_time,
+        error_message=error_message,
+        update_run_history=update_run_history,
+        cancel_pending_step_logs=cancel_pending_step_logs,
+        warn_cb=_log_finalize_warning,
+    )
 
 
 def mark_step_running(step_log_id: int) -> None:
