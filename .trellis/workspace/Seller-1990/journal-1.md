@@ -40,3 +40,36 @@ Fixed cancellation-aware parallel scheduling, improved local test preflight, ini
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Implement remaining workflow optimization slices
+
+**Date**: 2026-07-06
+**Task**: Implement remaining workflow optimization slices
+**Branch**: `main`
+
+### Summary
+
+Completed remaining workflow optimization slices: standardized executor cancellation policy, finalized cancelled runs with StepLog cleanup, reduced UI status drift and board refresh churn, guarded masked exports, added run-history/step-log indexes, covered watch fallback, updated Trellis specs, installed CI test dependencies, and validated targeted suite with 98 passing tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7785622` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
