@@ -6,49 +6,55 @@
 
 ## Overview
 
-<!--
-Document your project's backend directory structure here.
-
-Questions to answer:
-- How are modules/packages organized?
-- Where does business logic live?
-- Where are API endpoints defined?
-- How are utilities and helpers organized?
--->
-
-(To be filled by the team)
+The project is a single Python application under `src/`. Large compatibility
+facades still exist, but new logic should move toward focused modules with pure
+helpers where possible.
 
 ---
 
 ## Directory Layout
 
 ```
-<!-- Replace with your actual structure -->
 src/
-├── ...
-└── ...
+├── engine.py                  # WorkflowEngine facade and compatibility surface
+├── engine_core/               # workflow lifecycle, scheduling, execution helpers
+├── executors/                 # step executors and executor result policy
+├── database.py                # DB initialization, migrations, facade exports
+├── database_*.py              # focused database domains
+├── ui/                        # Qt widgets/controllers and pure UI state helpers
+├── cli.py                     # command handlers and CLI engine
+└── cli_formatting.py          # pure CLI display helpers
 ```
 
 ---
 
 ## Module Organization
 
-<!-- How should new features/modules be organized? -->
+Prefer adding pure helper modules when logic must be shared or tested without
+heavy runtime dependencies:
 
-(To be filled by the team)
+- UI state projection belongs in `ui/run_state.py` or a focused pure helper.
+- Run-history diagnostic text belongs in `ui/run_diagnostics.py`.
+- CLI display mapping belongs in `cli_formatting.py`, not inline Qt-dependent
+  command paths.
+- Run finalization consistency belongs in `engine_core/run_finalization.py`.
+
+Keep facades (`engine.py`, `database.py`, `cli.py`) as compatibility entry
+points, but avoid placing new business rules there unless the rule is truly
+about the facade itself.
 
 ---
 
 ## Naming Conventions
 
-<!-- File and folder naming rules -->
-
-(To be filled by the team)
+Use snake_case module names. Focused helper names should describe the boundary,
+for example `run_finalization`, `run_diagnostics`, or `import_export_security`.
 
 ---
 
 ## Examples
 
-<!-- Link to well-organized modules as examples -->
-
-(To be filled by the team)
+- `src/engine_core/run_finalization.py`: pure finalization ordering contract.
+- `src/import_export_security.py`: pure export payload leak guard.
+- `src/ui/run_diagnostics.py`: pure diagnostic text for run history.
+- `src/cli_formatting.py`: pure CLI status display mapping.
