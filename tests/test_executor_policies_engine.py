@@ -565,6 +565,8 @@ def test_execute_single_step_does_not_retry_manual_required_background_risk(monk
         assert result.status == "failure"
         assert result.exit_code == 2
         assert "未自动关闭" in result.error_message
+        assert "后台任务" in result.error_message
+        assert "人工确认" in result.error_message
         assert finished[-1][2].status == "failure"
         assert finished[-1][3].extra[ResultPolicyKeys.BACKGROUND_RISK] is True
     finally:

@@ -14,9 +14,20 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SchedulerMetrics:
+    """Lightweight counters for one parallel scheduling batch."""
+
+    submitted: int = 0
+    completed: int = 0
+    cancelled: int = 0
+    failed: int = 0
 
 
 def run_steps_parallel(
@@ -27,6 +38,7 @@ def run_steps_parallel(
     step_runner: Callable[[Any], Any],
     on_exception: Optional[Callable[[Any, Exception], Any]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    metrics: SchedulerMetrics | None = None,
 ) -> List[Any]:
     """提交一批步骤到线程池并行执行，由提交侧滑动窗口限制并发上限
 
@@ -55,16 +67,23 @@ def run_steps_parallel(
     def _stop_requested() -> bool:
         return bool(should_stop and should_stop())
 
+    metrics = metrics or SchedulerMetrics()
+
+    def _submit(step: Any) -> Future:
+        metrics.submitted += 1
+        return executor.submit(step_runner, step)
+
     def _cancel_not_started(futures_by_future: dict[Future, Any]) -> None:
         for pending_future in list(futures_by_future):
             if pending_future.cancel():
+                metrics.cancelled += 1
                 futures_by_future.pop(pending_future, None)
 
     if _stop_requested():
         return []
 
     # 滑动窗口：先提交首个窗口；每收割一个完成的 future 再补提交一个
-    futures = {executor.submit(step_runner, s): s for s in pending[:window]}
+    futures = {_submit(s): s for s in pending[:window]}
     next_idx = window
     results: List[Any] = []
     stop_submitting = False
@@ -73,11 +92,15 @@ def run_steps_parallel(
         for future in done:
             step = futures.pop(future)
             if future.cancelled():
+                metrics.cancelled += 1
                 continue
             try:
                 results.append(future.result())
+                metrics.completed += 1
             except Exception as e:
                 logger.warning("并行步骤执行异常: %s", e)
+                metrics.failed += 1
+                metrics.completed += 1
                 if on_exception is None:
                     raise
                 results.append(on_exception(step, e))
@@ -87,7 +110,7 @@ def run_steps_parallel(
             if not stop_submitting and next_idx < len(pending):
                 nxt = pending[next_idx]
                 next_idx += 1
-                futures[executor.submit(step_runner, nxt)] = nxt
+                futures[_submit(nxt)] = nxt
 
     # 按原始 step.order 排序，避免 future 完成顺序打乱后续序列化
     # P-13: 缺 step_id 的 result 用 +inf 排队尾，避免误顶到首位

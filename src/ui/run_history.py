@@ -7,7 +7,7 @@ import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QMenu, QMessageBox, QComboBox, QLineEdit, QLabel,
-    QSizePolicy,
+    QSizePolicy, QPushButton,
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QSettings
 from PySide6.QtGui import QColor
@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 class RunHistoryPanel(QWidget):
     """运行历史面板（增强版）"""
 
+    PAGE_SIZE = 100
+
     open_failures_requested = Signal(int)  # run_history_id
     force_stop_requested = Signal(int)        # run_history_id
 
@@ -57,6 +59,7 @@ class RunHistoryPanel(QWidget):
         self._workflow_id = None
         self._all_histories = []
         self._history_step_summary = {}
+        self._has_more_history = False
         self._status_filter = "all"
         self._search_text = ""
         self._dark = False
@@ -169,12 +172,37 @@ class RunHistoryPanel(QWidget):
         self.table.cellDoubleClicked.connect(self._on_row_double_clicked)
 
         group_layout.addWidget(self.table, stretch=1)
+
+        self.btn_load_more = QPushButton("加载更多")
+        self.btn_load_more.setVisible(False)
+        self.btn_load_more.clicked.connect(self.load_more_history)
+        group_layout.addWidget(self.btn_load_more)
         layout.addWidget(self.section, stretch=1)
 
     def load_history(self, workflow_id: int):
         """加载运行历史"""
         self._workflow_id = workflow_id
-        self._all_histories = get_run_histories_by_workflow(workflow_id, limit=100)
+        self._all_histories = []
+        self._has_more_history = False
+        self._load_history_page(offset=0)
+        self._apply_filter()
+
+    def load_more_history(self):
+        """加载下一页运行历史。"""
+        if self._workflow_id is None or not self._has_more_history:
+            return
+        self._load_history_page(offset=len(self._all_histories))
+        self._apply_filter()
+
+    def _load_history_page(self, offset: int):
+        page = get_run_histories_by_workflow(
+            self._workflow_id,
+            limit=self.PAGE_SIZE + 1,
+            offset=offset,
+        )
+        self._has_more_history = len(page) > self.PAGE_SIZE
+        self._all_histories.extend(page[:self.PAGE_SIZE])
+        self.btn_load_more.setVisible(self._has_more_history)
         # 安全地提取history ID，确保所有ID都是有效的整数
         history_ids = []
         for h in self._all_histories:
@@ -188,11 +216,10 @@ class RunHistoryPanel(QWidget):
             try:
                 self._history_step_summary = get_step_log_summary_by_runs(history_ids)
             except Exception:
-                logger.exception("加载运行历史统计失败: workflow_id=%s", workflow_id)
+                logger.exception("加载运行历史统计失败: workflow_id=%s", self._workflow_id)
                 self._history_step_summary = {}
         else:
             self._history_step_summary = {}
-        self._apply_filter()
 
     def _on_filter_changed(self):
         """状态筛选变更"""
@@ -355,6 +382,8 @@ class RunHistoryPanel(QWidget):
         self._workflow_id = None
         self._all_histories = []
         self._history_step_summary = {}
+        self._has_more_history = False
+        self.btn_load_more.setVisible(False)
         self.table.setRowCount(0)
         try:
             self.table.clearSpans()

@@ -25,6 +25,8 @@ import threading
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
+from run_policy_notes import append_policy_risk_note
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -227,7 +229,7 @@ def execute_step_attempt(
                 exit_code=exec_result.exit_code if exec_result.exit_code is not None else 1,
                 start_time=exec_result.start_time,
                 end_time=exec_result.end_time,
-                error_message=exec_result.error_message,
+                error_message=append_policy_risk_note(exec_result.error_message, exec_result.extra),
                 log_dir=str(step_log_dir),
             )
             engine._finish_step(step, step_log_id, result, exec_result, signal_policy)
@@ -496,14 +498,18 @@ def execute_parallel_steps(
             error_message=str(e),
         )
 
-    return eng._run_steps_parallel(
+    metrics = eng.SchedulerMetrics()
+    results = eng._run_steps_parallel(
         steps,
         executor=engine._executor,
         max_workers=max_workers,
         step_runner=_step_runner,
         on_exception=_on_exception,
         should_stop=lambda: engine._is_run_cancelled(run_cancel_event),
+        metrics=metrics,
     )
+    engine._last_scheduler_metrics = metrics
+    return results
 
 
 def finish_step(

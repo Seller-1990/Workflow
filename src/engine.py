@@ -37,7 +37,7 @@ from engine_core.lifecycle import (
     record_skip_on_success as _record_skip_on_success,
     build_prev_step_status_map as _build_prev_step_status_map,
 )
-from engine_core.scheduler import run_steps_parallel as _run_steps_parallel
+from engine_core.scheduler import SchedulerMetrics, run_steps_parallel as _run_steps_parallel
 from engine_core.cancel import install_cancel_watcher as _install_cancel_watcher
 from engine_core.stages import (
     build_stage_meta as _build_stage_meta,
@@ -173,6 +173,7 @@ class WorkflowEngine(QObject):
         self._running = False
         self._cancelled = False
         self._current_run_history_id = None
+        self._last_scheduler_metrics = None
         self._current_run_id = None
         self._current_trace_id = None       # 执行追踪 ID
         self._current_parent_run_id = None   # 父运行 ID（子工作流）

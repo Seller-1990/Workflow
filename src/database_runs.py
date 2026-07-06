@@ -20,6 +20,7 @@ from database_field_guards import (
     validate_update_fields as _validate_update_fields,
 )
 from models import RunHistory, StepLog
+from run_policy_notes import count_policy_risk_notes
 
 logger = logging.getLogger(__name__)
 
@@ -98,14 +99,18 @@ def create_run_history(
 
 def get_run_histories_by_workflow(
     workflow_id: int,
-    limit: int = 20
+    limit: int = 20,
+    offset: int = 0,
 ) -> List[RunHistory]:
     """获取工作流的运行历史"""
     from database import get_session
     with get_session() as session:
         return session.query(RunHistory).filter(
             RunHistory.workflow_id == workflow_id
-        ).order_by(RunHistory.start_time.desc()).limit(limit).all()
+        ).order_by(
+            RunHistory.start_time.desc(),
+            RunHistory.id.desc(),
+        ).offset(max(0, int(offset or 0))).limit(max(1, int(limit or 1))).all()
 
 
 def get_latest_run_history(
@@ -272,7 +277,10 @@ def get_step_log_summary_by_runs(run_history_ids: List[int]) -> dict[int, dict[s
     if not run_history_ids:
         return {}
 
-    base_statuses = ["success", "failure", "skipped", "cancelled", "running", "pending"]
+    base_statuses = [
+        "success", "failure", "skipped", "cancelled", "running", "pending",
+        "manual_required", "background_risk", "orphan_risk",
+    ]
     summary = {
         int(run_history_id): {status: 0 for status in base_statuses}
         for run_history_id in run_history_ids
@@ -291,11 +299,24 @@ def get_step_log_summary_by_runs(run_history_ids: List[int]) -> dict[int, dict[s
             StepLog.status
         ).all()
 
+        risk_rows = session.query(
+            StepLog.run_history_id,
+            StepLog.error_message,
+        ).filter(
+            StepLog.run_history_id.in_(run_history_ids),
+            StepLog.error_message.isnot(None),
+        ).all()
+
     for run_history_id, status, count in rows:
         bucket = summary.setdefault(int(run_history_id), {key: 0 for key in base_statuses})
         status_key = str(status or "pending")
         bucket.setdefault(status_key, 0)
         bucket[status_key] = int(count or 0)
+
+    for run_history_id, error_message in risk_rows:
+        bucket = summary.setdefault(int(run_history_id), {key: 0 for key in base_statuses})
+        for key, increment in count_policy_risk_notes(error_message).items():
+            bucket[key] = int(bucket.get(key, 0)) + increment
 
     return summary
 

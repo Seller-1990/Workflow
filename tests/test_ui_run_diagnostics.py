@@ -30,6 +30,17 @@ def test_failure_run_diagnostic_uses_failure_count():
     assert text == "运行失败，3 个步骤失败"
 
 
+def test_failure_run_diagnostic_surfaces_background_risk():
+    text = run_diagnostics.build_run_diagnostic(
+        "failure",
+        {"failure": 1, "manual_required": 1, "background_risk": 1, "orphan_risk": 1},
+    )
+
+    assert "需要人工确认" in text
+    assert "后台任务" in text
+    assert "子工作流" in text
+
+
 def test_success_run_diagnostic_is_stable_without_counts():
     text = run_diagnostics.build_run_diagnostic("success", None)
 

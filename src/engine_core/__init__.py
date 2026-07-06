@@ -26,7 +26,7 @@ from engine_core.lifecycle import (
     record_skip_on_success,
     build_prev_step_status_map,
 )
-from engine_core.scheduler import run_steps_parallel
+from engine_core.scheduler import SchedulerMetrics, run_steps_parallel
 from engine_core.cancel import install_cancel_watcher
 from engine_core.stages import (
     UNASSIGNED_STAGE_UID,
