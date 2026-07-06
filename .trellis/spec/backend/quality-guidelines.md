@@ -183,6 +183,60 @@ if not include_secrets:
 json.dump(data, f, ensure_ascii=False, indent=2)
 ```
 
+### Scenario: PyInstaller Release Packaging
+
+#### 1. Scope / Trigger
+
+- Trigger: changing `.spec`, release requirements, or package workflows.
+- Scope: Windows `build_slim2.spec` and macOS Intel packaging workflow.
+
+#### 2. Signatures
+
+- Windows: `python -m PyInstaller build_slim2.spec --noconfirm`
+- macOS Intel: `pyinstaller build_macos_intel.spec --noconfirm`
+- Smoke gate: packaged executable/app binary must accept `--self-check`.
+
+#### 3. Contracts
+
+- `certifi` data files must be collected so HTTPS trust works in frozen apps.
+- Python `< 3.12` packages using `pkg_resources` must include `backports.tarfile`.
+- Windows-only dependencies must use platform markers in requirement files and
+  must not be hidden-imported by the macOS spec.
+- macOS Intel builds must run on an Intel runner/host, not from Windows.
+
+#### 4. Validation & Error Matrix
+
+- Missing `backports.tarfile` -> frozen startup can fail in `pyi_rth_pkgres.py`.
+- Missing `certifi` data -> HTTPS checks may use a nonexistent CA bundle.
+- Installing `pywin32` on macOS -> dependency install fails before packaging.
+- Cross-building macOS from Windows -> reject as unsupported; use macOS runner.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: package build passes, `--self-check` passes, and hash artifact is emitted.
+- Base: source tests pass but package smoke has not run; do not call it releasable.
+- Bad: assuming PyInstaller warnings are harmless after a frozen startup failure.
+
+#### 6. Tests Required
+
+- Focused workflow/dependency manifest tests for requirements/workflow changes.
+- Full pytest before release commits when package workflow or requirements change.
+- Packaged `--self-check` for each produced platform artifact.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```python
+hiddenimports=["requests", "watchdog"]
+```
+
+Correct:
+
+```python
+hiddenimports=["requests", "watchdog", "backports.tarfile"]
+```
+
 ---
 
 ## Testing Requirements

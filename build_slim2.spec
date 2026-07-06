@@ -58,6 +58,8 @@ a = Analysis(
         "watchdog",
         "watchdog.observers",
         "watchdog.events",
+        # Required by setuptools/pkg_resources runtime hook on Python < 3.12.
+        "backports.tarfile",
         # V9：图标库
         "qtawesome",
         "qtpy",

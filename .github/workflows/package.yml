@@ -7,12 +7,22 @@ on:
         description: "PyInstaller spec to build"
         required: true
         default: "build_slim2.spec"
+      target:
+        description: "Package target"
+        required: true
+        type: choice
+        default: "all"
+        options:
+          - "all"
+          - "windows"
+          - "macos-intel"
   push:
     tags:
       - "v*"
 
 jobs:
   package:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'windows' }}
     runs-on: windows-latest
     env:
       DEFAULT_SPEC: build_slim2.spec
@@ -140,6 +150,105 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.verify_artifact.outputs.artifact_name }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.verify_artifact.outputs.artifact_path }}
+            ${{ steps.verify_artifact.outputs.hash_path }}
+
+  package-macos-intel:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'macos-intel' }}
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-release.txt
+
+      - name: Resolve build metadata
+        id: build_meta
+        run: |
+          app_version=$(python - <<'PY'
+          from pathlib import Path
+          import ast
+
+          config_path = Path("src/config.py")
+          module = ast.parse(config_path.read_text(encoding="utf-8"), filename=str(config_path))
+          for node in module.body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if getattr(target, "id", None) == "APP_VERSION":
+                          value = ast.literal_eval(node.value)
+                          if not isinstance(value, str) or not value.strip():
+                              raise SystemExit("APP_VERSION must be a non-empty string")
+                          print(value.strip())
+                          raise SystemExit(0)
+          raise SystemExit("APP_VERSION not found in src/config.py")
+          PY
+          )
+          short_sha="${GITHUB_SHA::7}"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=workflow-manager-$app_version-macos-intel-$short_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Pre-package quality guards
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python tools/check_requirements_consistency.py
+          python tools/audit_risky_calls.py
+          python tools/audit_broad_except.py
+          python tools/module_hotspot_report.py --top 30 --baseline quality/module_hotspot_baseline.json --fail-on-regression --max-lines 1000 --fail-on-threshold
+          python -m compileall src tests _import_and_run.py
+
+      - name: Release gate (clean tracked tree)
+        run: |
+          status="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$status" ]; then
+            printf '%s\n' "$status"
+            echo "Working tree (including untracked files) is dirty before packaging."
+            exit 1
+          fi
+
+      - name: Build macOS Intel app
+        run: pyinstaller build_macos_intel.spec --noconfirm
+
+      - name: Verify artifact
+        id: verify_artifact
+        env:
+          QT_QPA_PLATFORM: offscreen
+          WORKFLOW_APP_DATA_DIR: ${{ runner.temp }}/workflow-self-check-data
+        run: |
+          app_path="$(find dist -maxdepth 1 -name '*.app' -type d | sort | tail -n 1)"
+          if [ -z "$app_path" ]; then
+            echo "No .app bundle produced in dist"
+            exit 1
+          fi
+          exe_path="$app_path/Contents/MacOS/工作流管理"
+          if [ ! -x "$exe_path" ]; then
+            echo "No executable found at $exe_path"
+            exit 1
+          fi
+          "$exe_path" --self-check
+          zip_path="dist/${{ steps.build_meta.outputs.artifact_name }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "$zip_path"
+          shasum -a 256 "$zip_path" > "$zip_path.sha256"
+          echo "artifact_path=$zip_path" >> "$GITHUB_OUTPUT"
+          echo "hash_path=$zip_path.sha256" >> "$GITHUB_OUTPUT"
+          shasum -a 256 "$zip_path"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build_meta.outputs.artifact_name }}
           if-no-files-found: error
           path: |
             ${{ steps.verify_artifact.outputs.artifact_path }}

@@ -7,10 +7,10 @@ PySide6>=6.6.0
 SQLAlchemy>=2.0.0
 
 # Windows COM 自动化（Excel/Power BI）
-pywin32>=306
+pywin32>=306; platform_system == "Windows"
 
 # Power BI Desktop 自动刷新（可选）
-pywinauto>=0.6.8
+pywinauto>=0.6.8; platform_system == "Windows"
 
 # 文件监听事件驱动
 watchdog>=4.0.0
