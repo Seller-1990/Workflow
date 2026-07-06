@@ -14,7 +14,6 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from engine import WorkflowEngine
 from watch_rules import (
     collect_workflow_output_roots,
     detect_watch_output_conflicts,
@@ -144,6 +143,8 @@ def test_sanitize_workflow_watch_config_rewrites_monthly_output_watchers():
 
 
 def test_start_watch_rejects_output_directory_overlap(monkeypatch, tmp_path: Path):
+    from engine import WorkflowEngine
+
     engine = WorkflowEngine()
     watched = tmp_path / "基础文件" / "收入成本表"
     watched.mkdir(parents=True)
@@ -294,3 +295,16 @@ def test_sanitize_workflow_watch_config_still_repairs_undeclared_monthly_config(
     assert folders == [
         "D:\\OneDrive - PowerBI学谦\\Data Analysis\\经营分析\\月度接收\\1账务信息"
     ]
+
+
+def test_sanitize_workflow_watch_config_disables_when_conflict_has_no_safe_suggestion():
+    changed, folders, enabled = sanitize_workflow_watch_config(
+        workflow_name="自定义工作流",
+        watch_enabled=True,
+        watch_folders=["D:/x/out"],
+        steps=[DeclaredOutputStep(script_path="D:/x/job.py", declared_outputs=["D:/x/out"])],
+    )
+
+    assert changed is True
+    assert folders == []
+    assert enabled is False
