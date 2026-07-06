@@ -11,6 +11,7 @@ from typing import Callable, Optional
 
 from sqlalchemy.orm import Session, selectinload
 
+from import_export_security import assert_no_plain_webhook_secrets
 from models import Step, WebhookConfig, Workflow, WorkflowStage
 from webhook_url_policy import (
     is_masked_webhook_url,
@@ -445,6 +446,9 @@ def export_to_json_impl(
 
         for workflow in workflows:
             data["workflows"].append(_export_workflow(workflow, webhook_map))
+
+    if not include_secrets:
+        assert_no_plain_webhook_secrets(data)
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
