@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from executors.base import BaseExecutor, ExecutorResult
-from executors.result_policy import ResultPolicyKeys, build_policy_extra
+from executors.result_policy import ResultPolicyKeys, build_cancelled_extra, build_policy_extra
 from executors.powerbi_rest import PowerBIRestError, refresh_dataset
 from runtime.process_runner import start_process
 from constants import POWERBI_REFRESH_TIMEOUT, POWERBI_REST_POLL_INTERVAL, POWERBI_REST_TIMEOUT
@@ -200,6 +200,7 @@ class PowerBIExecutor(BaseExecutor):
                 stdout_path=str(stdout_path),
                 stderr_path=str(stderr_path),
                 error_message=message,
+                extra=build_cancelled_extra() if message == "用户取消" else {},
             )
 
         log_messages.append(f"[{datetime.now().isoformat()}] Power BI REST 刷新模式: {script_path}")
@@ -433,7 +434,8 @@ class PowerBIExecutor(BaseExecutor):
                     end_time=end_time,
                     stdout_path=str(stdout_path),
                     stderr_path=str(stderr_path),
-                    error_message="用户取消"
+                    error_message="用户取消",
+                    extra=build_cancelled_extra(),
                 )
 
             # 检查进程是否仍在运行
@@ -537,7 +539,8 @@ class PowerBIExecutor(BaseExecutor):
                         end_time=end_time,
                         stdout_path=str(stdout_path),
                         stderr_path=str(stderr_path),
-                        error_message="用户取消" if cancelled else f"等待超时 ({timeout}秒)"
+                        error_message="用户取消" if cancelled else f"等待超时 ({timeout}秒)",
+                        extra=build_cancelled_extra() if cancelled else {},
                     )
 
             end_time = datetime.now()

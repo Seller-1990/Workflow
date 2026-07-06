@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from executors.base import BaseExecutor, ExecutorResult
+from executors.result_policy import build_cancelled_extra
 from runtime.process_runner import build_subprocess_kwargs, start_process
 from constants import PYTHON_STEP_TIMEOUT
 
@@ -352,7 +353,8 @@ class PythonExecutor(BaseExecutor):
                                 end_time=end_time,
                                 stdout_path=str(stdout_path),
                                 stderr_path=str(stderr_path),
-                                error_message="用户取消"
+                                error_message="用户取消",
+                                extra=build_cancelled_extra(),
                             )
                         if not normal:
                             # 超时：与原 subprocess.TimeoutExpired 路径行为一致

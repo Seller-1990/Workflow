@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from executors.powerbi_executor import PowerBIExecutor
+from executors.result_policy import ResultPolicyKeys
 
 
 def test_powerbi_executor_prefers_path_lookup_before_fallbacks(monkeypatch):
@@ -149,6 +150,8 @@ def test_powerbi_executor_can_cancel_during_startup_wait(monkeypatch, tmp_path: 
     assert result.success is False
     assert result.exit_code == -1
     assert result.error_message == "用户取消"
+    assert result.extra[ResultPolicyKeys.CANCELLED] is True
+    assert result.extra[ResultPolicyKeys.NON_RETRYABLE] is True
     assert proc.terminated is True
 
 

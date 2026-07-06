@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from executors.base import BaseExecutor, ExecutorResult
+from executors.result_policy import build_cancelled_extra
 from exceptions import WorkflowTimeoutError
 from runtime.process_runner import run_process
 from constants import EXCEL_REFRESH_TIMEOUT
@@ -320,14 +321,17 @@ class ExcelExecutor(BaseExecutor):
         with open(stderr_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(error_messages))
         
+        cancelled = any(message == "用户取消" for message in error_messages)
+
         return ExecutorResult(
             success=False,
-            exit_code=1,
+            exit_code=-1 if cancelled else 1,
             start_time=start_time,
             end_time=end_time,
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
-            error_message='\n'.join(error_messages)
+            error_message='\n'.join(error_messages),
+            extra=build_cancelled_extra() if cancelled else {},
         )
     
     def validate(self, script_path: str) -> bool:

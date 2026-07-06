@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from executors.base import BaseExecutor, ExecutorResult
-from executors.result_policy import ResultPolicyKeys, build_policy_extra
+from executors.result_policy import ResultPolicyKeys, build_cancelled_extra, build_policy_extra
 from database import (
     get_workflow_by_uid, get_workflow_by_id,
     has_cross_workflow_cycle
@@ -71,6 +71,7 @@ class SubWorkflowExecutor(BaseExecutor):
                 start_time=start_time,
                 end_time=end_time,
                 error_message=error_message,
+                extra=build_cancelled_extra() if error_message == "用户取消" else {},
             )
 
         grace_text = f"{self.CHILD_EXIT_GRACE_SECONDS:g}"
@@ -81,6 +82,8 @@ class SubWorkflowExecutor(BaseExecutor):
             end_time=end_time,
             error_message=f"{error_message}；子工作流未在 {grace_text} 秒宽限期内退出，存在后台运行风险",
             extra=build_policy_extra(
+                cancelled=error_message == "用户取消",
+                non_retryable=error_message == "用户取消",
                 orphan_risk=True,
                 background_risk=True,
                 extra_fields={
@@ -154,7 +157,8 @@ class SubWorkflowExecutor(BaseExecutor):
                 exit_code=-1,
                 start_time=start_time,
                 end_time=datetime.now(),
-                error_message="用户取消"
+                error_message="用户取消",
+                extra=build_cancelled_extra(),
             )
 
         # 使用线程执行子工作流以支持超时控制

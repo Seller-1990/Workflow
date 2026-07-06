@@ -7,6 +7,7 @@ from typing import Any, Mapping
 class ResultPolicyKeys:
     """ExecutorResult.extra 中与调度策略相关的键。"""
 
+    CANCELLED = "cancelled"
     NON_RETRYABLE = "non_retryable"
     MANUAL_REQUIRED = "manual_required"
     BACKGROUND_RISK = "background_risk"
@@ -33,6 +34,7 @@ def has_non_retryable_policy(extra: Mapping[str, Any] | None) -> bool:
 
 def build_policy_extra(
     *,
+    cancelled: bool | None = None,
     manual_required: bool | None = None,
     background_risk: bool | None = None,
     orphan_risk: bool | None = None,
@@ -43,6 +45,8 @@ def build_policy_extra(
     """构造 ExecutorResult.extra，统一策略键名来源。"""
     extra: dict[str, Any] = {}
 
+    if cancelled is not None:
+        extra[ResultPolicyKeys.CANCELLED] = cancelled
     if manual_required is not None:
         extra[ResultPolicyKeys.MANUAL_REQUIRED] = manual_required
     if background_risk is not None:
@@ -56,3 +60,12 @@ def build_policy_extra(
     if extra_fields:
         extra.update(dict(extra_fields))
     return extra
+
+
+def build_cancelled_extra(note: str = "用户取消") -> dict[str, Any]:
+    """构造用户取消结果的统一策略标记。"""
+    return build_policy_extra(
+        cancelled=True,
+        non_retryable=True,
+        note=note,
+    )

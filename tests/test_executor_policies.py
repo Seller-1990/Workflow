@@ -21,6 +21,7 @@ from executors.excel_executor import ExcelExecutor
 from executors.python_executor import PythonExecutor, _get_python_executable
 from executors.result_policy import (
     ResultPolicyKeys,
+    build_cancelled_extra,
     build_policy_extra,
     has_non_retryable_policy,
 )
@@ -49,6 +50,10 @@ def test_result_policy_helpers_centralize_retry_flags():
     assert extra["custom_reason"] == "manual-check"
     assert has_non_retryable_policy(extra) is True
     assert has_non_retryable_policy(build_policy_extra(manual_required=False)) is False
+    cancelled_extra = build_cancelled_extra()
+    assert cancelled_extra[ResultPolicyKeys.CANCELLED] is True
+    assert cancelled_extra[ResultPolicyKeys.NON_RETRYABLE] is True
+    assert has_non_retryable_policy(cancelled_extra) is True
 
 
 def test_python_executor_rejects_non_string_args(tmp_path: Path):
@@ -117,7 +122,10 @@ def test_python_executor_uses_process_tree_kill_on_cancel(monkeypatch, tmp_path:
     result = PythonExecutor().execute(str(script), log_dir=tmp_path / "logs", cancel_event=cancel_event)
 
     assert result.success is False
+    assert result.exit_code == -1
     assert result.error_message == "用户取消"
+    assert result.extra[ResultPolicyKeys.CANCELLED] is True
+    assert result.extra[ResultPolicyKeys.NON_RETRYABLE] is True
     assert killed["pid"] == 4242
 
 
@@ -308,7 +316,10 @@ def test_excel_executor_can_cancel_while_async_wait_method_is_blocked(monkeypatc
     release_wait.set()
 
     assert result.success is False
+    assert result.exit_code == -1
     assert "用户取消" in (result.error_message or "")
+    assert result.extra[ResultPolicyKeys.CANCELLED] is True
+    assert result.extra[ResultPolicyKeys.NON_RETRYABLE] is True
     assert elapsed < 1.0
 
 

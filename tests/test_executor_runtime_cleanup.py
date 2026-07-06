@@ -77,7 +77,8 @@ def test_sub_workflow_executor_cancel_confirms_child_exit(monkeypatch):
     assert result.success is False
     assert result.exit_code == -1
     assert result.error_message == "用户取消"
-    assert result.extra == {}
+    assert result.extra[ResultPolicyKeys.CANCELLED] is True
+    assert result.extra[ResultPolicyKeys.NON_RETRYABLE] is True
     assert elapsed < 0.4
     assert nested_cancel_events
     assert nested_cancel_events[0] is not None
