@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import logging
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,7 @@ def run_steps_parallel(
     max_workers: int,
     step_runner: Callable[[Any], Any],
     on_exception: Optional[Callable[[Any, Exception], Any]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> List[Any]:
     """提交一批步骤到线程池并行执行，由提交侧滑动窗口限制并发上限
 
@@ -41,6 +42,7 @@ def run_steps_parallel(
         max_workers: 并发上限（来自 workflow.max_workers）
         step_runner: 单步执行回调，返回 StepResult-like 对象
         on_exception: 单步 raise 时的兜底处理；不传则原样向上抛
+        should_stop: 返回 True 时停止提交后续步骤，并尝试取消尚未开始的 future
 
     Returns:
         list: 按 step.order 排好序的结果列表
@@ -50,14 +52,28 @@ def run_steps_parallel(
     pending = list(steps)
     window = min(max(1, int(max_workers)), len(pending))
 
+    def _stop_requested() -> bool:
+        return bool(should_stop and should_stop())
+
+    def _cancel_not_started(futures_by_future: dict[Future, Any]) -> None:
+        for pending_future in list(futures_by_future):
+            if pending_future.cancel():
+                futures_by_future.pop(pending_future, None)
+
+    if _stop_requested():
+        return []
+
     # 滑动窗口：先提交首个窗口；每收割一个完成的 future 再补提交一个
     futures = {executor.submit(step_runner, s): s for s in pending[:window]}
     next_idx = window
     results: List[Any] = []
+    stop_submitting = False
     while futures:
         done, _ = wait(futures, return_when=FIRST_COMPLETED)
         for future in done:
             step = futures.pop(future)
+            if future.cancelled():
+                continue
             try:
                 results.append(future.result())
             except Exception as e:
@@ -65,7 +81,10 @@ def run_steps_parallel(
                 if on_exception is None:
                     raise
                 results.append(on_exception(step, e))
-            if next_idx < len(pending):
+            if _stop_requested():
+                stop_submitting = True
+                _cancel_not_started(futures)
+            if not stop_submitting and next_idx < len(pending):
                 nxt = pending[next_idx]
                 next_idx += 1
                 futures[executor.submit(step_runner, nxt)] = nxt

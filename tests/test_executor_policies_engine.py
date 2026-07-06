@@ -338,6 +338,53 @@ def test_execute_parallel_steps_cleans_up_worker_sessions(monkeypatch, tmp_path:
         engine.shutdown(wait=False)
 
 
+def test_execute_parallel_steps_stops_submitting_after_cancel(monkeypatch, tmp_path: Path):
+    engine = WorkflowEngine()
+    try:
+        workflow = SimpleNamespace(max_workers=1)
+        steps = [
+            SimpleNamespace(id=1, order=1, name="A"),
+            SimpleNamespace(id=2, order=2, name="B"),
+            SimpleNamespace(id=3, order=3, name="C"),
+        ]
+        calls = []
+
+        def fake_execute_single_step(
+            workflow,
+            step,
+            run_history_id,
+            log_dir,
+            signal_policy,
+            prev_step_status_map=None,
+            run_cancel_event=None,
+        ):
+            calls.append(step.id)
+            engine.cancel()
+            return StepResult(
+                step_id=step.id,
+                step_name=step.name,
+                status="cancelled",
+                exit_code=-1,
+            )
+
+        monkeypatch.setattr("engine.cleanup_session", lambda: None)
+        monkeypatch.setattr(engine, "_execute_single_step", fake_execute_single_step)
+
+        results = engine._execute_parallel_steps(
+            workflow,
+            steps,
+            run_history_id=11,
+            log_dir=tmp_path,
+            signal_policy=SimpleNamespace(),
+        )
+
+        assert calls == [1]
+        assert [result.step_id for result in results] == [1]
+        assert results[0].status == "cancelled"
+    finally:
+        engine.shutdown(wait=False)
+
+
 def test_finish_step_logs_duration_and_emits_it(monkeypatch):
     engine = WorkflowEngine()
     try:

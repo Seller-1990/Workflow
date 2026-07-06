@@ -339,6 +339,59 @@ class TestRunStepsParallel:
         assert results[1].status == "failure:步骤2失败"
         assert all(r.status == "success" for r in results if r.step_id != 2)
 
+    def test_cancel_stops_new_submissions_but_waits_for_in_flight_steps(self):
+        """取消后不再补提交新步骤，但已在执行的步骤仍要收割结果完成收尾"""
+        from engine_core.scheduler import run_steps_parallel
+
+        steps = self._make_steps(4)
+        started = []
+        lock = threading.Lock()
+        cancel_requested = threading.Event()
+        second_started = threading.Event()
+
+        def step_runner(step):
+            with lock:
+                started.append(step.id)
+            if step.id == 1:
+                assert second_started.wait(timeout=2)
+                cancel_requested.set()
+                return MockResult(step_id=step.id, status="cancelled")
+            if step.id == 2:
+                second_started.set()
+                assert cancel_requested.wait(timeout=2)
+                return MockResult(step_id=step.id, status="cancelled")
+            return MockResult(step_id=step.id)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = run_steps_parallel(
+                steps,
+                executor=pool,
+                max_workers=2,
+                step_runner=step_runner,
+                should_stop=cancel_requested.is_set,
+            )
+
+        assert [r.step_id for r in results] == [1, 2]
+        assert set(started) == {1, 2}
+        assert all(r.status == "cancelled" for r in results)
+
+    def test_cancel_before_submission_returns_without_starting_steps(self):
+        """进入调度器前已经取消时，不提交任何步骤"""
+        from engine_core.scheduler import run_steps_parallel
+
+        started = []
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = run_steps_parallel(
+                self._make_steps(2),
+                executor=pool,
+                max_workers=2,
+                step_runner=lambda step: started.append(step.id) or MockResult(step_id=step.id),
+                should_stop=lambda: True,
+            )
+
+        assert results == []
+        assert started == []
+
     def test_exception_reraised_without_on_exception(self):
         """未提供 on_exception 时步骤异常原样向上抛"""
         from engine_core.scheduler import run_steps_parallel

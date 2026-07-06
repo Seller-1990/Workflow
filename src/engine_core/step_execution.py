@@ -502,6 +502,7 @@ def execute_parallel_steps(
         max_workers=max_workers,
         step_runner=_step_runner,
         on_exception=_on_exception,
+        should_stop=lambda: engine._is_run_cancelled(run_cancel_event),
     )
 
 

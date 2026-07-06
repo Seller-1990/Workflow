@@ -550,8 +550,11 @@ def execute_steps(
                 prev_step_status_map=prev_step_status_map,
                 run_cancel_event=run_cancel_event,
             )
-            completed_steps += len(batch)
+            completed_steps += len(results)
             engine._update_execution_progress(completed_steps, total_steps, signal_policy)
+            if engine._is_run_cancelled(run_cancel_event):
+                engine._emit_failed_details(failed_details, signal_policy)
+                return False
             if not engine._handle_batch_results(batch, results, failed_details, signal_policy):
                 return False
 
