@@ -13,6 +13,8 @@ python tools/module_hotspot_report.py
 python tools/run_tests.py --collect-only
 ```
 
+`tools/check_test_env.py` 会在 pytest 前检查核心测试依赖（如 `SQLAlchemy`、`PySide6`、`watchdog`），缺失时先给出安装命令，避免直接进入 pytest 后出现不透明的导入失败。
+
 ## 审计 CLI 合同
 
 `tools/audit_risky_calls.py` 与 `tools/audit_broad_except.py` 均支持两种模式：
