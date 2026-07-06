@@ -2,11 +2,33 @@
 """主窗口运行态计算测试。"""
 
 import sys
+import importlib.util
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from ui.run_state import compute_run_lock_state
+
+def _load_run_state_module():
+    module_path = Path(__file__).resolve().parent.parent / "src" / "ui" / "run_state.py"
+    spec = importlib.util.spec_from_file_location("run_state_under_test", module_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_run_state = _load_run_state_module()
+compute_header_run_state = _run_state.compute_header_run_state
+compute_run_lock_state = _run_state.compute_run_lock_state
+
+
+def test_compute_header_run_state_prioritizes_stopping_over_running():
+    assert compute_header_run_state(engine_running=True, stopping=True) == "stopping"
+
+
+def test_compute_header_run_state_tracks_running_and_idle():
+    assert compute_header_run_state(engine_running=True, stopping=False) == "running"
+    assert compute_header_run_state(engine_running=False, stopping=False) == "idle"
 
 
 def test_compute_run_lock_state_clears_stale_running_id():

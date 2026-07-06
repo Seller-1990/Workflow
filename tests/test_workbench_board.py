@@ -113,6 +113,38 @@ def test_stage_progress_tracks_step_statuses(monkeypatch):
         assert app is not None
 
 
+def test_repeated_highlight_does_not_resync_board(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    panel = _panel_with_dummy_workflow(monkeypatch)
+    try:
+        lane = panel._lanes["stage-a"]
+        refresh_calls = []
+        sync_calls = []
+        original_refresh = lane.refresh_minimum_height
+
+        def counted_refresh():
+            refresh_calls.append(1)
+            original_refresh()
+
+        monkeypatch.setattr(lane, "refresh_minimum_height", counted_refresh)
+        monkeypatch.setattr(panel, "_sync_board_minimum_size", lambda: sync_calls.append(1))
+
+        panel.highlight_step(1, "success", 1.2)
+        assert len(refresh_calls) == 1
+        assert len(sync_calls) == 1
+
+        panel.highlight_step(1, "success", 1.2)
+        assert len(refresh_calls) == 1
+        assert len(sync_calls) == 1
+
+        panel.highlight_step(1, "success", 2.4)
+        assert len(refresh_calls) == 2
+        assert len(sync_calls) == 2
+    finally:
+        panel.deleteLater()
+        assert app is not None
+
+
 def test_left_right_keys_switch_selected_stage(monkeypatch):
     app = QApplication.instance() or QApplication([])
     panel = _panel_with_dummy_workflow(monkeypatch)

@@ -715,11 +715,13 @@ def apply_theme(window):
     except Exception:
         pass
     try:
+        from ui.run_state import compute_header_run_state
+
         stopping = bool(getattr(window, "_stopping_in_progress", False))
         running = bool(getattr(window.engine, "is_running", False))
         set_header_run_button_state(
             window,
-            "stopping" if stopping else ("running" if running else "idle"),
+            compute_header_run_state(engine_running=running, stopping=stopping),
         )
     except Exception:
         pass
@@ -864,4 +866,3 @@ def _save_plan_view(index):
     """编排视图切换时保存。"""
     from ui.ui_state import save_plan_view_current
     save_plan_view_current(index)
-

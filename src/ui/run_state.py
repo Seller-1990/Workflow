@@ -14,6 +14,15 @@ class RunLockState:
     background_label_text: str = ""
 
 
+def compute_header_run_state(*, engine_running: bool, stopping: bool = False) -> str:
+    """计算顶部主按钮状态。"""
+    if stopping:
+        return "stopping"
+    if engine_running:
+        return "running"
+    return "idle"
+
+
 def compute_run_lock_state(
     *,
     running_id: int | None,

@@ -25,6 +25,7 @@ from ui.theme import (
     get_menu_stylesheet,
     msg_question,
 )
+from ui.run_diagnostics import build_run_diagnostic
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +249,7 @@ class RunHistoryPanel(QWidget):
 
         for row, history in enumerate(histories):
             counts = self._history_step_summary.get(int(history.id), {})
+            diagnostic = build_run_diagnostic(history.status, counts)
             # 行背景色
             status_tokens = get_status_tokens(self._dark).get(history.status, get_status_tokens(self._dark)["pending"])
             row_bg = QColor(status_tokens["bg"])
@@ -280,7 +282,9 @@ class RunHistoryPanel(QWidget):
             status_item.setTextAlignment(Qt.AlignCenter)
             status_item.setForeground(QColor(status_tokens["fg"]))
             if notify_tooltip:
-                status_item.setToolTip(notify_tooltip)
+                status_item.setToolTip(f"{diagnostic}\n{notify_tooltip}")
+            else:
+                status_item.setToolTip(diagnostic)
             if row_bg:
                 status_item.setBackground(row_bg)
             self.table.setItem(row, 1, status_item)
@@ -344,7 +348,7 @@ class RunHistoryPanel(QWidget):
             cancelled_count = int(counts.get('cancelled', 0))
             if cancelled_count:
                 summary_parts.append(f"取消{cancelled_count}")
-            run_item.setToolTip(f"步骤: {' '.join(summary_parts)}")
+            run_item.setToolTip(f"{diagnostic}\n步骤: {' '.join(summary_parts)}")
 
     def clear(self):
         """清空"""

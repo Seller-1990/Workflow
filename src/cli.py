@@ -39,6 +39,7 @@ if str(src_dir) not in sys.path:
 # 纯查询命令不再启动 QApplication，冷启动从 ~700ms 降到 ~150ms。
 from PySide6.QtWidgets import QApplication
 from duration_utils import format_duration_short
+from cli_formatting import format_step_finished_line
 
 _app = None
 
@@ -318,12 +319,7 @@ class CLIEngine:
         print(f"  > {step_name} ...")
 
     def _on_step_finished(self, step_id, step_name, status, duration_seconds=None):
-        duration_text = format_duration_short(duration_seconds)
-        suffix = f" · 耗时 {duration_text}" if duration_text else ""
-        if status == "success":
-            print(f"  OK [{step_name}] 完成{suffix}")
-        else:
-            print(f"  FAIL [{step_name}] 状态: {status}{suffix}")
+        print(format_step_finished_line(step_name, status, duration_seconds))
 
     def run(self, workflow_id, mode="full", step_id=None, stage_uid=None, notify_on_complete=True, notify_on_error=True):
         """运行工作流

@@ -157,8 +157,11 @@ class StepCard(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
 
-    def set_status(self, status: str) -> None:
-        self._status = status or "idle"
+    def set_status(self, status: str) -> bool:
+        next_status = status or "idle"
+        if next_status == self._status:
+            return False
+        self._status = next_status
         self.setProperty("stepStatus", self._status)
         self.status_badge.setProperty("stepStatus", self._status)
         self.status_badge.setText(STATUS_LABELS.get(self._status, ""))
@@ -170,13 +173,18 @@ class StepCard(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
         self.refresh_minimum_height()
+        return True
 
-    def set_duration_seconds(self, duration_seconds) -> None:
-        self._duration_seconds = duration_seconds
+    def set_duration_seconds(self, duration_seconds) -> bool:
         duration_text = format_duration_short(duration_seconds)
-        self.duration_badge.setText(f"耗时 {duration_text}" if duration_text else "")
+        next_text = f"耗时 {duration_text}" if duration_text else ""
+        if duration_seconds == self._duration_seconds and self.duration_badge.text() == next_text:
+            return False
+        self._duration_seconds = duration_seconds
+        self.duration_badge.setText(next_text)
         self.duration_badge.setVisible(bool(duration_text))
         self.refresh_minimum_height()
+        return True
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -312,16 +320,24 @@ class StageLane(QFrame):
         self.refresh_minimum_height()
         self.updateGeometry()
 
-    def update_progress(self) -> None:
+    def update_progress(self) -> bool:
         total = len(self._cards)
         completed = sum(1 for card in self._cards if card._status in COMPLETED_STATUSES)
         value = round((completed / total) * 100) if total else 0
         status = self._progress_status(total)
+        tooltip = f"阶段进度：{completed}/{total}"
+        if (
+            self.progress.value() == value
+            and self.progress.property("stageStatus") == status
+            and self.progress.toolTip() == tooltip
+        ):
+            return False
         self.progress.setValue(value)
         self.progress.setProperty("stageStatus", status)
-        self.progress.setToolTip(f"阶段进度：{completed}/{total}")
+        self.progress.setToolTip(tooltip)
         self.progress.style().unpolish(self.progress)
         self.progress.style().polish(self.progress)
+        return True
 
     def _progress_status(self, total: int) -> str:
         if total == 0:
@@ -816,12 +832,12 @@ class WorkbenchBoardPanel(QWidget):
     def highlight_step(self, step_id: int, status: str, duration_seconds=None):
         card = self._cards.get(int(step_id))
         if card:
-            card.set_status(status or "idle")
+            changed = card.set_status(status or "idle")
             if status != "running":
-                card.set_duration_seconds(duration_seconds)
+                changed = card.set_duration_seconds(duration_seconds) or changed
             stage_uid = self._step_stage.get(int(step_id), "")
             lane = self._lanes.get(stage_uid)
-            if lane:
+            if lane and changed:
                 lane.update_progress()
                 lane.refresh_minimum_height()
                 self._sync_board_minimum_size()
