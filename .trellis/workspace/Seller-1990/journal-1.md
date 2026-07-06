@@ -106,3 +106,38 @@ Installed requirements-ci test dependencies after user approval, fixed broad-exc
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Remaining workflow quality optimizations
+
+**Date**: 2026-07-06
+**Task**: Remaining workflow quality optimizations
+**Branch**: `main`
+
+### Summary
+
+Restored hotspot quality gates, added scheduler metrics and run-history diagnostics, implemented run-history pagination, split remaining CLI/import/UI hotspot helpers, and updated Trellis specs/docs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9095b8c` | (see git log) |
+| `8b85393` | (see git log) |
+| `8025b7b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
