@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend/package quality entry point for this single-repo project."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Project quality and validation expectations for runtime/package behavior."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide index for safe scoped changes."}
