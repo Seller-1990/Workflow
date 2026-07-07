@@ -291,6 +291,8 @@ class FileWatcher:
             observer = Observer()
             handler = _Handler()
             scheduled = 0
+            failed: list[str] = []
+            eligible = [f for f in folders if os.path.isdir(f)]
             for f in folders:
                 if os.path.isdir(f):
                     try:
@@ -298,7 +300,15 @@ class FileWatcher:
                         scheduled += 1
                     except Exception as e:
                         logger.warning("watchdog schedule 失败 %s: %s", f, e)
+                        failed.append(str(f))
             if scheduled == 0:
+                return
+            if failed or scheduled < len(eligible):
+                self._log(
+                    "警告：部分监听目录未能启用事件驱动，已整体回退 mtime 轮询："
+                    + "；".join(failed)
+                )
+                self._observer = None
                 return
             observer.start()
             self._observer = observer

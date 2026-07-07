@@ -16,7 +16,7 @@ must not imply success while work is still stopping.
 
 - Do not hide cancellation as a generic failure.
 - Do not update terminal `RunHistory` status before cleaning pending/running
-  step logs for a cancelled run.
+  step logs for that run.
 - Do not duplicate run-state button logic outside `ui.run_state`.
 - Do not add schema objects only to ORM models without an idempotent migration.
 
@@ -235,6 +235,66 @@ Correct:
 
 ```python
 hiddenimports=["requests", "watchdog", "backports.tarfile"]
+```
+
+### Scenario: Run Finalization StepLog Convergence
+
+#### 1. Scope / Trigger
+
+- Trigger: changing run finalization, `RunHistory` terminal writes, or StepLog
+  bulk cleanup.
+- Scope: `engine_core.run_finalization.finalize_run_record`,
+  `engine_core.lifecycle.finalize_run`, and `database_runs` StepLog updates.
+
+#### 2. Signatures
+
+- `finalize_run_record(..., finish_unfinished_step_logs=..., update_run_history=...) -> bool`
+- `finish_unfinished_step_logs(run_history_id: int, status: str, error_message: str) -> int`
+
+#### 3. Contracts
+
+- Before writing any terminal `RunHistory.status`, all pending/running StepLog
+  rows for the run must be moved to a terminal status.
+- `cancelled` runs converge unfinished steps to `cancelled`.
+- `failure` runs converge unfinished steps to `failure`.
+- Unexpected `success` runs with unfinished steps converge them to `skipped`,
+  never to false success.
+- StepLog `error_message` is truncated at the database write boundary.
+
+#### 4. Validation & Error Matrix
+
+- Step cleanup fails with operational error -> warn and still attempt run
+  terminal update.
+- Run terminal update fails with operational error -> return `False` to caller.
+- Programming errors such as invalid update fields must propagate, not be hidden
+  as ordinary finalization failures.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: terminal run and all related StepLog rows are terminal in one ordered
+  finalization flow.
+- Base: no unfinished StepLog rows; bulk update affects zero rows.
+- Bad: `RunHistory.status="failure"` while a related StepLog remains
+  `running` or `pending`.
+
+#### 6. Tests Required
+
+- Pure finalization tests assert step cleanup happens before run terminal write.
+- Database contract tests assert long StepLog errors are truncated.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```python
+update_run_history(run_id, status="failure", end_time=end_time)
+```
+
+Correct:
+
+```python
+finish_unfinished_step_logs(run_id, "failure", "运行失败，未完成步骤被清理")
+update_run_history(run_id, status="failure", end_time=end_time)
 ```
 
 ---

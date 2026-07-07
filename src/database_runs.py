@@ -23,6 +23,16 @@ from models import RunHistory, StepLog
 from run_policy_notes import count_policy_risk_notes
 
 logger = logging.getLogger(__name__)
+MAX_ERROR_MESSAGE_LENGTH = 4096
+
+
+def truncate_error_message(message: object, max_length: int = MAX_ERROR_MESSAGE_LENGTH) -> str | None:
+    if message is None:
+        return None
+    value = str(message)
+    if len(value) <= max_length:
+        return value
+    return value[: max_length - 3] + "..."
 
 
 def _wal_checkpoint(session: Session) -> None:
@@ -193,10 +203,12 @@ def clear_run_histories(workflow_id: int) -> int:
 def create_step_log(
     run_history_id: int,
     step_id: int,
-    order: int = 0
+    order: int = 0,
+    error_message: str | None = None,
 ) -> StepLog:
     """创建步骤日志"""
     last_error = None
+    safe_error_message = truncate_error_message(error_message)
     from database import get_session
     for attempt in range(3):
         with get_session() as session:
@@ -204,7 +216,8 @@ def create_step_log(
                 run_history_id=run_history_id,
                 step_id=step_id,
                 order=order,
-                status="pending"
+                status="pending",
+                error_message=safe_error_message,
             )
             session.add(step_log)
             fallback = None
@@ -215,6 +228,7 @@ def create_step_log(
                     step_id=step_id,
                     order=order,
                     status="pending",
+                    error_message=safe_error_message,
                 )
                 fallback.id = step_log.id
                 session.commit()
@@ -327,7 +341,17 @@ def cancel_pending_step_logs(run_history_id: int, error_message: str = "用户�
     使用单次 UPDATE 替代 N 次 update_step_log，避免 N+1 commit。
     返回被改动的行数。
     """
+    return finish_unfinished_step_logs(run_history_id, "cancelled", error_message)
+
+
+def finish_unfinished_step_logs(
+    run_history_id: int,
+    status: str,
+    error_message: str = "未完成步骤被清理",
+) -> int:
+    """批量把指定 run 下所有 pending/running 的 step_logs 收敛到终态。"""
     now = datetime.now()
+    safe_error_message = truncate_error_message(error_message)
     try:
         from database import get_session
         with get_session() as session:
@@ -339,9 +363,9 @@ def cancel_pending_step_logs(run_history_id: int, error_message: str = "用户�
                 )
                 .update(
                     {
-                        StepLog.status: "cancelled",
+                        StepLog.status: status,
                         StepLog.end_time: now,
-                        StepLog.error_message: error_message,
+                        StepLog.error_message: safe_error_message,
                     },
                     synchronize_session=False,
                 )
@@ -349,7 +373,7 @@ def cancel_pending_step_logs(run_history_id: int, error_message: str = "用户�
             session.commit()
             return int(affected or 0)
     except Exception as e:
-        logger.warning("批量取消 step_logs 失败: %s", e)
+        logger.warning("批量收敛 step_logs 失败: %s", e)
         return 0
 
 
@@ -361,6 +385,8 @@ def update_step_log(step_log_id: int, **kwargs) -> Optional[StepLog]:
     checkpoint，足以保证跨进程一致性。
     """
     _validate_update_fields("StepLog", kwargs, STEP_LOG_UPDATE_FIELDS)
+    if "error_message" in kwargs:
+        kwargs["error_message"] = truncate_error_message(kwargs.get("error_message"))
     from database import get_session
     with get_session() as session:
         step_log = session.query(StepLog).filter(StepLog.id == step_log_id).first()

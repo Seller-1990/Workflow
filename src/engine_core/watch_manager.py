@@ -113,6 +113,9 @@ class WatchManager:
         # R4-#1: stop_watch 内部已发 watch_stopped；不再重复 emit，避免指示器抖动
         # M1: 只停本工作流的旧监听，不再波及其它工作流
         self.stop_watch(workflow.id)
+        if workflow.id in self.watchers:
+            self._log_cb("警告：旧的文件监听线程仍在退出中，本次重启已取消")
+            return False
 
         if not workflow.watch_enabled:
             return False

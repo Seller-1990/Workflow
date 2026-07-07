@@ -25,6 +25,7 @@ from database import (
     get_latest_run_history,
     get_step_logs_by_run,
 )
+from database_runs import finish_unfinished_step_logs
 from engine_core.run_finalization import finalize_run_record
 
 logger = logging.getLogger(__name__)
@@ -97,19 +98,15 @@ def finalize_run(
     *,
     status_value: str,
     end_time: datetime,
-    error_message: Optional[str] = None,
 ) -> bool:
     """落库一次运行的最终状态。失败不抛出，返回 bool 给上层用于日志降级。
-
-    #8: error_message 在 SQLAlchemy 序列化前显式 str() + 截断 4KB，
-        避免传入 Exception 实例 / 巨型 traceback 让 update_run_history 自己抛错被吞掉。
     """
     return finalize_run_record(
         run_history_id,
         status_value=status_value,
         end_time=end_time,
-        error_message=error_message,
         update_run_history=update_run_history,
+        finish_unfinished_step_logs=finish_unfinished_step_logs,
         cancel_pending_step_logs=cancel_pending_step_logs,
         warn_cb=_log_finalize_warning,
     )

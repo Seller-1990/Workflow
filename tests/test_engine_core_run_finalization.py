@@ -31,7 +31,6 @@ def test_finalize_cancelled_run_cleans_unfinished_steps_before_run_terminal_stat
         cancel_pending_step_logs=lambda run_id, message: calls.append(("steps", run_id, message)) or 2,
         update_run_history=lambda run_id, **kwargs: calls.append(("run", run_id, kwargs)),
     )
-
     assert result is True
     assert calls == [
         ("steps", 10, "运行已取消，未完成步骤被清理"),
@@ -39,7 +38,7 @@ def test_finalize_cancelled_run_cleans_unfinished_steps_before_run_terminal_stat
     ]
 
 
-def test_finalize_success_run_does_not_touch_step_logs():
+def test_finalize_success_run_cleans_unfinished_steps_before_run_terminal_status():
     calls = []
     end_time = datetime(2026, 1, 1, 12, 0, 0)
 
@@ -50,9 +49,11 @@ def test_finalize_success_run_does_not_touch_step_logs():
         cancel_pending_step_logs=lambda run_id, message: calls.append(("steps", run_id, message)),
         update_run_history=lambda run_id, **kwargs: calls.append(("run", run_id, kwargs)),
     )
-
     assert result is True
-    assert calls == [("run", 11, {"status": "success", "end_time": end_time})]
+    assert calls == [
+        ("steps", 11, "运行已完成，未执行步骤被清理"),
+        ("run", 11, {"status": "success", "end_time": end_time}),
+    ]
 
 
 def test_finalize_run_continues_when_step_cleanup_fails():
@@ -69,7 +70,7 @@ def test_finalize_run_continues_when_step_cleanup_fails():
     )
 
     assert result is True
-    assert warnings == ["批量取消未完成 step_logs 失败: db locked"]
+    assert warnings == ["批量收敛未完成 step_logs 失败: db locked"]
     assert updates
 
 
@@ -84,6 +85,5 @@ def test_finalize_run_returns_false_when_run_update_fails():
         update_run_history=lambda run_id, **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")),
         warn_cb=lambda template, exc: warnings.append(template % exc),
     )
-
     assert result is False
     assert warnings == ["更新运行历史失败: run_history_id=13, disk full"]
