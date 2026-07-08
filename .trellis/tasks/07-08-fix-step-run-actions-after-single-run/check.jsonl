@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Quality check entry point."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify run-state and step action enablement behavior."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Check cross-layer state refresh and reuse risks."}

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QStyle, QApplication, QTabWidget,
     QStackedWidget
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPropertyAnimation, Qt
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 
 from config import APP_NAME, APP_VERSION, ICON_PATH
@@ -352,7 +352,6 @@ def _apply_chip_style(chip):
 def _start_pulse_animation(window, button):
     """任务3：运行中主按钮轻微脉动（opacity 0.85↔1.0，1.5s 循环）"""
     from PySide6.QtWidgets import QGraphicsOpacityEffect
-    from PySide6.QtCore import QPropertyAnimation
 
     if not hasattr(window, "_pulse_effect"):
         window._pulse_effect = QGraphicsOpacityEffect(button)

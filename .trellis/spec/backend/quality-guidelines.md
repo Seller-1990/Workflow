@@ -97,12 +97,17 @@ return ExecutorResult(
 - Header controls must be derived from the projection helper rather than
   duplicating local boolean logic.
 - `stopping=True` wins over ordinary running state for user-facing labels.
+- Header state transitions must be exception-free for
+  `running -> idle/cancelled/failure`; otherwise finish handling can abort
+  before `refresh_run_lock_panels()` unlocks step actions.
 
 #### 4. Validation & Error Matrix
 
 - Running false, stopping false -> idle/run-enabled state.
 - Running true, stopping false -> running/stop-enabled state.
 - Running true or false, stopping true -> stopping state.
+- Running state has created pulse animation -> idle transition stops the
+  animation without raising and leaves step panels enabled.
 
 #### 5. Good/Base/Bad Cases
 
@@ -113,6 +118,7 @@ return ExecutorResult(
 #### 6. Tests Required
 
 - Pure `ui.run_state` tests for every projection combination.
+- UI lifecycle test for `workflow_finished` after a pulse animation has started.
 
 #### 7. Wrong vs Correct
 
