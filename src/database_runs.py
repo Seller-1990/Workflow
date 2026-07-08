@@ -115,12 +115,10 @@ def get_run_histories_by_workflow(
     """获取工作流的运行历史"""
     from database import get_session
     with get_session() as session:
-        return session.query(RunHistory).filter(
-            RunHistory.workflow_id == workflow_id
-        ).order_by(
-            RunHistory.start_time.desc(),
-            RunHistory.id.desc(),
-        ).offset(max(0, int(offset or 0))).limit(max(1, int(limit or 1))).all()
+        query = session.query(RunHistory).filter(RunHistory.workflow_id == workflow_id)
+        offset_value = max(0, int(offset or 0))
+        limit_value = max(1, int(limit or 1))
+        return query.order_by(RunHistory.id.desc()).offset(offset_value).limit(limit_value).all()
 
 
 def get_latest_run_history(
@@ -144,7 +142,7 @@ def get_latest_run_history(
             query = query.filter(RunHistory.end_time.isnot(None))
         if exclude_run_history_id is not None:
             query = query.filter(RunHistory.id != exclude_run_history_id)
-        return query.order_by(RunHistory.start_time.desc(), RunHistory.id.desc()).first()
+        return query.order_by(RunHistory.id.desc()).first()
 
 
 def update_run_history(run_history_id: int, **kwargs) -> Optional[RunHistory]:

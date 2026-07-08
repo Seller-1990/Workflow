@@ -297,6 +297,57 @@ finish_unfinished_step_logs(run_id, "failure", "运行失败，未完成步骤�
 update_run_history(run_id, status="failure", end_time=end_time)
 ```
 
+### Scenario: Run History Latest Ordering
+
+#### 1. Scope / Trigger
+
+- Trigger: changing run-history queries, latest-run helpers, or history-panel
+  pagination.
+- Scope: `database_runs.get_run_histories_by_workflow` and
+  `database_runs.get_latest_run_history`.
+
+#### 2. Signatures
+
+- `get_run_histories_by_workflow(workflow_id: int, limit: int = 20, offset: int = 0) -> list[RunHistory]`
+- `get_latest_run_history(..., only_finished: bool = False, exclude_run_history_id: int | None = None) -> RunHistory | None`
+
+#### 3. Contracts
+
+- "Latest" means the most recently inserted `RunHistory` row, ordered by
+  `RunHistory.id DESC`.
+- Do not order latest-history queries by `start_time`; host clock changes,
+  delayed writes, or repaired timestamps can make a newer row appear older.
+- Pagination offsets must apply after the `id DESC` ordering.
+- `only_finished` and `exclude_run_history_id` filters must not change the
+  ordering contract.
+
+#### 4. Validation & Error Matrix
+
+- Newer row has an earlier `start_time` -> newer row still appears first.
+- `start_time` is repaired or imported -> insertion order still determines
+  latest UI display.
+- No matching rows -> return an empty list or `None` as before.
+
+#### 5. Tests Required
+
+- Database contract test where two rows have inverted `start_time` values and
+  the higher `id` is returned first.
+- Latest-helper test with `only_finished=True` and inverted timestamps.
+
+#### 6. Wrong vs Correct
+
+Wrong:
+
+```python
+query.order_by(RunHistory.start_time.desc(), RunHistory.id.desc())
+```
+
+Correct:
+
+```python
+query.order_by(RunHistory.id.desc())
+```
+
 ---
 
 ## Testing Requirements
