@@ -19,3 +19,17 @@ If you're using Codex or another agent-capable tool, additional project-scoped h
 Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
 
 <!-- TRELLIS:END -->
+
+## Project Release Rules
+
+- Before packaging after completed code/rules/documentation changes intended for
+  release, update `APP_VERSION` in `src/config.py` first so packaged artifact
+  names reflect the new version.
+- Small scoped fixes, bug fixes, and small optimizations increment the patch
+  version: `4.1.2 -> 4.1.3`.
+- Broad changes, major refactors, or major feature changes increment the major
+  version and reset minor/patch: `4.1.3 -> 5.0.0`.
+- Do not auto-increment the minor version unless the user explicitly asks for a
+  minor release.
+- Pure rebuilds of the same already-versioned source do not require a version
+  bump unless the user explicitly asks for one.

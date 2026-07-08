@@ -1,0 +1,2 @@
+{"file": "AGENTS.md", "reason": "Verify the new durable rule is clear and scoped."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check packaging rule consistency with existing release contract."}
