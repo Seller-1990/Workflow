@@ -1,0 +1,4 @@
+{"file": "AGENTS.md", "reason": "Project rules and task routing."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Project spec entry point."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Existing quality and packaging contracts."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer/code-reuse review prompts."}
