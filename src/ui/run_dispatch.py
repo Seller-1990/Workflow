@@ -6,9 +6,8 @@
 """
 
 import logging
-import threading
 
-from ui.run_actions import run_engine_mode
+from ui.run_worker import RunWorker
 from ui.theme import msg_warning
 
 logger = logging.getLogger(__name__)
@@ -101,23 +100,12 @@ def on_run_requested(window, mode: str, param):
 
     workflow_id = window._current_workflow_id
 
-    def run_in_thread():
-        try:
-            run_engine_mode(
-                window.engine,
-                workflow_id=workflow_id,
-                mode=mode,
-                param=param,
-            )
-        except Exception as e:
-            from PySide6.QtCore import QMetaObject, Qt, Q_ARG
-            QMetaObject.invokeMethod(
-                window.engine, "_emit_log",
-                Qt.QueuedConnection,
-                Q_ARG(str, f"运行异常: {e}")
-            )
-
-    window._run_thread = threading.Thread(target=run_in_thread, daemon=True)
+    window._run_thread = RunWorker(
+        window.engine,
+        workflow_id=workflow_id,
+        mode=mode,
+        param=param,
+    )
     window._run_thread.start()
 
 

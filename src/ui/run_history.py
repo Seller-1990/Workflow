@@ -201,11 +201,12 @@ class RunHistoryPanel(QWidget):
             offset=offset,
         )
         self._has_more_history = len(page) > self.PAGE_SIZE
-        self._all_histories.extend(page[:self.PAGE_SIZE])
+        new_histories = page[:self.PAGE_SIZE]
+        self._all_histories.extend(new_histories)
         self.btn_load_more.setVisible(self._has_more_history)
-        # 安全地提取history ID，确保所有ID都是有效的整数
+        # 安全地提取新增 history ID，避免加载更多时重复汇总已缓存记录。
         history_ids = []
-        for h in self._all_histories:
+        for h in new_histories:
             hid = getattr(h, "id", None)
             if hid is not None:
                 try:
@@ -214,12 +215,9 @@ class RunHistoryPanel(QWidget):
                     pass
         if history_ids:
             try:
-                self._history_step_summary = get_step_log_summary_by_runs(history_ids)
+                self._history_step_summary.update(get_step_log_summary_by_runs(history_ids))
             except Exception:
                 logger.exception("加载运行历史统计失败: workflow_id=%s", self._workflow_id)
-                self._history_step_summary = {}
-        else:
-            self._history_step_summary = {}
 
     def _on_filter_changed(self):
         """状态筛选变更"""

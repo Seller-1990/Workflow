@@ -244,15 +244,15 @@ def ensure_single_script_step(
 
 
 def delete_workflow(workflow_id: int) -> bool:
-    """删除工作流"""
+    """删除工作流。
+
+    使用显式批量删除代替 ``session.delete(workflow)``，避免历史记录和
+    步骤日志很多时触发 ORM 级联加载大量对象。
+    """
     from database import get_session
-    with get_session() as session:
-        workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
-        if workflow:
-            session.delete(workflow)
-            session.commit()
-            return True
-        return False
+    from database_workflow_delete import delete_workflow_impl
+
+    return delete_workflow_impl(workflow_id, get_session=get_session)
 
 
 def copy_workflow(workflow_id: int, new_name: str) -> Optional[Workflow]:

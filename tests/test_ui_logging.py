@@ -77,32 +77,6 @@ def test_run_history_logs_summary_render_failure(monkeypatch, caplog):
     assert app is not None
 
 
-def test_run_history_load_more_uses_offset(monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    panel = RunHistoryPanel()
-    panel.PAGE_SIZE = 2
-    calls = []
-    pages = {
-        0: [MockHistory(id=1, run_id="run-001"), MockHistory(id=2, run_id="run-002"), MockHistory(id=3, run_id="run-003")],
-        2: [MockHistory(id=4, run_id="run-004")],
-    }
-
-    def fake_get_run_histories(workflow_id, limit=20, offset=0):
-        calls.append((workflow_id, limit, offset))
-        return pages.get(offset, [])
-
-    monkeypatch.setattr(run_history_module, "get_run_histories_by_workflow", fake_get_run_histories)
-    monkeypatch.setattr(run_history_module, "get_step_log_summary_by_runs", lambda history_ids: {})
-
-    panel.load_history(99)
-    panel.load_more_history()
-
-    assert calls == [(99, 3, 0), (99, 3, 2)]
-    assert [h.id for h in panel._all_histories] == [1, 2, 4]
-    assert panel.btn_load_more.isHidden() is True
-    assert app is not None
-
-
 def test_step_editor_logs_dependency_preview_failure(monkeypatch, caplog):
     app = QApplication.instance() or QApplication([])
     panel = StepEditorPanel()

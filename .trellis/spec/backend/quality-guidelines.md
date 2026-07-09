@@ -243,6 +243,60 @@ Correct:
 hiddenimports=["requests", "watchdog", "backports.tarfile"]
 ```
 
+### Scenario: Release Metadata and Artifact Hygiene
+
+#### 1. Scope / Trigger
+
+- Trigger: changing app version, release docs, `.gitignore`, packaging specs, or
+  generated artifacts under `dist/`.
+
+#### 2. Signatures
+
+- Version source: `src/config.py::APP_VERSION`
+- Package metadata mirror: `src/__init__.py::__version__`
+- Artifact examples: `dist/工作流管理_<APP_VERSION>_slim2.exe`
+
+#### 3. Contracts
+
+- `APP_VERSION` is the release version source of truth.
+- `src/__init__.py::__version__` and README current-version text must match
+  `APP_VERSION`.
+- PyInstaller spec comments and README output examples must use
+  `<APP_VERSION>` placeholders instead of hard-coded historical versions.
+- `dist/` artifacts are ignored by Git; release binaries are delivered through
+  GitHub Actions artifacts, not committed to the repository.
+
+#### 4. Validation & Error Matrix
+
+- README says an older current version -> release metadata test fails.
+- Spec comment contains `工作流管理_<number>` -> release metadata test fails.
+- `.gitignore` re-allows `dist/*.exe` -> release metadata test fails.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: bump `APP_VERSION`, mirror `__version__`, update README current version.
+- Base: pure rebuild from unchanged source keeps the same version.
+- Bad: committing `dist/*.exe` or `.sha256` files to satisfy delivery needs.
+
+#### 6. Tests Required
+
+- `tests/test_release_metadata.py` must cover version consistency, spec
+  placeholders, and `dist/` ignore behavior.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```text
+输出: dist/工作流管理_4.1.0_slim2.exe
+```
+
+Correct:
+
+```text
+输出: dist/工作流管理_<APP_VERSION>_slim2.exe
+```
+
 ### Scenario: Run Finalization StepLog Convergence
 
 #### 1. Scope / Trigger

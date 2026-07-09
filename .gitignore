@@ -6,9 +6,7 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-# dist/：忽略内容但允许 exe（用户要求打包程序也推送）
-dist/*
-!dist/*.exe
+dist/
 downloads/
 eggs/
 .eggs/

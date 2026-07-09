@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend rules entrypoint"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "database migrations and run history contracts"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "run lifecycle, packaging, and quality contracts"}

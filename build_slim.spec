@@ -2,7 +2,7 @@
 """
 工作流管理应用精简打包配置
 使用命令: pyinstaller build_slim.spec
-输出: dist/工作流管理_4.1.0_slim.exe
+输出: dist/工作流管理_<APP_VERSION>_slim.exe
 """
 
 import runpy

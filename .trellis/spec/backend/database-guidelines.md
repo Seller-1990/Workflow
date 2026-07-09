@@ -41,6 +41,39 @@ diagnostic text to `StepLog.error_message`, then derive summary counters through
 the shared run-policy note helper. Do not add a schema column for a diagnostic
 unless multiple workflows need structured querying.
 
+### Workflow Deletion
+
+Use `database.delete_workflow()` / `database_workflow_delete.delete_workflow_impl()`
+for workflow deletion. Do not replace it with `session.delete(workflow)`.
+
+Contracts:
+
+- Delete `StepLog` rows first, using both `run_history_id` and `step_id` filters.
+- Then bulk-delete `RunHistory`, `WorkflowVersion`, `Step`, `WorkflowStage`,
+  `RecentWorkflow`, and finally `Workflow`.
+- Use `synchronize_session=False` for bulk deletes; callers should treat the
+  deleted workflow object as invalid after the call.
+- Return `True` when a workflow row was deleted and `False` when no row existed.
+
+Tests required:
+
+- Create a workflow with stage, step, run history, step log, version, and recent
+  workflow entry.
+- Assert `delete_workflow()` removes all related rows and is idempotent on a
+  second call.
+
+Wrong:
+
+```python
+session.delete(workflow)
+```
+
+Correct:
+
+```python
+return delete_workflow_impl(workflow_id, get_session=get_session)
+```
+
 ### Terminal State Updates
 
 For normal workflow completion, use `engine_core.run_finalization.finalize_run_record`.
