@@ -259,7 +259,7 @@ Workflow/
 │       └── sub_workflow_executor.py  # 子工作流执行器
 ├── data/                       # SQLite 数据库（自动创建）
 ├── logs/                       # 运行日志（按工作流/运行批次/步骤分级）
-├── docs/                       # 项目设计文档
+├── docs/                       # 维护与安全文档
 ├── build.spec                  # PyInstaller 打包配置（完整包）
 ├── build_slim2.spec            # 默认发布用 PyInstaller spec
 ├── requirements.txt            # Python 依赖
