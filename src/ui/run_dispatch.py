@@ -9,6 +9,7 @@ import logging
 
 from ui.run_worker import RunWorker
 from ui.theme import msg_warning
+from ui.script_run_args_dialog import prompt_run_arg_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +69,14 @@ def on_run_requested(window, mode: str, param):
         if prev_cb is not None:
             try:
                 window.engine.workflow_finished.disconnect(prev_cb)
-            except Exception:
+            except (TypeError, RuntimeError):
                 pass
             window._pending_retry_cb = None
 
         def _retry_after_stop(_wid, _run_id, _status):
             try:
                 window.engine.workflow_finished.disconnect(_retry_after_stop)
-            except Exception:
+            except (TypeError, RuntimeError):
                 pass
             window._pending_retry_cb = None
             # 异步重新触发请求，让 Qt 完整跑完 finished 逻辑
@@ -100,11 +101,23 @@ def on_run_requested(window, mode: str, param):
 
     workflow_id = window._current_workflow_id
 
+    run_arg_overrides = {}
+    if mode != "retry_failed":
+        try:
+            run_arg_overrides = _collect_run_arg_overrides(window, mode, param)
+            if run_arg_overrides is None:
+                return  # 用户取消或参数错误
+        except Exception as e:
+            logger.exception("收集临时运行参数失败: %s", e)
+            msg_warning(window, window._dark_mode, "参数错误", f"无法准备临时参数: {e}")
+            return
+
     window._run_thread = RunWorker(
         window.engine,
         workflow_id=workflow_id,
         mode=mode,
         param=param,
+        run_arg_overrides=run_arg_overrides,
     )
     window._run_thread.start()
 
@@ -120,3 +133,53 @@ def stop_workflow(window):
         pass
     window.engine.cancel()
     window.statusbar.showMessage("正在停止...")
+
+
+def _collect_run_arg_overrides(window, mode: str, param):
+    """在启动 RunWorker 前收集临时参数。返回 None 表示用户取消。"""
+    from config import StepType
+
+    workflow_id = window._current_workflow_id
+
+    from database import get_steps_by_workflow, get_workflow_by_id
+
+    workflow = get_workflow_by_id(workflow_id)
+    if workflow is None:
+        msg_warning(window, window._dark_mode, "警告", "工作流不存在")
+        return None
+
+    all_steps = get_steps_by_workflow(workflow_id) or []
+    steps = all_steps
+    try:
+        from engine import RunMode
+
+        mode_map = {
+            "full": RunMode.FULL,
+            "from_step": RunMode.FROM_STEP,
+            "only_step": RunMode.ONLY_STEP,
+            "only_stage": RunMode.ONLY_STAGE,
+            "from_stage": RunMode.FROM_STAGE,
+        }
+        run_mode = mode_map.get(mode)
+        if run_mode is not None and hasattr(window.engine, "_select_steps"):
+            step_id = param if mode in {"from_step", "only_step"} else None
+            stage_uid = param if mode in {"only_stage", "from_stage"} else None
+            steps = window.engine._select_steps(
+                all_steps, run_mode, step_id, workflow, stage_uid=stage_uid,
+            ) or []
+    except Exception as e:
+        logger.warning("预选步骤失败，回退全部步骤: %s", e)
+        steps = all_steps
+
+    def is_python(step) -> bool:
+        return getattr(step, "step_type", None) == StepType.PYTHON
+
+    accepted, overrides = prompt_run_arg_overrides(
+        window,
+        steps,
+        dark=getattr(window, "_dark_mode", False),
+        is_python=is_python,
+    )
+    if not accepted:
+        return None
+    return overrides

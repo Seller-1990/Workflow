@@ -16,8 +16,8 @@ def test_run_worker_invokes_runner_in_background_thread():
     calls = []
     engine = object()
 
-    def runner(target_engine, *, workflow_id, mode, param):
-        calls.append((target_engine, workflow_id, mode, param))
+    def runner(target_engine, *, workflow_id, mode, param, run_arg_overrides=None):
+        calls.append((target_engine, workflow_id, mode, param, run_arg_overrides))
 
     worker = RunWorker(
         engine,
@@ -31,14 +31,14 @@ def test_run_worker_invokes_runner_in_background_thread():
     worker.join(timeout=2)
 
     assert worker.is_alive() is False
-    assert calls == [(engine, 7, "only_step", 13)]
+    assert calls == [(engine, 7, "only_step", 13, {})]
 
 
 def test_run_worker_routes_runner_exception_to_queued_engine_log(monkeypatch):
     calls = []
     engine = object()
 
-    def runner(_target_engine, *, workflow_id, mode, param):
+    def runner(_target_engine, *, workflow_id, mode, param, run_arg_overrides=None):
         raise RuntimeError(f"boom {workflow_id} {mode} {param}")
 
     monkeypatch.setattr(
@@ -76,3 +76,23 @@ def test_run_worker_routes_runner_exception_to_queued_engine_log(monkeypatch):
             ("arg", str, "运行异常: boom 7 from_step 3"),
         )
     ]
+
+
+def test_run_worker_forwards_run_arg_overrides():
+    calls = []
+    engine = object()
+
+    def runner(target_engine, *, workflow_id, mode, param, run_arg_overrides=None):
+        calls.append(run_arg_overrides)
+
+    worker = RunWorker(
+        engine,
+        workflow_id=1,
+        mode="full",
+        param=None,
+        runner=runner,
+        run_arg_overrides={"uid-1": ["--year", "2025"]},
+    )
+    worker.start()
+    worker.join(timeout=2)
+    assert calls == [{"uid-1": ["--year", "2025"]}]

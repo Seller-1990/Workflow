@@ -90,13 +90,22 @@ def test_engine_run_sub_workflow_reuses_parent_context_without_lock_conflict(mon
                 parent_run_id=kwargs.get("parent_run_id"),
             )
 
-        def fake_execute_steps(current_workflow, steps, run_history_id, log_dir, signal_policy, run_cancel_event=None):
+        def fake_execute_steps(
+            current_workflow,
+            steps,
+            run_history_id,
+            log_dir,
+            signal_policy,
+            run_cancel_event=None,
+            run_arg_overrides=None,
+        ):
             calls["execute_steps"] = {
                 "workflow": current_workflow,
                 "steps": steps,
                 "run_history_id": run_history_id,
                 "signal_policy": signal_policy,
                 "run_cancel_event": run_cancel_event,
+                "run_arg_overrides": run_arg_overrides,
             }
             return True
 
@@ -120,6 +129,8 @@ def test_engine_run_sub_workflow_reuses_parent_context_without_lock_conflict(mon
         assert calls["execute_steps"]["signal_policy"].emit_run_signals is False
         assert calls["execute_steps"]["signal_policy"].emit_step_signals is False
         assert calls["execute_steps"]["run_cancel_event"] is None
+        # 子工作流不继承父级临时参数
+        assert calls["execute_steps"]["run_arg_overrides"] in (None, {})
         assert engine._running is True
         assert engine._current_run_id == "parent-run"
         assert engine._current_trace_id == "trace-root"
@@ -154,8 +165,17 @@ def test_engine_run_sub_workflow_forwards_nested_cancel_event(monkeypatch, tmp_p
                 parent_run_id=kwargs.get("parent_run_id"),
             )
 
-        def fake_execute_steps(current_workflow, steps, run_history_id, log_dir, signal_policy, run_cancel_event=None):
+        def fake_execute_steps(
+            current_workflow,
+            steps,
+            run_history_id,
+            log_dir,
+            signal_policy,
+            run_cancel_event=None,
+            run_arg_overrides=None,
+        ):
             calls["run_cancel_event"] = run_cancel_event
+            calls["run_arg_overrides"] = run_arg_overrides
             return False
 
         monkeypatch.setattr("engine.update_run_history", lambda *args, **kwargs: None)
@@ -168,6 +188,7 @@ def test_engine_run_sub_workflow_forwards_nested_cancel_event(monkeypatch, tmp_p
 
         assert result is False
         assert calls["run_cancel_event"] is cancel_event
+        assert calls["run_arg_overrides"] in (None, {})
     finally:
         engine.shutdown(wait=False)
 
@@ -316,7 +337,7 @@ def test_execute_parallel_steps_cleans_up_worker_sessions(monkeypatch, tmp_path:
         monkeypatch.setattr(
             engine,
             "_execute_single_step",
-            lambda workflow, step, run_history_id, log_dir, signal_policy, prev_step_status_map=None, run_cancel_event=None: StepResult(
+            lambda workflow, step, run_history_id, log_dir, signal_policy, prev_step_status_map=None, run_cancel_event=None, run_arg_overrides=None: StepResult(
                 step_id=step.id,
                 step_name=step.name,
                 status="success",
@@ -357,6 +378,7 @@ def test_execute_parallel_steps_stops_submitting_after_cancel(monkeypatch, tmp_p
             signal_policy,
             prev_step_status_map=None,
             run_cancel_event=None,
+            run_arg_overrides=None,
         ):
             calls.append(step.id)
             engine.cancel()

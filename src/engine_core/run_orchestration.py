@@ -201,6 +201,7 @@ def run_workflow(
     parent_run_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     external_cancel_event: threading.Event = None,
+    run_arg_overrides=None,
 ) -> bool:
     """执行工作流（原 WorkflowEngine._run 方法体）
 
@@ -236,6 +237,9 @@ def run_workflow(
     # 原子启动：消除 UI/监听同时触发的双启动窗口
     # #2: 仅在 outermost run（allow_nested=False）时修改实例属性。
     # nested run 用本地 run_id / trace_id 即可，避免并行 sub_workflow 出现 LIFO 栈破坏。
+    from script_arg_utils import normalize_run_arg_overrides
+    # 本地不可变上下文：不挂 engine 实例字段，避免并行/嵌套污染
+    local_run_arg_overrides = normalize_run_arg_overrides(run_arg_overrides)
     with engine._lock:
         if engine._running and not allow_nested:
             engine._emit_log("错误：已有工作流正在运行")
@@ -314,6 +318,7 @@ def run_workflow(
             log_dir,
             signal_policy=signal_policy,
             run_cancel_event=external_cancel_event,
+            run_arg_overrides=local_run_arg_overrides,
         )
 
         # 更新运行结果
@@ -448,6 +453,7 @@ def execute_steps(
     log_dir: Path,
     signal_policy: RunSignalPolicy,
     run_cancel_event: threading.Event = None,
+    run_arg_overrides=None,
 ) -> bool:
     """执行步骤
 
@@ -532,6 +538,7 @@ def execute_steps(
                 workflow, step, run_history_id, log_dir, signal_policy,
                 prev_step_status_map=prev_step_status_map,
                 run_cancel_event=run_cancel_event,
+                run_arg_overrides=run_arg_overrides,
             )
             completed_steps += 1
             engine._update_execution_progress(completed_steps, total_steps, signal_policy)
@@ -549,6 +556,7 @@ def execute_steps(
                 workflow, batch, run_history_id, log_dir, signal_policy,
                 prev_step_status_map=prev_step_status_map,
                 run_cancel_event=run_cancel_event,
+                run_arg_overrides=run_arg_overrides,
             )
             completed_steps += len(results)
             engine._update_execution_progress(completed_steps, total_steps, signal_policy)

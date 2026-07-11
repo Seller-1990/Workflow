@@ -3,19 +3,36 @@
 
 from __future__ import annotations
 
+from typing import Mapping, Sequence
 
-def run_engine_mode(engine, *, workflow_id: int, mode: str, param=None) -> bool:
+
+def _call_run_method(method, *args, run_arg_overrides=None) -> bool:
+    if run_arg_overrides:
+        return bool(method(*args, run_arg_overrides=run_arg_overrides))
+    return bool(method(*args))
+
+
+def run_engine_mode(
+    engine,
+    *,
+    workflow_id: int,
+    mode: str,
+    param=None,
+    run_arg_overrides: Mapping[str, Sequence[str]] | None = None,
+) -> bool:
     """按 UI 运行模式调用对应引擎方法。"""
+    overrides = run_arg_overrides or None
     if mode == "full":
-        return bool(engine.run_all(workflow_id))
+        return _call_run_method(engine.run_all, workflow_id, run_arg_overrides=overrides)
     if mode == "from_step":
-        return bool(engine.run_from(workflow_id, param))
+        return _call_run_method(engine.run_from, workflow_id, param, run_arg_overrides=overrides)
     if mode == "only_step":
-        return bool(engine.run_only(workflow_id, param))
+        return _call_run_method(engine.run_only, workflow_id, param, run_arg_overrides=overrides)
     if mode == "only_stage":
-        return bool(engine.run_stage(workflow_id, param))
+        return _call_run_method(engine.run_stage, workflow_id, param, run_arg_overrides=overrides)
     if mode == "from_stage":
-        return bool(engine.run_from_stage(workflow_id, param))
+        return _call_run_method(engine.run_from_stage, workflow_id, param, run_arg_overrides=overrides)
     if mode == "retry_failed":
+        # 重试失败不弹窗、不附加临时参数
         return bool(engine.retry_failed(workflow_id))
     return False

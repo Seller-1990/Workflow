@@ -383,25 +383,37 @@ class WorkflowEngine(QObject):
 
     # ============== 四种运行模式 ==============
     
-    def run_all(self, workflow_id: int, reason: str = "manual") -> bool:
+    def run_all(self, workflow_id: int, reason: str = "manual", run_arg_overrides=None) -> bool:
         """全流程运行"""
-        return self._run(workflow_id, RunMode.FULL, reason=reason)
+        return self._run(workflow_id, RunMode.FULL, reason=reason, run_arg_overrides=run_arg_overrides)
     
-    def run_from(self, workflow_id: int, from_step_id: int, reason: str = "manual") -> bool:
+    def run_from(self, workflow_id: int, from_step_id: int, reason: str = "manual", run_arg_overrides=None) -> bool:
         """从指定步骤开始运行"""
-        return self._run(workflow_id, RunMode.FROM_STEP, step_id=from_step_id, reason=reason)
+        return self._run(
+            workflow_id, RunMode.FROM_STEP, step_id=from_step_id, reason=reason,
+            run_arg_overrides=run_arg_overrides,
+        )
     
-    def run_only(self, workflow_id: int, step_id: int, reason: str = "manual") -> bool:
+    def run_only(self, workflow_id: int, step_id: int, reason: str = "manual", run_arg_overrides=None) -> bool:
         """只运行指定步骤"""
-        return self._run(workflow_id, RunMode.ONLY_STEP, step_id=step_id, reason=reason)
+        return self._run(
+            workflow_id, RunMode.ONLY_STEP, step_id=step_id, reason=reason,
+            run_arg_overrides=run_arg_overrides,
+        )
     
-    def run_stage(self, workflow_id: int, stage_uid: str, reason: str = "manual") -> bool:
+    def run_stage(self, workflow_id: int, stage_uid: str, reason: str = "manual", run_arg_overrides=None) -> bool:
         """只运行指定阶段"""
-        return self._run(workflow_id, RunMode.ONLY_STAGE, stage_uid=stage_uid, reason=reason)
+        return self._run(
+            workflow_id, RunMode.ONLY_STAGE, stage_uid=stage_uid, reason=reason,
+            run_arg_overrides=run_arg_overrides,
+        )
     
-    def run_from_stage(self, workflow_id: int, stage_uid: str, reason: str = "manual") -> bool:
+    def run_from_stage(self, workflow_id: int, stage_uid: str, reason: str = "manual", run_arg_overrides=None) -> bool:
         """从指定阶段开始运行（包含该阶段及之后所有阶段）"""
-        return self._run(workflow_id, RunMode.FROM_STAGE, stage_uid=stage_uid, reason=reason)
+        return self._run(
+            workflow_id, RunMode.FROM_STAGE, stage_uid=stage_uid, reason=reason,
+            run_arg_overrides=run_arg_overrides,
+        )
     
     def retry_failed(self, workflow_id: int, reason: str = "retry") -> bool:
         """重试失败步骤"""
@@ -418,6 +430,7 @@ class WorkflowEngine(QObject):
         signal_policy: Optional["RunSignalPolicy"] = None,
         parent_run_id: Optional[str] = None,
         trace_id: Optional[str] = None,
+        run_arg_overrides=None,
     ) -> bool:
         """MA4: 公开执行入口
 
@@ -434,6 +447,7 @@ class WorkflowEngine(QObject):
             signal_policy=signal_policy,
             parent_run_id=parent_run_id,
             trace_id=trace_id,
+            run_arg_overrides=run_arg_overrides,
         )
     
     def run_sub_workflow(
@@ -560,6 +574,7 @@ class WorkflowEngine(QObject):
         parent_run_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         external_cancel_event: threading.Event = None,
+        run_arg_overrides=None,
     ) -> bool:
         """执行工作流（batch-4: 方法体下沉到 run_orchestration.run_workflow）
 
@@ -569,6 +584,7 @@ class WorkflowEngine(QObject):
             step_id: 步骤 ID（用于 FROM_STEP 和 ONLY_STEP 模式）
             stage_uid: 阶段 UID（用于 FROM_STAGE 和 ONLY_STAGE 模式）
             reason: 运行原因
+            run_arg_overrides: 本次运行临时参数覆盖，key=step.uid
 
         Returns:
             是否成功
@@ -585,6 +601,7 @@ class WorkflowEngine(QObject):
             parent_run_id=parent_run_id,
             trace_id=trace_id,
             external_cancel_event=external_cancel_event,
+            run_arg_overrides=run_arg_overrides,
         )
 
     def _select_steps(
@@ -630,7 +647,8 @@ class WorkflowEngine(QObject):
         log_dir: Path,
         signal_policy: RunSignalPolicy,
         run_cancel_event: threading.Event = None,
-    ) -> bool:
+        run_arg_overrides=None,
+        ) -> bool:
         """执行步骤（依赖分层 + 检查点 + 自动并行；batch-4 委托 run_orchestration）"""
         return _run_orchestration.execute_steps(
             self,
@@ -640,6 +658,7 @@ class WorkflowEngine(QObject):
             log_dir,
             signal_policy=signal_policy,
             run_cancel_event=run_cancel_event,
+            run_arg_overrides=run_arg_overrides,
         )
 
     def _build_stage_meta(
@@ -781,7 +800,8 @@ class WorkflowEngine(QObject):
         cancel_event: threading.Event,
         run_cancel_event: threading.Event,
         signal_policy: RunSignalPolicy,
-    ) -> tuple[Optional[StepResult], Optional[str]]:
+        run_arg_overrides=None,
+        ) -> tuple[Optional[StepResult], Optional[str]]:
         return _step_execution.execute_step_attempt(
             self,
             workflow=workflow,
@@ -792,6 +812,7 @@ class WorkflowEngine(QObject):
             cancel_event=cancel_event,
             run_cancel_event=run_cancel_event,
             signal_policy=signal_policy,
+            run_arg_overrides=run_arg_overrides,
         )
 
     @staticmethod
@@ -848,7 +869,8 @@ class WorkflowEngine(QObject):
         step_log_dir: Path,
         signal_policy: RunSignalPolicy,
         run_cancel_event: threading.Event = None,
-    ) -> StepResult:
+        run_arg_overrides=None,
+        ) -> StepResult:
         return _step_execution.execute_step_with_retries(
             self,
             workflow=workflow,
@@ -858,6 +880,7 @@ class WorkflowEngine(QObject):
             step_log_dir=step_log_dir,
             signal_policy=signal_policy,
             run_cancel_event=run_cancel_event,
+            run_arg_overrides=run_arg_overrides,
         )
 
     def _execute_single_step(
@@ -869,7 +892,8 @@ class WorkflowEngine(QObject):
         signal_policy: RunSignalPolicy,
         prev_step_status_map: Optional[dict] = None,
         run_cancel_event: threading.Event = None,
-    ) -> StepResult:
+        run_arg_overrides=None,
+        ) -> StepResult:
         """执行单个步骤（带重试）"""
         return _step_execution.execute_single_step(
             self,
@@ -880,6 +904,7 @@ class WorkflowEngine(QObject):
             signal_policy,
             prev_step_status_map=prev_step_status_map,
             run_cancel_event=run_cancel_event,
+            run_arg_overrides=run_arg_overrides,
         )
 
     def _execute_parallel_steps(
@@ -891,7 +916,8 @@ class WorkflowEngine(QObject):
         signal_policy: RunSignalPolicy,
         prev_step_status_map: Optional[dict] = None,
         run_cancel_event: threading.Event = None,
-    ) -> List[StepResult]:
+        run_arg_overrides=None,
+        ) -> List[StepResult]:
         """并行执行多个步骤（Fan-Out/Fan-In 模式；batch-3 委托 engine_core.step_execution）"""
         return _step_execution.execute_parallel_steps(
             self,
@@ -902,6 +928,7 @@ class WorkflowEngine(QObject):
             signal_policy,
             prev_step_status_map=prev_step_status_map,
             run_cancel_event=run_cancel_event,
+            run_arg_overrides=run_arg_overrides,
         )
 
     def _finish_step(

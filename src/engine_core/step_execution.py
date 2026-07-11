@@ -182,12 +182,26 @@ def execute_step_attempt(
     cancel_event: threading.Event,
     run_cancel_event: threading.Event,
     signal_policy: RunSignalPolicy,
-) -> tuple[Optional[StepResult], Optional[str]]:
+    run_arg_overrides=None,
+    ) -> tuple[Optional[StepResult], Optional[str]]:
     eng = _engine_module()
     try:
+        from script_arg_utils import format_cli_args_for_log, resolve_effective_args
+
+        fixed_args = step.get_args()
+        effective_args = resolve_effective_args(
+            getattr(step, "uid", None),
+            fixed_args,
+            run_arg_overrides,
+        )
+        if effective_args != list(fixed_args or []):
+            engine._emit_log(
+                f"步骤 [{step.order}] {step.name} 参数: {format_cli_args_for_log(effective_args)}"
+            )
+
         exec_result = executor.execute(
             script_path=step.script_path,
-            args=step.get_args(),
+            args=effective_args,
             cwd=step.cwd,
             log_dir=step_log_dir,
             timeout=step.timeout_seconds,
@@ -345,6 +359,7 @@ def execute_step_with_retries(
     step_log_dir: Path,
     signal_policy: RunSignalPolicy,
     run_cancel_event: threading.Event = None,
+    run_arg_overrides=None,
 ) -> StepResult:
     eng = _engine_module()
     max_retries = step.retry_count + 1
@@ -374,6 +389,7 @@ def execute_step_with_retries(
                 cancel_event=cancel_event,
                 run_cancel_event=run_cancel_event,
                 signal_policy=signal_policy,
+                run_arg_overrides=run_arg_overrides,
             )
             if result is not None:
                 return result
@@ -401,6 +417,7 @@ def execute_single_step(
     signal_policy: RunSignalPolicy,
     prev_step_status_map: Optional[dict] = None,
     run_cancel_event: threading.Event = None,
+    run_arg_overrides=None,
 ) -> StepResult:
     """执行单个步骤（带重试）"""
     eng = _engine_module()
@@ -441,6 +458,7 @@ def execute_single_step(
             step_log_dir=step_log_dir,
             signal_policy=signal_policy,
             run_cancel_event=run_cancel_event,
+            run_arg_overrides=run_arg_overrides,
         )
     except Exception as e:
         logger.exception(
@@ -469,6 +487,7 @@ def execute_parallel_steps(
     signal_policy: RunSignalPolicy,
     prev_step_status_map: Optional[dict] = None,
     run_cancel_event: threading.Event = None,
+    run_arg_overrides=None,
 ) -> List[StepResult]:
     """并行执行多个步骤（Fan-Out/Fan-In 模式）
 
@@ -485,6 +504,7 @@ def execute_parallel_steps(
                 workflow, step, run_history_id, log_dir, signal_policy,
                 prev_step_status_map=prev_step_status_map,
                 run_cancel_event=run_cancel_event,
+                run_arg_overrides=run_arg_overrides,
             )
         finally:
             eng.cleanup_session()
