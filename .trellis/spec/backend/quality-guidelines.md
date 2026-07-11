@@ -135,6 +135,66 @@ state = compute_header_run_state(engine_running, stopping)
 set_header_run_button_state(window, state)
 ```
 
+### Scenario: Dialog Group Headings
+
+#### 1. Scope / Trigger
+
+- Trigger: adding or changing dialogs that display dynamic workflow, step, or
+  file names inside grouped UI blocks.
+
+#### 2. Signatures
+
+- Runtime args dialog: `_StepArgEditor(target, spec)`
+
+#### 3. Contracts
+
+- Long, user-controlled Chinese text must not be placed in a native
+  `QGroupBox` title when the global `QGroupBox` stylesheet controls title
+  positioning.
+- Show dynamic group headings as normal child `QLabel` content with
+  `setWordWrap(True)`, `Qt.PlainText`, and selectable text when useful.
+- Keep the native `QGroupBox.title()` empty when the heading is rendered as a
+  child label.
+
+#### 4. Validation & Error Matrix
+
+- Long Chinese step name -> heading wraps and does not overlap following labels.
+- Text containing rich-text-like characters -> rendered as plain text, not
+  interpreted as HTML.
+- Empty script path -> existing fallback label remains below the heading.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: a long step name is rendered as a wrapped `QLabel` inside the group.
+- Base: short names still appear as the first visible line in the group.
+- Bad: `QGroupBox(f"[{order}] {step_name}")` with body content starting at the
+  same top margin; global styles can make the title overlap the body.
+
+#### 6. Tests Required
+
+- Offscreen Qt regression test asserting `QGroupBox.title() == ""`.
+- Layout regression asserting the heading label wraps and does not intersect the
+  next body label.
+- Behavior regression for any form or preview logic in the dialog.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```python
+super().__init__(f"[{target.order}] {target.name}", parent)
+```
+
+Correct:
+
+```python
+super().__init__("", parent)
+heading = QLabel(f"[{target.order}] {target.name}")
+heading.setTextFormat(Qt.PlainText)
+heading.setWordWrap(True)
+layout.addWidget(heading)
+```
+
 ### Scenario: Masked Export Secret Guard
 
 #### 1. Scope / Trigger

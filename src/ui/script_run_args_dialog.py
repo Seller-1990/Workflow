@@ -49,14 +49,24 @@ class _StepArgEditor(QGroupBox):
         spec: ScriptArgumentSpec,
         parent: QWidget | None = None,
     ) -> None:
-        title = f"[{target.order}] {target.name}"
-        super().__init__(title, parent)
+        heading_text = f"[{target.order}] {target.name}"
+        super().__init__("", parent)
         self.target = target
         self.spec = spec
         self._form_widgets: dict[str, QWidget] = {}
         self._manual_edit: QLineEdit | None = None
 
         layout = QVBoxLayout(self)
+        heading_lbl = QLabel(heading_text)
+        heading_lbl.setObjectName("StepArgsHeading")
+        heading_lbl.setTextFormat(Qt.PlainText)
+        heading_lbl.setWordWrap(True)
+        heading_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        heading_font = heading_lbl.font()
+        heading_font.setBold(True)
+        heading_lbl.setFont(heading_font)
+        layout.addWidget(heading_lbl)
+
         path_lbl = QLabel(target.script_path or "(无脚本路径)")
         path_lbl.setWordWrap(True)
         path_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
