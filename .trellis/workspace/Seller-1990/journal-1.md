@@ -141,3 +141,39 @@ Restored hotspot quality gates, added scheduler metrics and run-history diagnost
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: Release 5.0.3 and clean workspace
+
+**Date**: 2026-07-13
+**Task**: Release 5.0.3 and clean workspace
+**Branch**: `main`
+
+### Summary
+
+修复打包 TLS CA 与审计问题，优化临时参数入口和品牌信息，修复浅色主题参数弹窗背景，完成 5.0.3 打包自检并清理生成残留。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `241e4d1` | (see git log) |
+| `642c4ed` | (see git log) |
+| `6d37ffb` | (see git log) |
+| `53c74ab` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
