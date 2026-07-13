@@ -31,6 +31,7 @@ from script_arg_utils import (
     merge_step_args,
     parse_cli_args_text,
 )
+from ui.theme import get_colors
 
 
 @dataclass
@@ -213,6 +214,8 @@ class ScriptRunArgsDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.setObjectName("ScriptRunArgsDialog")
+        self.setStyleSheet(_dialog_stylesheet(dark))
         self.setWindowTitle("本次运行参数")
         self.resize(640, 520)
         self._editors: list[_StepArgEditor] = []
@@ -227,8 +230,10 @@ class ScriptRunArgsDialog(QDialog):
         root_layout.addWidget(tip)
 
         scroll = QScrollArea()
+        scroll.setObjectName("ScriptRunArgsScroll")
         scroll.setWidgetResizable(True)
         body = QWidget()
+        body.setObjectName("ScriptRunArgsBody")
         body_layout = QVBoxLayout(body)
         for target in targets:
             spec = inspect_script_arguments(target.script_path) if target.script_path else ScriptArgumentSpec(
@@ -242,7 +247,7 @@ class ScriptRunArgsDialog(QDialog):
         root_layout.addWidget(scroll)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("运行")
+        buttons.button(QDialogButtonBox.Ok).setText("按当前参数运行")
         buttons.button(QDialogButtonBox.Cancel).setText("取消")
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
@@ -263,6 +268,50 @@ class ScriptRunArgsDialog(QDialog):
 
     def overrides(self) -> dict[str, list[str]]:
         return dict(self._result)
+
+
+def _dialog_stylesheet(dark: bool) -> str:
+    colors = get_colors(dark)
+    return f"""
+        QDialog#ScriptRunArgsDialog {{
+            background-color: {colors["background"]};
+            color: {colors["text_primary"]};
+        }}
+        QDialog#ScriptRunArgsDialog QScrollArea#ScriptRunArgsScroll,
+        QDialog#ScriptRunArgsDialog QScrollArea#ScriptRunArgsScroll > QWidget > QWidget,
+        QDialog#ScriptRunArgsDialog QWidget#ScriptRunArgsBody {{
+            background-color: {colors["background"]};
+            border: none;
+        }}
+        QDialog#ScriptRunArgsDialog QLabel,
+        QDialog#ScriptRunArgsDialog QCheckBox {{
+            background: transparent;
+            color: {colors["text_primary"]};
+        }}
+        QDialog#ScriptRunArgsDialog QGroupBox {{
+            background-color: {colors["surface_secondary"]};
+            border: none;
+            border-radius: 8px;
+        }}
+        QDialog#ScriptRunArgsDialog QLineEdit,
+        QDialog#ScriptRunArgsDialog QComboBox {{
+            background-color: {colors["surface_card"]};
+            color: {colors["text_primary"]};
+            border: 1px solid {colors["border"]};
+            border-radius: 6px;
+            padding: 5px 8px;
+        }}
+        QDialog#ScriptRunArgsDialog QPushButton {{
+            background-color: {colors["surface_card"]};
+            color: {colors["text_primary"]};
+            border: 1px solid {colors["border"]};
+            border-radius: 6px;
+            padding: 6px 12px;
+        }}
+        QDialog#ScriptRunArgsDialog QPushButton:hover {{
+            background-color: {colors["hover"]};
+        }}
+    """
 
 
 def collect_python_step_targets(
@@ -309,11 +358,23 @@ def prompt_run_arg_overrides(
     dark: bool = False,
     is_python: Callable[[object], bool] | None = None,
 ) -> tuple[bool, dict[str, list[str]]]:
-    """弹出对话框。返回 (accepted, overrides)。无 Python 步骤时直接 accepted+{}。"""
+    """弹出对话框。无 Python 步骤或无可填写参数时直接运行。"""
     targets = collect_python_step_targets(steps, is_python=is_python)
     if not targets:
         return True, {}
-    dlg = ScriptRunArgsDialog(targets, dark=dark, parent=parent)
+
+    editable_targets = []
+    for target in targets:
+        if not target.script_path:
+            editable_targets.append(target)
+            continue
+        spec = inspect_script_arguments(target.script_path)
+        if spec.arguments or spec.warnings:
+            editable_targets.append(target)
+    if not editable_targets:
+        return True, {}
+
+    dlg = ScriptRunArgsDialog(editable_targets, dark=dark, parent=parent)
     if dlg.exec() != QDialog.Accepted:
         return False, {}
     return True, dlg.overrides()

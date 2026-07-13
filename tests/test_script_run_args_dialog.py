@@ -8,16 +8,23 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialogButtonBox,
     QGroupBox,
     QLabel,
     QLineEdit,
+    QScrollArea,
 )
 
-from ui.script_run_args_dialog import ScriptRunArgsDialog, StepArgTarget
+from ui.script_run_args_dialog import (
+    ScriptRunArgsDialog,
+    StepArgTarget,
+    prompt_run_arg_overrides,
+)
 from ui.theme import get_stylesheet
 
 
@@ -113,6 +120,99 @@ def test_manual_fallback_collection_stays_unchanged():
     finally:
         manual_dialog.close()
         manual_dialog.deleteLater()
+
+
+def test_primary_button_describes_running_with_current_parameters():
+    _app()
+    target = StepArgTarget(
+        uid="button-copy",
+        name="按钮文案",
+        order=1,
+        script_path="",
+        fixed_args=[],
+    )
+    dialog = ScriptRunArgsDialog([target])
+    try:
+        buttons = dialog.findChild(QDialogButtonBox)
+        assert buttons is not None
+        assert buttons.button(QDialogButtonBox.Ok).text() == "按当前参数运行"
+        assert buttons.button(QDialogButtonBox.Cancel).text() == "取消"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_light_dialog_overrides_a_stale_dark_application_palette():
+    app = _app()
+    old_palette = app.palette()
+    old_stylesheet = app.styleSheet()
+    dark_palette = QPalette(old_palette)
+    dark_palette.setColor(QPalette.Window, QColor("#101010"))
+    dark_palette.setColor(QPalette.Base, QColor("#101010"))
+    app.setStyleSheet("")
+    app.setPalette(dark_palette)
+    target = StepArgTarget(
+        uid="light-theme",
+        name="浅色主题",
+        order=1,
+        script_path="",
+        fixed_args=[],
+    )
+    dialog = ScriptRunArgsDialog([target], dark=False)
+    try:
+        dialog.show()
+        app.processEvents()
+        scroll = dialog.findChild(QScrollArea)
+        assert scroll is not None
+        dialog_pixel = dialog.grab().toImage().pixelColor(8, 40)
+        viewport_image = scroll.viewport().grab().toImage()
+        viewport_pixel = viewport_image.pixelColor(
+            8,
+            max(8, viewport_image.height() - 8),
+        )
+
+        assert dialog_pixel.lightness() > 220
+        assert viewport_pixel.lightness() > 220
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        app.setPalette(old_palette)
+        app.setStyleSheet(old_stylesheet)
+
+
+def test_prompt_skips_python_script_without_editable_arguments(tmp_path, monkeypatch):
+    script_path = tmp_path / "no_args.py"
+    script_path.write_text(
+        "import argparse\nparser = argparse.ArgumentParser()\n",
+        encoding="utf-8",
+    )
+    target = type(
+        "StepStub",
+        (),
+        {
+            "uid": "no-args",
+            "name": "无参数脚本",
+            "order": 1,
+            "step_type": "python",
+            "script_path": str(script_path),
+            "get_args": lambda self: [],
+        },
+    )()
+    monkeypatch.setattr(
+        "ui.script_run_args_dialog.ScriptRunArgsDialog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("无可填写参数时不应创建弹窗")
+        ),
+    )
+
+    accepted, overrides = prompt_run_arg_overrides(
+        None,
+        [target],
+        is_python=lambda step: step.step_type == "python",
+    )
+
+    assert accepted is True
+    assert overrides == {}
 
 
 def test_argparse_field_collection_stays_unchanged(tmp_path):

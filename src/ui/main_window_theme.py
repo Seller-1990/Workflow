@@ -55,6 +55,10 @@ def left_panel_stylesheet(tokens: dict) -> str:
             color: {w["muted"]};
             font-size: 12px;
         }}
+        QLabel#BrandDeveloper {{
+            color: {w["faint"]};
+            font-size: 10px;
+        }}
         QLabel#SidebarLabel {{
             color: {w["muted"]};
             font-size: 11px;

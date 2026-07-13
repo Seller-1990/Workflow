@@ -184,6 +184,9 @@ def create_brand_row(window) -> QWidget:
     window.lbl_brand_subtitle = QLabel("本地自动化工作台")
     window.lbl_brand_subtitle.setObjectName("BrandSubtitle")
     brand_text.addWidget(window.lbl_brand_subtitle)
+    window.lbl_brand_developer = QLabel("开发者 宋俊涛")
+    window.lbl_brand_developer.setObjectName("BrandDeveloper")
+    brand_text.addWidget(window.lbl_brand_developer)
     brand_layout.addLayout(brand_text, stretch=1)
     return brand_row
 

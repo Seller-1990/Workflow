@@ -10,6 +10,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -134,6 +136,65 @@ def test_collect_returns_none_when_workflow_missing(monkeypatch):
     )
     assert rd._collect_run_arg_overrides(window, "full", None) is None
     rd.msg_warning.assert_called_once()
+
+
+def test_only_step_collects_temporary_args_before_starting(monkeypatch):
+    rd = _load_run_dispatch(monkeypatch)
+    overrides = {"step-1": ["--year", "2026"]}
+    rd._collect_run_arg_overrides = MagicMock(return_value=overrides)
+    worker = SimpleNamespace(start=MagicMock())
+    rd.RunWorker = MagicMock(return_value=worker)
+    window = SimpleNamespace(
+        _current_workflow_id=42,
+        _dark_mode=False,
+        engine=SimpleNamespace(is_running=False),
+    )
+
+    rd.on_run_requested(window, "only_step", 7)
+
+    rd._collect_run_arg_overrides.assert_called_once_with(window, "only_step", 7)
+    rd.RunWorker.assert_called_once_with(
+        window.engine,
+        workflow_id=42,
+        mode="only_step",
+        param=7,
+        run_arg_overrides=overrides,
+    )
+    worker.start.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("mode", "param"),
+    [
+        ("full", None),
+        ("from_step", 7),
+        ("only_stage", "stage-1"),
+        ("from_stage", "stage-1"),
+        ("retry_failed", None),
+    ],
+)
+def test_other_run_modes_skip_temporary_args_dialog(monkeypatch, mode, param):
+    rd = _load_run_dispatch(monkeypatch)
+    rd._collect_run_arg_overrides = MagicMock()
+    worker = SimpleNamespace(start=MagicMock())
+    rd.RunWorker = MagicMock(return_value=worker)
+    window = SimpleNamespace(
+        _current_workflow_id=42,
+        _dark_mode=False,
+        engine=SimpleNamespace(is_running=False),
+    )
+
+    rd.on_run_requested(window, mode, param)
+
+    rd._collect_run_arg_overrides.assert_not_called()
+    rd.RunWorker.assert_called_once_with(
+        window.engine,
+        workflow_id=42,
+        mode=mode,
+        param=param,
+        run_arg_overrides={},
+    )
+    worker.start.assert_called_once_with()
 
 
 def test_source_uses_get_workflow_by_id():

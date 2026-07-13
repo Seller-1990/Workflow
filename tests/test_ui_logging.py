@@ -6,6 +6,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -23,6 +24,7 @@ from ui.run_history import RunHistoryPanel
 from ui.theme import get_menu_stylesheet, get_status_tokens
 from ui.log_panel import LogPanel
 from ui.main_window import MainWindow
+from ui.main_window_setup import create_brand_row
 from ui.error_summary import ErrorSummaryDialog
 from ui.step_editor import StepEditorPanel
 from ui.workflow_config import WorkflowConfigPanel
@@ -38,6 +40,20 @@ class MockHistory:
     reason: str = "manual"
     start_time: object = None
     duration_seconds: float | None = None
+
+
+def test_brand_row_shows_developer_as_tertiary_text():
+    app = QApplication.instance() or QApplication([])
+    window = SimpleNamespace()
+    row = create_brand_row(window)
+    try:
+        assert window.lbl_brand_name.text() == "Workflow"
+        assert window.lbl_brand_subtitle.text() == "本地自动化工作台"
+        assert window.lbl_brand_developer.text() == "开发者 宋俊涛"
+        assert window.lbl_brand_developer.objectName() == "BrandDeveloper"
+        assert app is not None
+    finally:
+        row.deleteLater()
 
 
 def test_workflow_config_logs_save_failure(monkeypatch, caplog):

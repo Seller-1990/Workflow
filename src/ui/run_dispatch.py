@@ -102,7 +102,7 @@ def on_run_requested(window, mode: str, param):
     workflow_id = window._current_workflow_id
 
     run_arg_overrides = {}
-    if mode != "retry_failed":
+    if mode == "only_step":
         try:
             run_arg_overrides = _collect_run_arg_overrides(window, mode, param)
             if run_arg_overrides is None:
