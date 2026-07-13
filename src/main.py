@@ -46,10 +46,10 @@ def _run_self_check(qt_args: list[str]) -> int:
         record("app_data_writable", False, str(exc))
 
     try:
-        import certifi
+        from tls_ca import configure_ca_bundle_environment
 
-        ca_path = Path(certifi.where())
-        record("certifi_ca_bundle", ca_path.is_file(), str(ca_path))
+        ca_path = configure_ca_bundle_environment()
+        record("certifi_ca_bundle", True, str(ca_path))
     except Exception as exc:
         record("certifi_ca_bundle", False, str(exc))
 
@@ -190,6 +190,7 @@ def main(argv=None):
     from PySide6.QtGui import QFont, QIcon
     from PySide6.QtWidgets import QApplication
     from config import APP_NAME, APP_VERSION, ICON_PATH, LOG_DIR
+    from tls_ca import configure_ca_bundle_environment
 
     # 打包后的 GUI 没有可见 stderr，logger.warning 在生产环境完全不可见；
     # 落盘到 LOG_DIR/app.log（config 导入时已创建 LOG_DIR）。
@@ -206,6 +207,8 @@ def main(argv=None):
                 )
             ],
         )
+
+    configure_ca_bundle_environment()
 
     from ui import MainWindow
     from ui.theme import get_stylesheet
@@ -242,7 +245,12 @@ def main(argv=None):
     if args.smoke:
         QTimer.singleShot(0, app.quit)
     
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        from database import cleanup_session
+
+        cleanup_session()
 
 
 if __name__ == "__main__":

@@ -823,10 +823,15 @@ def main(argv=None):
 
     command_name = COMMAND_ALIASES.get(args.command, args.command)
     handler = commands.get(command_name)
-    if handler:
-        handler(args)
-    else:
-        parser.print_help()
+    try:
+        if handler:
+            handler(args)
+        else:
+            parser.print_help()
+    finally:
+        from database import cleanup_session
+
+        cleanup_session()
 
 
 if __name__ == "__main__":

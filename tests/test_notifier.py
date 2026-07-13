@@ -11,6 +11,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import notifier
 
 
+def test_send_dingtalk_message_uses_existing_ca_bundle(monkeypatch, tmp_path):
+    ca_bundle = tmp_path / "cacert.pem"
+    ca_bundle.write_text("test-ca", encoding="utf-8")
+    captured = {}
+
+    class Response:
+        status_code = 200
+        text = '{"errcode": 0}'
+
+        def json(self):
+            return {"errcode": 0}
+
+    def fake_post(*args, **kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(notifier, "resolve_ca_bundle", lambda: ca_bundle)
+    monkeypatch.setattr(notifier.requests, "post", fake_post)
+
+    ok, message = notifier.send_dingtalk_message(
+        "https://oapi.dingtalk.com/robot/send?access_token=test-token",
+        "hello",
+    )
+
+    assert ok is True
+    assert message == "发送成功"
+    assert captured["verify"] == str(ca_bundle)
+
+
 class _Response:
     def __init__(self, status_code: int, text: str, payload=None, json_error: Exception | None = None):
         self.status_code = status_code

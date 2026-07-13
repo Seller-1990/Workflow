@@ -60,7 +60,7 @@ DATABASE_PATH = DATA_DIR / "workflows.db"
 
 # 应用信息
 APP_NAME = "工作流管理"
-APP_VERSION = "5.0.1"
+APP_VERSION = "5.0.3"
 
 # 默认配置（L3：监听冷却/稳定窗口默认值统一来自 constants.py，避免双源漂移）
 DEFAULT_CONFIG = {
@@ -113,12 +113,14 @@ class StepType:
     
     @classmethod
     def choices(cls):
-        return [
-            (cls.PYTHON, "Python"),
-            (cls.EXCEL_POWERQUERY, "Power Query"),
-            (cls.POWERBI_REFRESH, "Power BI"),
-            (cls.SUB_WORKFLOW, "子工作流"),
-        ]
+        choices = [(cls.PYTHON, "Python")]
+        if sys.platform.startswith("win"):
+            choices.extend([
+                (cls.EXCEL_POWERQUERY, "Power Query"),
+                (cls.POWERBI_REFRESH, "Power BI"),
+            ])
+        choices.append((cls.SUB_WORKFLOW, "子工作流"))
+        return choices
     
     @classmethod
     def display_name(cls, value: str) -> str:

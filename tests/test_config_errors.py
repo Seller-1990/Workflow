@@ -10,6 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import config
+from exceptions import ConfigurationError
+from models import Step
 
 
 def test_load_user_config_logs_invalid_json(monkeypatch, tmp_path: Path, caplog):
@@ -40,3 +42,25 @@ def test_ensure_directory_raises_clear_error(monkeypatch, tmp_path: Path):
         assert str(target) in str(exc)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_corrupt_step_dependencies_fail_explicitly():
+    step = Step(uid="step", workflow_id=1, name="broken", order=0, depends_on="[broken")
+
+    try:
+        step.get_depends_on()
+    except ConfigurationError as exc:
+        assert "步骤依赖" in str(exc)
+        assert "step" in str(exc)
+    else:
+        raise AssertionError("expected ConfigurationError")
+
+def test_step_type_choices_hide_windows_desktop_automation_on_macos(monkeypatch):
+    monkeypatch.setattr(config.sys, "platform", "darwin")
+
+    values = [value for value, _label in config.StepType.choices()]
+
+    assert config.StepType.PYTHON in values
+    assert config.StepType.SUB_WORKFLOW in values
+    assert config.StepType.EXCEL_POWERQUERY not in values
+    assert config.StepType.POWERBI_REFRESH not in values

@@ -52,6 +52,30 @@ def test_run_history_and_step_log_models_declare_perf_indexes():
     ]
 
 
+def test_pending_migrations_create_recoverable_snapshot(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "schema.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE sentinel(value TEXT)"))
+        conn.execute(text("INSERT INTO sentinel(value) VALUES ('before')"))
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(database, "SCHEMA_MIGRATIONS", [(1, "_migration_for_snapshot_test")])
+
+    def migration(target_engine):
+        with target_engine.begin() as conn:
+            conn.execute(text("UPDATE sentinel SET value='after'"))
+
+    monkeypatch.setitem(database.__dict__, "_migration_for_snapshot_test", migration)
+
+    database._ensure_schema_version_table(engine)
+    database._run_pending_migrations(engine)
+
+    snapshots = list((tmp_path / "migration_backups").glob("schema_before_v1_*.db"))
+    assert len(snapshots) == 1
+    snapshot_engine = create_engine(f"sqlite:///{snapshots[0]}")
+    with snapshot_engine.connect() as conn:
+        assert conn.execute(text("SELECT value FROM sentinel")).scalar_one() == "before"
+
 def test_schema_version_record_is_committed(tmp_path: Path):
     db_path = tmp_path / "schema.db"
     engine = create_engine(f"sqlite:///{db_path}")

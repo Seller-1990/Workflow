@@ -76,6 +76,9 @@ jobs:
             'raise SystemExit("APP_VERSION not found in src/config.py")'
           ) -join "`n"
           $appVersion = $versionScript | python -
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$appVersion") {
+            throw "Release tag ${{ github.ref_name }} does not match APP_VERSION v$appVersion"
+          }
           "spec_path=$specPath" >> $env:GITHUB_OUTPUT
           "spec_name=$specName" >> $env:GITHUB_OUTPUT
           "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
@@ -172,6 +175,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-release.txt
+          pip install -r requirements-ci.txt
 
       - name: Resolve build metadata
         id: build_meta
@@ -194,6 +198,10 @@ jobs:
           raise SystemExit("APP_VERSION not found in src/config.py")
           PY
           )
+          if [ "${{ github.ref_type }}" = "tag" ] && [ "${{ github.ref_name }}" != "v$app_version" ]; then
+            echo "Release tag ${{ github.ref_name }} does not match APP_VERSION v$app_version"
+            exit 1
+          fi
           short_sha="${GITHUB_SHA::7}"
           echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
@@ -208,6 +216,7 @@ jobs:
           python tools/audit_broad_except.py
           python tools/module_hotspot_report.py --top 30 --baseline quality/module_hotspot_baseline.json --fail-on-regression --max-lines 1000 --fail-on-threshold
           python -m compileall src tests _import_and_run.py
+          python -m pytest -q
 
       - name: Release gate (clean tracked tree)
         run: |

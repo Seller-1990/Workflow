@@ -978,6 +978,6 @@ class MainWindow(QMainWindow):
         try:
             self.engine.shutdown(wait=shutdown_wait)
         except Exception:
-            pass
+            logger.exception("关闭工作流引擎失败: shutdown_wait=%s", shutdown_wait)
         
         event.accept()

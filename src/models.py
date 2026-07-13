@@ -14,6 +14,8 @@ from sqlalchemy.orm import (
     DeclarativeBase, relationship, Mapped, mapped_column
 )
 
+from exceptions import ConfigurationError
+
 logger = logging.getLogger(__name__)
 
 
@@ -224,13 +226,16 @@ class Step(Base):
         self.args = json.dumps(args, ensure_ascii=False)
     
     def get_depends_on(self) -> list:
-        """获取依赖步骤列表"""
-        if self.depends_on:
-            try:
-                return json.loads(self.depends_on)
-            except json.JSONDecodeError as e:
-                logger.warning("步骤依赖 JSON 解析失败: %s", e)
-        return []
+        """获取依赖步骤列表；损坏数据必须阻止错误调度。"""
+        if not self.depends_on:
+            return []
+        try:
+            value = json.loads(self.depends_on)
+        except json.JSONDecodeError as exc:
+            raise ConfigurationError(f"步骤依赖 JSON 损坏: step={self.uid}") from exc
+        if not isinstance(value, list) or not all(isinstance(uid, str) for uid in value):
+            raise ConfigurationError(f"步骤依赖格式无效: step={self.uid}")
+        return value
     
     def set_depends_on(self, deps: list):
         """设置依赖步骤列表"""

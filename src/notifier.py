@@ -9,6 +9,7 @@ import time
 from typing import Callable, Optional
 from datetime import datetime
 
+from tls_ca import resolve_ca_bundle
 from webhook_url_policy import is_valid_dingtalk_webhook_url, mask_webhook_url_for_log
 
 
@@ -197,6 +198,7 @@ def send_dingtalk_message(
             webhook_url,
             json=payload,
             timeout=timeout,
+            verify=str(resolve_ca_bundle()),
             headers={"Content-Type": "application/json"}
         )
 

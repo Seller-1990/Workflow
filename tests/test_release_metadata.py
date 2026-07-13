@@ -41,3 +41,12 @@ def test_gitignore_keeps_dist_artifacts_untracked():
 
     assert "dist/" in content
     assert "!dist/*.exe" not in content
+
+
+def test_package_workflow_rejects_tag_version_mismatch():
+    root = Path(__file__).resolve().parent.parent
+    workflow = (root / ".github" / "workflows" / "package.yml").read_text(encoding="utf-8")
+
+    assert "github.ref_name" in workflow
+    assert "v$appVersion" in workflow or "v$app_version" in workflow
+    assert "does not match APP_VERSION" in workflow

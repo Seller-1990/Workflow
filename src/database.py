@@ -26,6 +26,7 @@ from database_field_guards import (
     WORKFLOW_UPDATE_FIELDS,
     validate_update_fields as _validate_update_fields,
 )
+from database_migration_backup import create_migration_snapshot
 from database_import_export import (
     ImportResult,
     export_to_json_impl,
@@ -235,9 +236,14 @@ def _record_version(engine, version: int):
 
 
 def _run_pending_migrations(engine):
-    """按 SCHEMA_MIGRATIONS 顺序运行未应用的迁移"""
+    """按 SCHEMA_MIGRATIONS 顺序运行未应用的迁移。"""
     applied = _get_applied_versions(engine)
-    for version, func_name in SCHEMA_MIGRATIONS:
+    pending = [(version, name) for version, name in SCHEMA_MIGRATIONS if version not in applied]
+    if pending:
+        target_version = max(version for version, _ in pending)
+        snapshot_path = create_migration_snapshot(Path(DATABASE_PATH), target_version)
+        logger.info("schema 迁移前快照已创建: %s", snapshot_path)
+    for version, func_name in pending:
         if version in applied:
             continue
         func = globals().get(func_name)

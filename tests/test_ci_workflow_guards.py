@@ -51,3 +51,12 @@ def test_package_workflow_runs_quality_guards_before_build_and_upload():
     assert "if-no-files-found: error" in text
     assert "${{ steps.verify_artifact.outputs.artifact_path }}" in text
     assert "${{ steps.verify_artifact.outputs.hash_path }}" in text
+
+
+def test_macos_package_job_runs_full_pytest_before_build():
+    text = _read_workflow("package.yml")
+    macos_job = text[text.index("package-macos-intel:"):]
+
+    assert "pip install -r requirements-ci.txt" in macos_job
+    assert "python -m pytest -q" in macos_job
+    assert macos_job.index("python -m pytest -q") < macos_job.index("pyinstaller build_macos_intel.spec")
