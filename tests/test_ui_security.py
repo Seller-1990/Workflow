@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -14,6 +15,7 @@ import database
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QMainWindow
 
 import ui.step_editor as step_editor_module
+import ui.step_editor_io as step_editor_io
 import ui.webhook_manager as webhook_manager_module
 from ui.step_editor import StepEditorPanel
 from ui.webhook_manager import WebhookManagerDialog
@@ -324,6 +326,111 @@ def test_step_editor_blocks_missing_script_path_when_user_cancels(monkeypatch):
 
         assert panel.save_step() is False
         assert update_calls == []
+    finally:
+        panel.deleteLater()
+        assert app is not None
+
+
+def test_step_editor_saves_and_clears_saved_runtime_args(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    panel = StepEditorPanel()
+    update_calls = []
+    try:
+        panel._step_id = 1
+        panel.edit_name.setText("测试步骤")
+        panel.edit_script.setText("job.py")
+        panel.edit_args.setText('["--fixed", "1"]')
+        panel.edit_saved_run_args.setText('["--year", "2026"]')
+
+        monkeypatch.setattr("os.path.exists", lambda _path: True)
+        monkeypatch.setattr(
+            step_editor_module,
+            "update_step",
+            lambda *args, **kwargs: update_calls.append((args, kwargs)) or SimpleNamespace(),
+        )
+
+        assert panel.save_step() is True
+        assert update_calls[-1][1]["args"] == '["--fixed", "1"]'
+        assert update_calls[-1][1]["saved_run_args"] == '["--year", "2026"]'
+
+        panel.edit_saved_run_args.clear()
+        assert panel.save_step() is True
+        assert update_calls[-1][1]["saved_run_args"] is None
+    finally:
+        panel.deleteLater()
+        assert app is not None
+
+
+def test_step_editor_rejects_non_string_saved_runtime_args(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    panel = StepEditorPanel()
+    update_calls = []
+    warnings = []
+    try:
+        panel._step_id = 1
+        panel.edit_name.setText("测试步骤")
+        panel.edit_script.setText("job.py")
+        panel.edit_saved_run_args.setText('["--year", 2026]')
+
+        monkeypatch.setattr("os.path.exists", lambda _path: True)
+        monkeypatch.setattr(
+            step_editor_module,
+            "msg_warning",
+            lambda *args, **kwargs: warnings.append((args, kwargs)),
+        )
+        monkeypatch.setattr(
+            step_editor_module,
+            "update_step",
+            lambda *args, **kwargs: update_calls.append((args, kwargs)),
+        )
+
+        assert panel.save_step() is False
+        assert update_calls == []
+        assert warnings
+    finally:
+        panel.deleteLater()
+        assert app is not None
+
+
+def test_step_editor_loads_saved_runtime_args(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    panel = StepEditorPanel()
+    step = SimpleNamespace(
+        id=1,
+        workflow_id=10,
+        uid="step-1",
+        order=0,
+        name="测试步骤",
+        stage_uid=None,
+        step_type="python",
+        script_path="job.py",
+        args='["--fixed"]',
+        saved_run_args='["--saved", "1"]',
+        cwd=None,
+        chart_theme=None,
+        timeout_seconds=None,
+        retry_count=0,
+        is_gate=False,
+        skip_on_success=False,
+        get_output_paths=lambda: [],
+        get_depends_on=lambda: [],
+    )
+    try:
+        monkeypatch.setattr(step_editor_io, "get_step_by_id", lambda step_id: step)
+        monkeypatch.setattr(step_editor_io, "get_steps_by_workflow", lambda workflow_id: [step])
+        monkeypatch.setattr(step_editor_io, "list_stages", lambda workflow_id: [])
+        monkeypatch.setattr(step_editor_io, "list_workflows", lambda: [])
+        monkeypatch.setattr(step_editor_module, "get_steps_by_workflow", lambda workflow_id: [step])
+        monkeypatch.setattr(step_editor_module, "get_stage_order_map", lambda workflow_id: {})
+        monkeypatch.setattr(step_editor_module, "list_stages", lambda workflow_id: [])
+        monkeypatch.setattr(database, "list_stages", lambda workflow_id: [])
+        monkeypatch.setattr(database, "get_stage_order_map", lambda workflow_id: {})
+
+        panel.load_step(step.id)
+
+        assert panel.edit_args.text() == '["--fixed"]'
+        assert panel.edit_saved_run_args.text() == '["--saved", "1"]'
+        assert panel.is_dirty() is False
     finally:
         panel.deleteLater()
         assert app is not None

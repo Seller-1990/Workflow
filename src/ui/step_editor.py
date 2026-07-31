@@ -282,6 +282,7 @@ class StepEditorPanel(QWidget):
             lambda: (
                 self.combo_type.setEnabled(can_edit_step),
                 self.edit_args.setReadOnly(not can_edit_step),
+                self.edit_saved_run_args.setReadOnly(not can_edit_step),
                 self.edit_output_paths.setReadOnly(not can_edit_step),
                 self.edit_cwd.setReadOnly(not can_edit_step),
                 self.edit_theme.setReadOnly(not can_edit_step),
@@ -646,6 +647,7 @@ class StepEditorPanel(QWidget):
                 self._suppress_type_override = False
             self.edit_script.clear()
             self.edit_args.clear()
+            self.edit_saved_run_args.clear()
             self.edit_output_paths.clear()
             self.edit_cwd.clear()
             self.edit_theme.clear()
@@ -692,15 +694,36 @@ class StepEditorPanel(QWidget):
         if not self._step_id:
             return False
 
-        # 验证参数格式
+        # 验证固定参数与已保存运行参数格式
         args_text = self.edit_args.text().strip()
+        saved_run_args_text = self.edit_saved_run_args.text().strip()
         if args_text:
             try:
                 args = json.loads(args_text)
                 if not isinstance(args, list):
                     raise ValueError("参数必须是数组")
             except (json.JSONDecodeError, ValueError) as e:
-                msg_warning(self, self._dark, "参数格式错误", f"参数必须是有效的 JSON 数组\n{e}")
+                msg_warning(
+                    self,
+                    self._dark,
+                    "参数格式错误",
+                    f"固定参数必须是有效的 JSON 数组\n{e}",
+                )
+                return False
+        if saved_run_args_text:
+            try:
+                saved_run_args = json.loads(saved_run_args_text)
+                if not isinstance(saved_run_args, list) or not all(
+                    isinstance(arg, str) for arg in saved_run_args
+                ):
+                    raise ValueError("保存运行参数必须是字符串数组")
+            except (json.JSONDecodeError, ValueError) as e:
+                msg_warning(
+                    self,
+                    self._dark,
+                    "参数格式错误",
+                    f"保存运行参数必须是有效的 JSON 字符串数组\n{e}",
+                )
                 return False
 
         # 验证超时时间（U-P2-5: QSpinBox 已限制 0..86400；M9: 0 落库为 NULL，由执行器按类型应用默认超时）
@@ -755,6 +778,7 @@ class StepEditorPanel(QWidget):
                 step_type=step_type,
                 script_path=script_path,
                 args=args_text if args_text else None,
+                saved_run_args=saved_run_args_text if saved_run_args_text else None,
                 cwd=self.edit_cwd.text().strip() or None,
                 chart_theme=self.edit_theme.text().strip() or None,
                 timeout_seconds=timeout,
@@ -803,7 +827,15 @@ class StepEditorPanel(QWidget):
         统一变体签名用 *args / **kwargs 容忍。
         """
         # 文本输入
-        for w in (self.edit_name, self.edit_script, self.edit_args, self.edit_output_paths, self.edit_cwd, self.edit_theme):
+        for w in (
+            self.edit_name,
+            self.edit_script,
+            self.edit_args,
+            self.edit_saved_run_args,
+            self.edit_output_paths,
+            self.edit_cwd,
+            self.edit_theme,
+        ):
             try:
                 w.textChanged.connect(self._mark_dirty)
             except Exception:

@@ -162,6 +162,7 @@ def test_execute_step_attempt_merges_fixed_and_temporary_args(tmp_path: Path):
         timeout_seconds=30,
         chart_theme="",
         get_args=lambda: ["--mode", "prod"],
+        get_saved_run_args=lambda: ["--year", "2024"],
     )
     received = {}
 
@@ -187,6 +188,51 @@ def test_execute_step_attempt_merges_fixed_and_temporary_args(tmp_path: Path):
     assert result is not None
     assert received["args"] == ["--mode", "prod", "--year", "2025"]
     assert any("参数:" in msg for msg in logs)
+
+
+def test_execute_step_attempt_uses_saved_args_without_override(tmp_path: Path):
+    engine = MagicMock()
+    engine._is_run_cancelled.return_value = False
+    engine._is_non_retryable_executor_result.return_value = False
+    engine.run_sub_workflow = MagicMock()
+    engine._finish_step = MagicMock()
+
+    workflow = SimpleNamespace(id=1, chart_theme="default")
+    step = SimpleNamespace(
+        id=7,
+        uid="step-a",
+        order=1,
+        name="Export",
+        script_path="export.py",
+        cwd="",
+        timeout_seconds=30,
+        chart_theme="",
+        get_args=lambda: ["--mode", "prod"],
+        get_saved_run_args=lambda: ["--year", "2026"],
+    )
+    received = {}
+
+    class FakeExecutor:
+        def execute(self, **kwargs):
+            received.update(kwargs)
+            return ExecutorResult(success=True, exit_code=0)
+
+    result, err = execute_step_attempt(
+        engine,
+        workflow,
+        step,
+        FakeExecutor(),
+        step_log_id=99,
+        step_log_dir=tmp_path,
+        cancel_event=__import__("threading").Event(),
+        run_cancel_event=__import__("threading").Event(),
+        signal_policy=SimpleNamespace(emit_step_signals=False),
+        run_arg_overrides=None,
+    )
+
+    assert err is None
+    assert result is not None
+    assert received["args"] == ["--mode", "prod", "--year", "2026"]
 
 
 def test_sub_workflow_does_not_inherit_parent_overrides(monkeypatch, tmp_path: Path):

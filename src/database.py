@@ -210,6 +210,7 @@ SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
     (6, "_migrate_v6_run_history_notify_status"),
     (7, "_migrate_v7_step_output_paths"),
     (8, "_migrate_v8_run_history_step_log_perf_indexes"),
+    (9, "_migrate_v9_step_saved_run_args"),
 ]
 
 
@@ -343,6 +344,15 @@ def _migrate_v8_run_history_step_log_perf_indexes(engine):
             "CREATE INDEX IF NOT EXISTS ix_step_logs_run_order "
             "ON step_logs(run_history_id, \"order\")"
         ))
+
+
+def _migrate_v9_step_saved_run_args(engine):
+    """v9: steps 增加 saved_run_args 列（可持久化的运行参数默认层）。"""
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(steps)")).fetchall()
+        existing = {row[1] for row in rows}
+        if "saved_run_args" not in existing:
+            conn.execute(text("ALTER TABLE steps ADD COLUMN saved_run_args TEXT"))
 
 
 def _migrate_v2_version_table_and_step_uid_unique(engine):

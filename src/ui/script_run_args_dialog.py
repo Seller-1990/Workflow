@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-import shlex
-from dataclasses import dataclass
-from typing import Callable, Iterable, Mapping, Optional, Sequence
+import json
+from dataclasses import dataclass, field
+from typing import Callable, Iterable, Sequence
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -41,6 +41,7 @@ class StepArgTarget:
     order: int
     script_path: str
     fixed_args: list[str]
+    saved_args: list[str] = field(default_factory=list)
 
 
 class _StepArgEditor(QGroupBox):
@@ -48,6 +49,8 @@ class _StepArgEditor(QGroupBox):
         self,
         target: StepArgTarget,
         spec: ScriptArgumentSpec,
+        *,
+        allow_save_defaults: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         heading_text = f"[{target.order}] {target.name}"
@@ -56,6 +59,7 @@ class _StepArgEditor(QGroupBox):
         self.spec = spec
         self._form_widgets: dict[str, QWidget] = {}
         self._manual_edit: QLineEdit | None = None
+        self._extra_edit: QLineEdit | None = None
 
         layout = QVBoxLayout(self)
         heading_lbl = QLabel(heading_text)
@@ -88,14 +92,29 @@ class _StepArgEditor(QGroupBox):
                 self._form_widgets[key] = widget
                 label = self._label_for(arg)
                 form.addRow(label, widget)
+            remaining = self._prefill_form_widgets(target.saved_args)
+            if remaining:
+                self._extra_edit = QLineEdit()
+                self._extra_edit.setText(json.dumps(remaining, ensure_ascii=False))
+                self._extra_edit.setPlaceholderText('["--extra", "value"]')
+                form.addRow("未识别的保存参数", self._extra_edit)
             layout.addLayout(form)
             self._manual_edit = None
         else:
             reason = "；".join(spec.warnings) if spec.warnings else "未识别到 argparse"
             layout.addWidget(QLabel(f"手动输入临时参数（{reason}）"))
             self._manual_edit = QLineEdit()
+            if target.saved_args:
+                self._manual_edit.setText(json.dumps(target.saved_args, ensure_ascii=False))
             self._manual_edit.setPlaceholderText('--year 2025  或  ["--year", "2025"]')
             layout.addWidget(self._manual_edit)
+
+        self._save_check = QCheckBox("将本次参数保存到步骤")
+        self._save_check.setObjectName("SaveRunArgsCheck")
+        self._save_check.setEnabled(allow_save_defaults)
+        if not allow_save_defaults:
+            self._save_check.setToolTip("开启编辑模式后可保存运行参数")
+        layout.addWidget(self._save_check)
 
         self._preview = QLabel()
         self._preview.setWordWrap(True)
@@ -105,6 +124,8 @@ class _StepArgEditor(QGroupBox):
         # live preview
         if self._manual_edit is not None:
             self._manual_edit.textChanged.connect(lambda _t: self._refresh_preview())
+        if self._extra_edit is not None:
+            self._extra_edit.textChanged.connect(lambda _t: self._refresh_preview())
         for w in self._form_widgets.values():
             if isinstance(w, QLineEdit):
                 w.textChanged.connect(lambda _t: self._refresh_preview())
@@ -142,13 +163,92 @@ class _StepArgEditor(QGroupBox):
             edit.setPlaceholderText(str(arg.default))
         return edit
 
+    def _prefill_form_widgets(self, saved_args: Sequence[str]) -> list[str]:
+        remaining = [True] * len(saved_args)
+        option_map = {
+            option: arg
+            for arg in self.spec.arguments
+            if not arg.positional
+            for option in arg.option_strings
+        }
+        for index, token in enumerate(saved_args):
+            if not remaining[index]:
+                continue
+            option = token
+            inline_value = None
+            if token.startswith("-") and "=" in token:
+                option, inline_value = token.split("=", 1)
+            arg = option_map.get(option)
+            if arg is None:
+                continue
+            widget = self._form_widgets.get(self._key_for(arg))
+            if widget is None:
+                continue
+            if arg.action in {"store_true", "store_false"}:
+                if isinstance(widget, QCheckBox):
+                    widget.setChecked(True)
+                    remaining[index] = False
+                continue
+            if arg.nargs not in {None, 1, "?"}:
+                continue
+            value_index = None
+            value = inline_value
+            if value is None and index + 1 < len(saved_args):
+                value_index = index + 1
+                value = saved_args[value_index]
+            if value is None or not self._set_widget_value(widget, value):
+                continue
+            remaining[index] = False
+            if value_index is not None:
+                remaining[value_index] = False
+
+        unknown_option_values = {
+            index + 1
+            for index, token in enumerate(saved_args[:-1])
+            if remaining[index] and token.startswith("-") and remaining[index + 1]
+        }
+        positional_values = [
+            index
+            for index, token in enumerate(saved_args)
+            if (
+                remaining[index]
+                and index not in unknown_option_values
+                and not token.startswith("-")
+            )
+        ]
+        for arg in (item for item in self.spec.arguments if item.positional):
+            if arg.nargs not in {None, 1, "?"} or not positional_values:
+                continue
+            value_index = positional_values.pop(0)
+            widget = self._form_widgets.get(self._key_for(arg))
+            if widget is not None and self._set_widget_value(widget, saved_args[value_index]):
+                remaining[value_index] = False
+        return [token for index, token in enumerate(saved_args) if remaining[index]]
+
+    @staticmethod
+    def _key_for(arg: ScriptArgument) -> str:
+        return arg.dest or "/".join(arg.option_strings) or "arg"
+
+    @staticmethod
+    def _set_widget_value(widget: QWidget, value: str) -> bool:
+        if isinstance(widget, QComboBox):
+            index = widget.findText(value)
+            if index < 0:
+                return False
+            widget.setCurrentIndex(index)
+            return True
+        if isinstance(widget, QLineEdit):
+            widget.setText(value)
+            return True
+        return False
+
     def collect_temporary_args(self) -> list[str]:
         if self._manual_edit is not None:
             return parse_cli_args_text(self._manual_edit.text())
 
         out: list[str] = []
         for arg in self.spec.arguments:
-            key = arg.dest or "/".join(arg.option_strings) or "arg"
+            key = self._key_for(arg)
             widget = self._form_widgets.get(key)
             if widget is None:
                 continue
@@ -188,10 +288,15 @@ class _StepArgEditor(QGroupBox):
                     out.append(value)
                 else:
                     out.extend([flag, value])
+        if self._extra_edit is not None:
+            out.extend(parse_cli_args_text(self._extra_edit.text()))
         return out
 
     def effective_args(self) -> list[str]:
         return merge_step_args(self.target.fixed_args, self.collect_temporary_args())
+
+    def should_save(self) -> bool:
+        return self._save_check.isEnabled() and self._save_check.isChecked()
 
     def _refresh_preview(self) -> None:
         try:
@@ -211,6 +316,7 @@ class ScriptRunArgsDialog(QDialog):
         targets: Sequence[StepArgTarget],
         *,
         dark: bool = False,
+        allow_save_defaults: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -220,12 +326,15 @@ class ScriptRunArgsDialog(QDialog):
         self.resize(640, 520)
         self._editors: list[_StepArgEditor] = []
         self._result: dict[str, list[str]] = {}
+        self._saved_updates: dict[str, list[str]] = {}
 
         root_layout = QVBoxLayout(self)
-        tip = QLabel(
-            "以下参数仅对本次运行生效，不会写回工作流配置。\n"
-            "可留空直接运行（保持脚本默认行为）。"
-        )
+        tip_text = "参数默认从步骤保存值加载；清空后运行可临时忽略保存值。"
+        if allow_save_defaults:
+            tip_text += "\n只有勾选“将本次参数保存到步骤”才会写回配置。"
+        else:
+            tip_text += "\n当前未开启编辑模式，本次只能临时覆盖。"
+        tip = QLabel(tip_text)
         tip.setWordWrap(True)
         root_layout.addWidget(tip)
 
@@ -239,7 +348,11 @@ class ScriptRunArgsDialog(QDialog):
             spec = inspect_script_arguments(target.script_path) if target.script_path else ScriptArgumentSpec(
                 script_path="", detected=False, arguments=(), warnings=("无脚本路径",)
             )
-            editor = _StepArgEditor(target, spec)
+            editor = _StepArgEditor(
+                target,
+                spec,
+                allow_save_defaults=allow_save_defaults,
+            )
             self._editors.append(editor)
             body_layout.addWidget(editor)
         body_layout.addStretch(1)
@@ -255,19 +368,25 @@ class ScriptRunArgsDialog(QDialog):
 
     def _on_accept(self) -> None:
         result: dict[str, list[str]] = {}
+        saved_updates: dict[str, list[str]] = {}
         try:
             for editor in self._editors:
                 temporary = editor.collect_temporary_args()
-                if temporary:
-                    result[editor.target.uid] = temporary
+                result[editor.target.uid] = temporary
+                if editor.should_save():
+                    saved_updates[editor.target.uid] = list(temporary)
         except CliArgsParseError as exc:
             QMessageBox.warning(self, "参数错误", str(exc))
             return
         self._result = result
+        self._saved_updates = saved_updates
         self.accept()
 
     def overrides(self) -> dict[str, list[str]]:
         return dict(self._result)
+
+    def saved_updates(self) -> dict[str, list[str]]:
+        return dict(self._saved_updates)
 
 
 def _dialog_stylesheet(dark: bool) -> str:
@@ -339,6 +458,14 @@ def collect_python_step_targets(
                 fixed = list(step.get_args() or [])
             except (TypeError, ValueError):
                 fixed = []
+        saved = []
+        if hasattr(step, "get_saved_run_args"):
+            try:
+                value = step.get_saved_run_args()
+                if isinstance(value, list) and all(isinstance(arg, str) for arg in value):
+                    saved = list(value)
+            except (TypeError, ValueError):
+                saved = []
         targets.append(
             StepArgTarget(
                 uid=str(uid),
@@ -346,6 +473,7 @@ def collect_python_step_targets(
                 order=int(getattr(step, "order", 0) or 0),
                 script_path=str(getattr(step, "script_path", "") or ""),
                 fixed_args=fixed,
+                saved_args=saved,
             )
         )
     return targets
@@ -357,11 +485,12 @@ def prompt_run_arg_overrides(
     *,
     dark: bool = False,
     is_python: Callable[[object], bool] | None = None,
-) -> tuple[bool, dict[str, list[str]]]:
+    allow_save_defaults: bool = True,
+) -> tuple[bool, dict[str, list[str]], dict[str, list[str]]]:
     """弹出对话框。无 Python 步骤或无可填写参数时直接运行。"""
     targets = collect_python_step_targets(steps, is_python=is_python)
     if not targets:
-        return True, {}
+        return True, {}, {}
 
     editable_targets = []
     for target in targets:
@@ -369,12 +498,17 @@ def prompt_run_arg_overrides(
             editable_targets.append(target)
             continue
         spec = inspect_script_arguments(target.script_path)
-        if spec.arguments or spec.warnings:
+        if target.saved_args or spec.arguments or spec.warnings:
             editable_targets.append(target)
     if not editable_targets:
-        return True, {}
+        return True, {}, {}
 
-    dlg = ScriptRunArgsDialog(editable_targets, dark=dark, parent=parent)
+    dlg = ScriptRunArgsDialog(
+        editable_targets,
+        dark=dark,
+        allow_save_defaults=allow_save_defaults,
+        parent=parent,
+    )
     if dlg.exec() != QDialog.Accepted:
-        return False, {}
-    return True, dlg.overrides()
+        return False, {}, {}
+    return True, dlg.overrides(), dlg.saved_updates()

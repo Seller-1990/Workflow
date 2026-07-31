@@ -430,6 +430,7 @@ def copy_step(step_id: int) -> Optional[Step]:
             step_type=source.step_type,
             script_path=source.script_path,
             args=source.args,
+            saved_run_args=source.saved_run_args,
             cwd=source.cwd,
             is_gate=source.is_gate,
             is_parallel=source.is_parallel,
@@ -438,6 +439,7 @@ def copy_step(step_id: int) -> Optional[Step]:
             timeout_seconds=source.timeout_seconds,
             retry_count=source.retry_count,
             skip_on_success=source.skip_on_success,
+            output_paths=source.output_paths,
         )
         session.add(new_step)
         session.commit()

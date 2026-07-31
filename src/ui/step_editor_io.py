@@ -47,6 +47,7 @@ def load_step(panel, step_id: int):
 
         panel.edit_script.setText(step.script_path or "")
         panel.edit_args.setText(step.args or "")
+        panel.edit_saved_run_args.setText(step.saved_run_args or "")
         # ROI-2: 显式输出声明用「; 」拼接展示，保存时按「;」拆分
         panel.edit_output_paths.setText("; ".join(str(p) for p in step.get_output_paths()))
         panel.edit_cwd.setText(step.cwd or "")

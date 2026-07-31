@@ -139,6 +139,26 @@ def test_run_engine_mode_unknown_mode_returns_false_without_calling_engine():
     assert engine.calls == []
 
 
+def test_run_engine_mode_forwards_explicit_empty_step_override():
+    calls = []
+
+    class OverrideEngine:
+        def run_only(self, workflow_id, step_id, run_arg_overrides=None):
+            calls.append((workflow_id, step_id, run_arg_overrides))
+            return True
+
+    overrides = {"step-1": []}
+
+    assert run_engine_mode(
+        OverrideEngine(),
+        workflow_id=7,
+        mode="only_step",
+        param=12,
+        run_arg_overrides=overrides,
+    ) is True
+    assert calls == [(7, 12, {"step-1": []})]
+
+
 class DummyWorkflowConfig:
     def __init__(self, *, dirty=False, save_result=True):
         self._dirty = dirty
@@ -181,6 +201,29 @@ def test_create_plan_switch_registers_stage_and_list_buttons():
         ("列表", 1),
     ]
     assert app is not None
+
+
+def test_panel_toggle_wrappers_forward_silent_mode(monkeypatch):
+    window = SimpleNamespace()
+    calls = []
+    monkeypatch.setattr(
+        main_window_module.panel_controller,
+        "toggle_left_panel",
+        lambda target, *, silent=False: calls.append(("left", target, silent)),
+    )
+    monkeypatch.setattr(
+        main_window_module.panel_controller,
+        "toggle_right_panel",
+        lambda target, *, silent=False: calls.append(("right", target, silent)),
+    )
+
+    MainWindow._toggle_left_panel(window, silent=True)
+    MainWindow._toggle_right_panel(window, silent=True)
+
+    assert calls == [
+        ("left", window, True),
+        ("right", window, True),
+    ]
 
 
 def test_center_layout_keeps_default_size_constraint_for_scroll_pages():

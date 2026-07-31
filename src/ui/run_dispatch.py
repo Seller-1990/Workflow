@@ -5,6 +5,7 @@
 ``window._xxx`` 委托方法，保持原有动态分发语义。
 """
 
+import json
 import logging
 
 from ui.run_worker import RunWorker
@@ -12,6 +13,13 @@ from ui.theme import msg_warning
 from ui.script_run_args_dialog import prompt_run_arg_overrides
 
 logger = logging.getLogger(__name__)
+
+
+def _is_edit_mode_enabled(window) -> bool:
+    is_edit_mode = getattr(window, "is_edit_mode", None)
+    if callable(is_edit_mode):
+        return bool(is_edit_mode())
+    return bool(getattr(window, "_edit_mode", False))
 
 
 def on_run_requested(window, mode: str, param):
@@ -141,7 +149,7 @@ def _collect_run_arg_overrides(window, mode: str, param):
 
     workflow_id = window._current_workflow_id
 
-    from database import get_steps_by_workflow, get_workflow_by_id
+    from database import get_steps_by_workflow, get_workflow_by_id, update_step
 
     workflow = get_workflow_by_id(workflow_id)
     if workflow is None:
@@ -174,12 +182,41 @@ def _collect_run_arg_overrides(window, mode: str, param):
     def is_python(step) -> bool:
         return getattr(step, "step_type", None) == StepType.PYTHON
 
-    accepted, overrides = prompt_run_arg_overrides(
+    allow_save_defaults = _is_edit_mode_enabled(window)
+    accepted, overrides, saved_updates = prompt_run_arg_overrides(
         window,
         steps,
         dark=getattr(window, "_dark_mode", False),
         is_python=is_python,
+        allow_save_defaults=allow_save_defaults,
     )
     if not accepted:
         return None
+    if saved_updates and not _is_edit_mode_enabled(window):
+        require_edit_mode = getattr(window, "_require_edit_mode", None)
+        if callable(require_edit_mode):
+            require_edit_mode("保存运行参数")
+        else:
+            msg_warning(
+                window,
+                getattr(window, "_dark_mode", False),
+                "需要开启编辑",
+                "保存运行参数前请先开启编辑模式。",
+            )
+        return None
+    steps_by_uid = {str(step.uid): step for step in steps if getattr(step, "uid", None)}
+    for step_uid, saved_args in saved_updates.items():
+        if not isinstance(saved_args, list) or not all(
+            isinstance(arg, str) for arg in saved_args
+        ):
+            raise ValueError(f"无法保存运行参数：步骤参数必须是字符串数组 ({step_uid})")
+        step = steps_by_uid.get(step_uid)
+        if step is None:
+            raise ValueError(f"无法保存运行参数：步骤不存在 ({step_uid})")
+        updated = update_step(
+            step.id,
+            saved_run_args=json.dumps(saved_args, ensure_ascii=False) if saved_args else None,
+        )
+        if updated is None:
+            raise ValueError(f"无法保存运行参数：步骤不存在 ({step_uid})")
     return overrides

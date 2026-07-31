@@ -7,7 +7,7 @@ from typing import Mapping, Sequence
 
 
 def _call_run_method(method, *args, run_arg_overrides=None) -> bool:
-    if run_arg_overrides:
+    if run_arg_overrides is not None:
         return bool(method(*args, run_arg_overrides=run_arg_overrides))
     return bool(method(*args))
 
@@ -21,7 +21,7 @@ def run_engine_mode(
     run_arg_overrides: Mapping[str, Sequence[str]] | None = None,
 ) -> bool:
     """按 UI 运行模式调用对应引擎方法。"""
-    overrides = run_arg_overrides or None
+    overrides = None if run_arg_overrides is None else dict(run_arg_overrides)
     if mode == "full":
         return _call_run_method(engine.run_all, workflow_id, run_arg_overrides=overrides)
     if mode == "from_step":

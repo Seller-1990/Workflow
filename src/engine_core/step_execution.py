@@ -189,10 +189,13 @@ def execute_step_attempt(
         from script_arg_utils import format_cli_args_for_log, resolve_effective_args
 
         fixed_args = step.get_args()
+        saved_args_getter = getattr(step, "get_saved_run_args", None)
+        saved_run_args = list(saved_args_getter() or []) if callable(saved_args_getter) else []
         effective_args = resolve_effective_args(
             getattr(step, "uid", None),
             fixed_args,
             run_arg_overrides,
+            saved_run_args=saved_run_args,
         )
         if effective_args != list(fixed_args or []):
             engine._emit_log(

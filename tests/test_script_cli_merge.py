@@ -24,6 +24,33 @@ def test_no_override_same_as_fixed():
     assert resolve_effective_args("u1", fixed, {}) == ["--a", "1"]
 
 
+def test_saved_runtime_args_are_used_without_per_run_override():
+    assert resolve_effective_args(
+        "u1",
+        ["--fixed", "1"],
+        None,
+        saved_run_args=["--saved", "2"],
+    ) == ["--fixed", "1", "--saved", "2"]
+
+
+def test_per_run_override_replaces_saved_runtime_layer():
+    assert resolve_effective_args(
+        "u1",
+        ["--fixed", "1"],
+        {"u1": ["--override", "3"]},
+        saved_run_args=["--saved", "2"],
+    ) == ["--fixed", "1", "--override", "3"]
+
+
+def test_explicit_empty_override_suppresses_saved_runtime_layer():
+    assert resolve_effective_args(
+        "u1",
+        ["--fixed", "1"],
+        {"u1": []},
+        saved_run_args=["--saved", "2"],
+    ) == ["--fixed", "1"]
+
+
 
 def test_parallel_steps_isolated_by_uid():
     """并行步骤各自按 uid 取 overrides，互不污染。"""

@@ -35,12 +35,13 @@ def _install_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "ui.theme", th)
 
     dlg = ModuleType("ui.script_run_args_dialog")
-    dlg.prompt_run_arg_overrides = MagicMock(return_value=(True, {}))
+    dlg.prompt_run_arg_overrides = MagicMock(return_value=(True, {}, {}))
     monkeypatch.setitem(sys.modules, "ui.script_run_args_dialog", dlg)
 
     db = ModuleType("database")
     db.get_workflow_by_id = MagicMock()
     db.get_steps_by_workflow = MagicMock(return_value=[])
+    db.update_step = MagicMock()
     monkeypatch.setitem(sys.modules, "database", db)
 
     cfg = ModuleType("config")
@@ -83,6 +84,7 @@ def test_collect_uses_get_workflow_by_id_not_get_workflow(monkeypatch):
 
     database.get_workflow_by_id = MagicMock(return_value=SimpleNamespace(id=42))
     step = SimpleNamespace(
+        id=7,
         uid="u1",
         name="s1",
         order=1,
@@ -92,7 +94,9 @@ def test_collect_uses_get_workflow_by_id_not_get_workflow(monkeypatch):
     )
     database.get_steps_by_workflow = MagicMock(return_value=[step])
 
-    rd.prompt_run_arg_overrides = MagicMock(return_value=(True, {"u1": ["--year", "2025"]}))
+    rd.prompt_run_arg_overrides = MagicMock(
+        return_value=(True, {"u1": ["--year", "2025"]}, {})
+    )
 
     window = SimpleNamespace(
         _current_workflow_id=42,
@@ -103,7 +107,13 @@ def test_collect_uses_get_workflow_by_id_not_get_workflow(monkeypatch):
 
     assert result == {"u1": ["--year", "2025"]}
     database.get_workflow_by_id.assert_called_once_with(42)
-    rd.prompt_run_arg_overrides.assert_called_once()
+    rd.prompt_run_arg_overrides.assert_called_once_with(
+        window,
+        [step],
+        dark=False,
+        is_python=rd.prompt_run_arg_overrides.call_args.kwargs["is_python"],
+        allow_save_defaults=False,
+    )
 
 
 def test_collect_returns_none_when_user_cancels(monkeypatch):
@@ -112,7 +122,7 @@ def test_collect_returns_none_when_user_cancels(monkeypatch):
 
     database.get_workflow_by_id = MagicMock(return_value=SimpleNamespace(id=1))
     database.get_steps_by_workflow = MagicMock(return_value=[])
-    rd.prompt_run_arg_overrides = MagicMock(return_value=(False, {}))
+    rd.prompt_run_arg_overrides = MagicMock(return_value=(False, {}, {}))
 
     window = SimpleNamespace(
         _current_workflow_id=1,
@@ -138,9 +148,69 @@ def test_collect_returns_none_when_workflow_missing(monkeypatch):
     rd.msg_warning.assert_called_once()
 
 
-def test_only_step_collects_temporary_args_before_starting(monkeypatch):
+def test_collect_persists_selected_saved_runtime_args_before_return(monkeypatch):
     rd = _load_run_dispatch(monkeypatch)
-    overrides = {"step-1": ["--year", "2026"]}
+    import database
+
+    database.get_workflow_by_id = MagicMock(return_value=SimpleNamespace(id=42))
+    step = SimpleNamespace(
+        id=7,
+        uid="u1",
+        name="s1",
+        order=1,
+        step_type="python",
+        script_path="x.py",
+        get_args=lambda: [],
+        get_saved_run_args=lambda: ["--old", "1"],
+    )
+    database.get_steps_by_workflow = MagicMock(return_value=[step])
+    database.update_step = MagicMock(return_value=step)
+    rd.prompt_run_arg_overrides = MagicMock(
+        return_value=(True, {"u1": []}, {"u1": []})
+    )
+    window = SimpleNamespace(
+        _current_workflow_id=42,
+        _dark_mode=False,
+        _edit_mode=True,
+        engine=SimpleNamespace(_select_steps=MagicMock(return_value=[step])),
+    )
+
+    result = rd._collect_run_arg_overrides(window, "only_step", step.id)
+
+    assert result == {"u1": []}
+    database.update_step.assert_called_once_with(7, saved_run_args=None)
+
+
+def test_collect_blocks_saved_runtime_write_outside_edit_mode(monkeypatch):
+    rd = _load_run_dispatch(monkeypatch)
+    import database
+
+    database.get_workflow_by_id = MagicMock(return_value=SimpleNamespace(id=42))
+    step = SimpleNamespace(id=7, uid="u1", step_type="python")
+    database.get_steps_by_workflow = MagicMock(return_value=[step])
+    database.update_step = MagicMock(return_value=step)
+    rd.prompt_run_arg_overrides = MagicMock(
+        return_value=(True, {"u1": ["--year", "2026"]}, {"u1": ["--year", "2026"]})
+    )
+    require_edit_mode = MagicMock(return_value=False)
+    window = SimpleNamespace(
+        _current_workflow_id=42,
+        _dark_mode=False,
+        _edit_mode=False,
+        _require_edit_mode=require_edit_mode,
+        engine=SimpleNamespace(_select_steps=MagicMock(return_value=[step])),
+    )
+
+    result = rd._collect_run_arg_overrides(window, "only_step", step.id)
+
+    assert result is None
+    require_edit_mode.assert_called_once_with("保存运行参数")
+    database.update_step.assert_not_called()
+
+
+def test_only_step_preserves_explicit_empty_override_before_starting(monkeypatch):
+    rd = _load_run_dispatch(monkeypatch)
+    overrides = {"step-1": []}
     rd._collect_run_arg_overrides = MagicMock(return_value=overrides)
     worker = SimpleNamespace(start=MagicMock())
     rd.RunWorker = MagicMock(return_value=worker)
@@ -161,6 +231,23 @@ def test_only_step_collects_temporary_args_before_starting(monkeypatch):
         run_arg_overrides=overrides,
     )
     worker.start.assert_called_once_with()
+
+
+def test_saved_runtime_args_failure_prevents_worker_start(monkeypatch):
+    rd = _load_run_dispatch(monkeypatch)
+    rd._collect_run_arg_overrides = MagicMock(side_effect=RuntimeError("save failed"))
+    rd.RunWorker = MagicMock()
+    rd.msg_warning = MagicMock()
+    window = SimpleNamespace(
+        _current_workflow_id=42,
+        _dark_mode=False,
+        engine=SimpleNamespace(is_running=False),
+    )
+
+    rd.on_run_requested(window, "only_step", 7)
+
+    rd.RunWorker.assert_not_called()
+    rd.msg_warning.assert_called_once()
 
 
 @pytest.mark.parametrize(

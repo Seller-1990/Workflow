@@ -247,6 +247,7 @@ def _validate_steps(steps: list, wf_path: str) -> None:
         _expect_bool_if_present(step, "is_parallel", step_path)
         _expect_bool_if_present(step, "skip_on_success", step_path)
         _expect_optional_list(step, "args", step_path)
+        _expect_str_list_if_present(step, "saved_run_args", step_path)
         _expect_optional_list(step, "depends_on", step_path)
         _expect_str_list_if_present(step, "output_paths", step_path)
 

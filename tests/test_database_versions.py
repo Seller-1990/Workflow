@@ -59,7 +59,16 @@ def test_save_workflow_version_increments_and_snapshots_configuration(monkeypatc
         order=1,
         stage_uid=stage.uid,
     )
-    db.update_step(step.id, retry_count=2, timeout_seconds=123, cwd="steps", skip_on_success=True)
+    db.update_step(
+        step.id,
+        retry_count=2,
+        timeout_seconds=123,
+        cwd="steps",
+        skip_on_success=True,
+        args=json.dumps(["--fixed", "1"], ensure_ascii=False),
+        saved_run_args=json.dumps(["--year", "2026"], ensure_ascii=False),
+        output_paths=json.dumps(["D:/reports"], ensure_ascii=False),
+    )
 
     assert db.save_workflow_version(workflow.id, reason="first") == 1
     assert db.save_workflow_version(workflow.id, reason="second") == 2
@@ -102,6 +111,9 @@ def test_save_workflow_version_increments_and_snapshots_configuration(monkeypatc
     assert snapshot["steps"][0]["script"] == "job.py"
     assert snapshot["steps"][0]["cwd"] == "steps"
     assert snapshot["steps"][0]["skip_on_success"] is True
+    assert snapshot["steps"][0]["args"] == ["--fixed", "1"]
+    assert snapshot["steps"][0]["saved_run_args"] == ["--year", "2026"]
+    assert snapshot["steps"][0]["output_paths"] == ["D:/reports"]
     assert snapshot["parallel"] == {
         "enabled": False,
         "max_workers": 2,
@@ -181,6 +193,7 @@ def test_snapshot_schema_contract_matches_export_payload_keys(monkeypatch, tmp_p
         "step_type",
         "script",
         "args",
+        "saved_run_args",
         "cwd",
         "is_gate",
         "is_parallel",
@@ -189,6 +202,7 @@ def test_snapshot_schema_contract_matches_export_payload_keys(monkeypatch, tmp_p
         "timeout_seconds",
         "retry_count",
         "skip_on_success",
+        "output_paths",
     } <= set(snapshot["steps"][0])
     assert {"enabled", "webhook_id", "webhook_name"} <= set(snapshot["notify"])
 

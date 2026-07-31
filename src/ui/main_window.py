@@ -924,13 +924,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, "workflow_config") and hasattr(self.workflow_config, "refresh_webhooks"):
             self.workflow_config.refresh_webhooks()
 
-    def _toggle_left_panel(self):
+    def _toggle_left_panel(self, silent: bool = False):
         """折叠/展开左侧面板（实现在 ui.panel_controller）。"""
-        panel_controller.toggle_left_panel(self)
+        panel_controller.toggle_left_panel(self, silent=silent)
 
-    def _toggle_right_panel(self):
+    def _toggle_right_panel(self, silent: bool = False):
         """折叠/展开右侧面板（实现在 ui.panel_controller）。"""
-        panel_controller.toggle_right_panel(self)
+        panel_controller.toggle_right_panel(self, silent=silent)
 
     def resizeEvent(self, event):
         """窗口大小变化时更新边框折叠按钮位置"""

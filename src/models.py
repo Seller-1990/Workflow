@@ -183,6 +183,7 @@ class Step(Base):
     step_type: Mapped[str] = mapped_column(String(32), default="python")  # python, excel_powerquery, powerbi_refresh
     script_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     args: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON 数组
+    saved_run_args: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON 数组；运行时默认层
     cwd: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
     # 执行配置
@@ -224,6 +225,24 @@ class Step(Base):
     def set_args(self, args: list):
         """设置参数列表"""
         self.args = json.dumps(args, ensure_ascii=False)
+
+    def get_saved_run_args(self) -> list[str]:
+        """获取已保存的运行参数列表。"""
+        if self.saved_run_args:
+            try:
+                value = json.loads(self.saved_run_args)
+                if isinstance(value, list) and all(isinstance(arg, str) for arg in value):
+                    return value
+                logger.warning("步骤已保存运行参数不是字符串数组: step=%s", self.uid)
+            except json.JSONDecodeError as e:
+                logger.warning("步骤已保存运行参数 JSON 解析失败: %s", e)
+        return []
+
+    def set_saved_run_args(self, args: list[str]):
+        """设置已保存的运行参数列表。"""
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            raise ValueError("已保存运行参数必须是字符串数组")
+        self.saved_run_args = json.dumps(args, ensure_ascii=False)
     
     def get_depends_on(self) -> list:
         """获取依赖步骤列表；损坏数据必须阻止错误调度。"""

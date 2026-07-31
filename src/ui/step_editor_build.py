@@ -371,6 +371,7 @@ def setup_ui(panel):
     panel.edit_target_search = advanced_section.target_search_edit
     panel.combo_target_scope = advanced_section.target_scope_combo
     panel.edit_args = advanced_section.args_edit
+    panel.edit_saved_run_args = advanced_section.saved_run_args_edit
     # ROI-2: 步骤显式输出声明（分号分隔），监听冲突检测优先使用声明
     panel.edit_output_paths = advanced_section.output_paths_edit
     panel.edit_theme = advanced_section.theme_edit

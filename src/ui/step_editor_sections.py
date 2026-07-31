@@ -45,6 +45,7 @@ class AdvancedSettingsSection:
     target_search_edit: QLineEdit
     target_scope_combo: QComboBox
     args_edit: QLineEdit
+    saved_run_args_edit: QLineEdit
     output_paths_edit: QLineEdit
     theme_edit: QLineEdit
     timeout_spin: QSpinBox
@@ -63,6 +64,7 @@ class AdvancedSettingsControls:
     target_search_edit: QLineEdit
     target_scope_combo: QComboBox
     args_edit: QLineEdit
+    saved_run_args_edit: QLineEdit
     output_paths_edit: QLineEdit
     theme_edit: QLineEdit
     timeout_spin: QSpinBox
@@ -158,6 +160,7 @@ def create_advanced_settings_section(
         target_search_edit=controls.target_search_edit,
         target_scope_combo=controls.target_scope_combo,
         args_edit=controls.args_edit,
+        saved_run_args_edit=controls.saved_run_args_edit,
         output_paths_edit=controls.output_paths_edit,
         theme_edit=controls.theme_edit,
         timeout_spin=controls.timeout_spin,
@@ -202,7 +205,11 @@ def _create_advanced_controls(
         target_scope_combo=target_scope_combo,
         args_edit=_create_line_edit(
             placeholder='例如: ["--output", "result.txt"]',
-            tooltip='传给脚本或执行器的 JSON 数组参数，例如 ["--output", "result.txt"]',
+            tooltip='始终传给脚本或执行器的固定 JSON 数组参数',
+        ),
+        saved_run_args_edit=_create_line_edit(
+            placeholder='例如: ["--year", "2026"]',
+            tooltip='没有本次运行覆盖时使用的 JSON 数组参数；固定参数始终保留',
         ),
         # ROI-2: 显式输出声明；监听冲突检测优先使用声明，推断仅作未声明步骤的兜底
         output_paths_edit=_create_line_edit(
@@ -240,7 +247,13 @@ def _layout_advanced_controls(grid: QGridLayout, controls: AdvancedSettingsContr
     row = _add_labeled_widget(grid, row, controls.cwd_label, controls.cwd_row)
     grid.addWidget(controls.sub_workflow_filter, row, 0, 1, 2)
     row += 1
-    row = _add_labeled_widget(grid, row, _fixed_label("参数", tooltip="JSON 数组"), controls.args_edit)
+    row = _add_labeled_widget(grid, row, _fixed_label("固定参数", tooltip="每次运行都会附加的 JSON 数组"), controls.args_edit)
+    row = _add_labeled_widget(
+        grid,
+        row,
+        _fixed_label("保存运行参数", tooltip="可在运行前临时覆盖；JSON 数组"),
+        controls.saved_run_args_edit,
+    )
     row = _add_labeled_widget(
         grid,
         row,

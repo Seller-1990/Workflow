@@ -91,13 +91,15 @@ def resolve_effective_args(
     step_uid: str | None,
     fixed_args: Sequence[str] | None,
     run_arg_overrides: Mapping[str, Sequence[str]] | None,
+    *,
+    saved_run_args: Sequence[str] | None = None,
 ) -> list[str]:
-    """按 step.uid 从覆盖层取临时参数并合并。"""
+    """合并固定参数与运行参数层；本次覆盖按 UID 替换已保存层。"""
     overrides = run_arg_overrides or {}
-    temporary: Sequence[str] = []
-    if step_uid:
-        temporary = overrides.get(step_uid, []) or []
-    return merge_step_args(fixed_args, temporary)
+    runtime_args: Sequence[str] | None = saved_run_args
+    if step_uid and step_uid in overrides:
+        runtime_args = overrides[step_uid] or []
+    return merge_step_args(fixed_args, runtime_args)
 
 
 def redact_cli_args(args: Iterable[str] | None) -> list[str]:

@@ -463,6 +463,9 @@ def _import_steps(
         args = step_data.get("args", [])
         if args:
             step.set_args(args)
+        saved_run_args = step_data.get("saved_run_args", [])
+        if saved_run_args:
+            step.set_saved_run_args(saved_run_args)
         deps = step_data.get("depends_on", [])
         if deps:
             step.set_depends_on(deps)
@@ -538,6 +541,7 @@ def _export_steps(workflow: Workflow) -> list[dict]:
             "step_type": step.step_type,
             "script": step.script_path or "",
             "args": step.get_args(),
+            "saved_run_args": step.get_saved_run_args(),
             "cwd": step.cwd or "",
             "is_gate": step.is_gate,
             "is_parallel": step.is_parallel,

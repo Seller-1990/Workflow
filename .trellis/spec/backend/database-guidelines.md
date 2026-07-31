@@ -111,6 +111,77 @@ def _migrate_v8_run_history_step_log_perf_indexes(engine):
         ))
 ```
 
+### Scenario: Layered Step Runtime Arguments
+
+#### 1. Scope / Trigger
+
+- Trigger: changing step CLI arguments, run dialogs, execution overrides, or
+  workflow serialization.
+- Scope: the `Step` model, schema migrations, copy/clone paths, import/export,
+  workflow snapshots, UI dispatch, and engine execution.
+
+#### 2. Signatures
+
+- Database field: `steps.saved_run_args TEXT NULL`.
+- Model APIs:
+  `Step.get_saved_run_args() -> list[str]` and
+  `Step.set_saved_run_args(args: list[str]) -> None`.
+- Runtime resolver:
+  `resolve_effective_args(step_uid, fixed_args, run_arg_overrides, *, saved_run_args=None) -> list[str]`.
+
+#### 3. Contracts
+
+- `Step.args` remains the fixed argument layer and is always preserved.
+- `Step.saved_run_args` is a separate persisted default layer.
+- No per-run override means `fixed + saved`.
+- A present per-run override means `fixed + override`; an explicit empty list
+  suppresses saved defaults for that run.
+- Persisting dialog values is a configuration write and requires edit mode.
+- Copy, clone, import/export, and workflow snapshots must preserve
+  `saved_run_args`; copy/clone must also preserve `output_paths`.
+
+#### 4. Validation & Error Matrix
+
+- Valid JSON `list[str]` -> store and execute.
+- Missing/NULL field from an old database or JSON export -> treat as `[]`.
+- JSON list containing a non-string item -> reject at editor/import/write
+  boundaries; a corrupted stored value logs a warning and resolves to `[]`.
+- Dialog save requested outside edit mode -> do not write and do not start the
+  run request.
+- Database update fails before worker start -> surface the error and abort run.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: fixed `["--env", "prod"]`, saved `["--year", "2026"]`, no override
+  executes all four tokens.
+- Base: old workflow has no saved field and behaves exactly as before.
+- Bad: append a temporary override to saved defaults. Duplicate flags become
+  ambiguous and explicit-empty suppression is impossible.
+
+#### 6. Tests Required
+
+- Idempotent migration and old-database compatibility.
+- Model and import rejection of non-string saved items.
+- Copy/clone/import-export/snapshot round trips.
+- Runtime tests for no override, non-empty override, and explicit empty override.
+- UI tests for structured argparse prefill, edit-mode save gating, and
+  persistence failure aborting worker startup.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+
+```python
+effective = fixed_args + saved_args + temporary_args
+```
+
+Correct:
+
+```python
+runtime = overrides[step_uid] if step_uid in overrides else saved_args
+effective = fixed_args + runtime
+```
+
 ---
 
 ## Naming Conventions

@@ -27,6 +27,21 @@ def test_step_model_declares_unique_workflow_uid_index():
     assert [column.name for column in unique_index.columns] == ["workflow_id", "uid"]
 
 
+def test_step_saved_run_args_model_enforces_string_list(caplog):
+    step = Step(uid="saved-args-model", workflow_id=1, name="测试")
+
+    step.set_saved_run_args(["--year", "2026"])
+    assert step.get_saved_run_args() == ["--year", "2026"]
+
+    with pytest.raises(ValueError, match="字符串数组"):
+        step.set_saved_run_args(["--year", 2026])
+
+    step.saved_run_args = '["--year", 2026]'
+    with caplog.at_level(logging.WARNING):
+        assert step.get_saved_run_args() == []
+    assert "不是字符串数组" in caplog.text
+
+
 def test_webhook_model_declares_unique_name_index():
     indexes = {index.name: index for index in WebhookConfig.__table__.indexes}
 
@@ -147,6 +162,32 @@ def test_clone_workflow_remaps_dependencies_to_later_steps(monkeypatch, tmp_path
     cloned_by_name = {step.name: step for step in cloned_steps}
 
     assert cloned_by_name["A"].get_depends_on() == [cloned_by_name["B"].uid]
+
+
+def test_step_copy_and_workflow_clone_preserve_runtime_args_and_output_paths(monkeypatch, tmp_path: Path):
+    db = _use_temp_database(monkeypatch, tmp_path)
+    workflow = db.create_workflow("步骤字段复制测试")
+    source = db.create_step(workflow.id, "A", order=1)
+    fixed_args = ["--fixed", "1"]
+    saved_args = ["--saved", "2"]
+    output_paths = ["D:/outputs", "D:/reports/result.xlsx"]
+    db.update_step(
+        source.id,
+        args=json.dumps(fixed_args, ensure_ascii=False),
+        saved_run_args=json.dumps(saved_args, ensure_ascii=False),
+        output_paths=json.dumps(output_paths, ensure_ascii=False),
+    )
+
+    copied = db.copy_step(source.id)
+    cloned = db.clone_workflow(workflow.id, "克隆结果")
+    cloned_source = next(step for step in db.get_steps_by_workflow(cloned.id) if step.name == "A")
+
+    assert copied.get_args() == fixed_args
+    assert copied.get_saved_run_args() == saved_args
+    assert copied.get_output_paths() == output_paths
+    assert cloned_source.get_args() == fixed_args
+    assert cloned_source.get_saved_run_args() == saved_args
+    assert cloned_source.get_output_paths() == output_paths
 
 
 def test_copy_workflow_uses_clone_dependency_remap(monkeypatch, tmp_path: Path):
@@ -558,6 +599,22 @@ def test_perf_index_migration_is_idempotent(tmp_path: Path):
 
     assert "ix_run_histories_wf_start_id" in run_indexes
     assert "ix_step_logs_run_order" in step_indexes
+
+
+def test_saved_run_args_migration_is_idempotent(tmp_path: Path):
+    db_path = tmp_path / "saved-run-args.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE steps (id INTEGER PRIMARY KEY)"))
+
+    database._migrate_v9_step_saved_run_args(engine)
+    database._migrate_v9_step_saved_run_args(engine)
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(steps)"))}
+
+    assert "saved_run_args" in columns
+    assert (9, "_migrate_v9_step_saved_run_args") in database.SCHEMA_MIGRATIONS
 
 
 def test_step_uid_dedup_migration_repoints_step_logs(tmp_path: Path):

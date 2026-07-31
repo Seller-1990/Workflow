@@ -247,6 +247,72 @@ def test_json_import_reports_schema_path_for_bad_boolean(monkeypatch, tmp_path: 
         db.import_from_json(payload_path)
 
 
+def test_json_import_rejects_non_list_saved_run_args(monkeypatch, tmp_path: Path):
+    db = _use_temp_database(monkeypatch, tmp_path)
+    payload_path = tmp_path / "bad-saved-run-args.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "workflows": [
+                    {
+                        "id": "wf_bad_saved_args",
+                        "name": "坏运行参数",
+                        "steps": [
+                            {
+                                "id": "step_1",
+                                "name": "步骤A",
+                                "saved_run_args": "--year 2026",
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"\$\.workflows\[0\]\.steps\[0\]\.saved_run_args",
+    ):
+        db.import_from_json(payload_path)
+
+
+def test_json_import_rejects_non_string_saved_run_arg_item(monkeypatch, tmp_path: Path):
+    db = _use_temp_database(monkeypatch, tmp_path)
+    payload_path = tmp_path / "bad-saved-run-arg-item.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "workflows": [
+                    {
+                        "id": "wf_bad_saved_arg_item",
+                        "name": "坏运行参数项",
+                        "steps": [
+                            {
+                                "id": "step_1",
+                                "name": "步骤A",
+                                "saved_run_args": ["--year", 2026],
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"\$\.workflows\[0\]\.steps\[0\]\.saved_run_args\[1\]",
+    ):
+        db.import_from_json(payload_path)
+
+
 def test_json_import_rejects_bad_notify_field_types(monkeypatch, tmp_path: Path):
     db = _use_temp_database(monkeypatch, tmp_path)
     payload_path = tmp_path / "bad-notify.json"

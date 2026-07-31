@@ -241,12 +241,13 @@ def test_default_template_matches_engine_core_notification_source():
     assert "resolve_workflow_notification_target" in cli_source
 
 
-def test_import_export_round_trip_preserves_step_output_paths(tmp_path):
-    """ROI-2: 步骤显式输出声明在 导入→落库→导出 全链路保持不变；旧 JSON 缺省该字段同样可导入。"""
+def test_import_export_round_trip_preserves_step_saved_args_and_output_paths(tmp_path):
+    """步骤保存运行参数和输出声明在导入、落库、导出链路保持不变。"""
     app_data_dir = tmp_path / "output-paths-app-data"
     payload_path = tmp_path / "output-paths-import.json"
     export_path = tmp_path / "output-paths-export.json"
     declared = ["D:/数据/基础文件", "D:/数据/报表/月报.xlsx"]
+    saved_args = ["--year", "2026", "--region", "华东"]
     payload_path.write_text(
         json.dumps(
             {
@@ -261,6 +262,7 @@ def test_import_export_round_trip_preserves_step_output_paths(tmp_path):
                                 "name": "声明输出步骤",
                                 "step_type": "python",
                                 "script": "refresh.py",
+                                "saved_run_args": saved_args,
                                 "output_paths": declared,
                             },
                             {
@@ -305,8 +307,12 @@ exported = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 exported_steps = {step["id"]: step for step in exported["workflows"][0]["steps"]}
 print(json.dumps({
     "imported_count": imported.imported_count,
+    "db_saved_args": steps["step_declared"].get_saved_run_args(),
+    "db_legacy_saved_args": steps["step_legacy"].get_saved_run_args(),
     "db_declared": steps["step_declared"].get_output_paths(),
     "db_legacy": steps["step_legacy"].get_output_paths(),
+    "exported_saved_args": exported_steps["step_declared"]["saved_run_args"],
+    "exported_legacy_saved_args": exported_steps["step_legacy"]["saved_run_args"],
     "exported_declared": exported_steps["step_declared"]["output_paths"],
     "exported_legacy": exported_steps["step_legacy"]["output_paths"],
 }, ensure_ascii=False))
@@ -319,9 +325,13 @@ print(json.dumps({
     state = _load_last_json_line(result.stdout)
 
     assert state["imported_count"] == 1
+    assert state["db_saved_args"] == saved_args
+    assert state["db_legacy_saved_args"] == []
     # 导入落库：声明字段写入 Step.output_paths；缺省字段保持空声明
     assert state["db_declared"] == declared
     assert state["db_legacy"] == []
+    assert state["exported_saved_args"] == saved_args
+    assert state["exported_legacy_saved_args"] == []
     # 导出：声明原样回写；未声明步骤导出空数组（可选字段，schema version 不变）
     assert state["exported_declared"] == declared
     assert state["exported_legacy"] == []

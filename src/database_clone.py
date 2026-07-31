@@ -93,6 +93,7 @@ def _clone_steps(
             stage_uid=stage_uid_map.get(step.stage_uid, step.stage_uid),
             step_type=step.step_type,
             script_path=step.script_path,
+            saved_run_args=step.saved_run_args,
             cwd=step.cwd,
             is_gate=step.is_gate,
             is_parallel=step.is_parallel,
@@ -100,6 +101,7 @@ def _clone_steps(
             skip_on_success=step.skip_on_success,
             retry_count=step.retry_count,
             timeout_seconds=step.timeout_seconds,
+            output_paths=step.output_paths,
         )
         cloned_step.set_args(step.get_args())
         cloned_step.set_depends_on(new_deps)

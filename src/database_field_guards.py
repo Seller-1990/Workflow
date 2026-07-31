@@ -30,6 +30,7 @@ STEP_UPDATE_FIELDS = {
     "step_type",
     "script_path",
     "args",
+    "saved_run_args",
     "cwd",
     "is_gate",
     "is_parallel",
