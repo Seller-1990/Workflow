@@ -877,6 +877,8 @@ class StepEditorPanel(QWidget):
         
         if step_type == "python":
             filter_str = "Python Files (*.py);;All Files (*)"
+        elif step_type == "bat":
+            filter_str = "Batch Files (*.bat *.cmd);;All Files (*)"
         elif step_type == "excel_powerquery":
             filter_str = "Excel Files (*.xlsx *.xlsm *.xlsb);;All Files (*)"
         elif step_type == "powerbi_refresh":

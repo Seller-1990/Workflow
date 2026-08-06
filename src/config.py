@@ -110,12 +110,14 @@ class StepType:
     EXCEL_POWERQUERY = "excel_powerquery"
     POWERBI_REFRESH = "powerbi_refresh"
     SUB_WORKFLOW = "sub_workflow"
-    
+    BAT = "bat"
+
     @classmethod
     def choices(cls):
         choices = [(cls.PYTHON, "Python")]
         if sys.platform.startswith("win"):
             choices.extend([
+                (cls.BAT, "批处理脚本"),
                 (cls.EXCEL_POWERQUERY, "Power Query"),
                 (cls.POWERBI_REFRESH, "Power BI"),
             ])

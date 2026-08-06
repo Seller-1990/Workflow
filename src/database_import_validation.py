@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 EXPORT_SCHEMA_VERSION = 1
 _WATCH_MODES = {"any_change", "all_folders_updated_since_success"}
-_EXECUTABLE_TYPES = {"python", "excel_powerquery", "powerbi_refresh", "sub_workflow"}
+_EXECUTABLE_TYPES = {"python", "bat", "excel_powerquery", "powerbi_refresh", "sub_workflow"}
 _IMPORTED_PATH_WARNING = "[导入提示] 此工作流包含绝对路径或上级目录引用，首次运行前请确认脚本和工作目录来源可信。"
 _IMPORTED_PATH_CONFIRMED = "[已确认] 用户已确认导入路径安全。"
 _NOTIFY_SCHEMA_FIELDS = {

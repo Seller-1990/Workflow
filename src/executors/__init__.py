@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Type
 
 from executors.base import BaseExecutor, ExecutorResult
 from executors.python_executor import PythonExecutor
+from executors.bat_executor import BatExecutor
 from executors.excel_executor import ExcelExecutor
 from executors.powerbi_executor import PowerBIExecutor
 from executors.result_policy import (
@@ -99,6 +100,7 @@ def get_type_choices() -> List[tuple]:
 # ============================================================
 
 register_executor("python", PythonExecutor, label="Python 脚本")
+register_executor("bat", BatExecutor, label="批处理脚本")
 register_executor("excel_powerquery", ExcelExecutor, label="Excel 刷新")
 register_executor("powerbi_refresh", PowerBIExecutor, label="PowerBI 刷新")
 register_executor("sub_workflow", SubWorkflowExecutor, label="子工作流")
@@ -106,6 +108,7 @@ register_executor("sub_workflow", SubWorkflowExecutor, label="子工作流")
 
 __all__ = [
     "BaseExecutor",
+    "BatExecutor",
     "ExecutorResult",
     "PythonExecutor",
     "ExcelExecutor",
