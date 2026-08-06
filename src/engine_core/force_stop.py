@@ -69,11 +69,15 @@ def force_cancel_run_record(
         warn_cb,
         "批量取消 step_logs 失败: %s",
     )
-    update_run_history(
+    result = update_run_history(
         run_history_id,
         status=cancelled_status_value,
         end_time=now or datetime.now(),
+        _condition_status="running",
     )
+    if result is None:
+        _log(log_cb, f"运行 {run_history_id} 终态已被正常流程写入，跳过强制取消")
+        return ForceStopResult(status="already_terminal", existing_status=existing_status)
     _log(log_cb, f"已强制停止运行记录 (run_history_id={run_history_id})")
     return ForceStopResult(status="cancelled", existing_status=existing_status)
 

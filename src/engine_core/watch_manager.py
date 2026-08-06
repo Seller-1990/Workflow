@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Callable
 
 from constants import WATCH_COOLDOWN_DEFAULT, WATCH_SETTLE_DEFAULT
@@ -54,6 +55,7 @@ class WatchManager:
         self._validate_folders_cb = validate_folders_cb
         self._detect_conflicts_cb = detect_conflicts_cb
         self._get_steps_cb = get_steps_cb
+        self._lock = threading.RLock()
         # CA2: 监听器子系统抽到 engine_core.watcher
         # M1: 单 watcher 升级为按 workflow_id 的多实例，互不干扰；
         # 切换 UI 选中不再影响其它工作流的监听。
@@ -78,6 +80,10 @@ class WatchManager:
         R2-#4: 启停信号在状态切换时发出，UI 据此更新持续指示灯。
         幂等：若该 workflow 已按相同目录/参数监听且线程存活，则跳过 stop+restart 抖动。
         """
+        with self._lock:
+            return self._start_watch_locked(workflow)
+
+    def _start_watch_locked(self, workflow: "Workflow") -> bool:
         existing = self.watchers.get(workflow.id)
         prev_folders = list(getattr(existing, "_folders", []) or [])
         prev_cooldown = int(getattr(existing, "_cooldown", 0) or 0)
@@ -156,6 +162,10 @@ class WatchManager:
         M1: ``workflow_id=None`` 停止全部监听（关闭/退出场景）；
         指定 workflow_id 时只停该工作流的监听。
         """
+        with self._lock:
+            self._stop_watch_locked(workflow_id, join_timeout)
+
+    def _stop_watch_locked(self, workflow_id: int | None = None, join_timeout: float = 1.0):
         if workflow_id is None:
             target_ids = list(self.watchers.keys())
         elif workflow_id in self.watchers:

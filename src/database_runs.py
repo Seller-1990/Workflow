@@ -117,7 +117,14 @@ def get_run_histories_by_workflow(
         query = session.query(RunHistory).filter(RunHistory.workflow_id == workflow_id)
         offset_value = max(0, int(offset or 0))
         limit_value = max(1, int(limit or 1))
-        return query.order_by(RunHistory.id.desc()).offset(offset_value).limit(limit_value).all()
+        results = query.order_by(RunHistory.id.desc()).offset(offset_value).limit(limit_value).all()
+        # PF2: 批量读取后过期未使用的旧对象（不含本次返回的），
+        # 避免长期运行的桌面应用中 session 持有无限增长的对象缓存。
+        # 注意：不能 expire 本次返回的对象，否则调用方访问属性时会因 session 已退出而报错。
+        for obj in list(session.identity_map.values()):
+            if obj not in results:
+                session.expire(obj)
+        return results
 
 
 def get_latest_run_history(
@@ -145,13 +152,21 @@ def get_latest_run_history(
 
 
 def update_run_history(run_history_id: int, **kwargs) -> Optional[RunHistory]:
-    """更新运行历史"""
+    """更新运行历史
+
+    Args:
+        _condition_status: 可选条件——仅当当前 status 等于该值时才更新。
+            用于 force_stop 竞态保护：避免覆盖正常 finalization 已写入的终态。
+            不匹配时返回 None（表示未修改）。
+    """
+    condition_status = kwargs.pop("_condition_status", None)
     _validate_update_fields("RunHistory", kwargs, RUN_HISTORY_UPDATE_FIELDS)
     from database import get_session
     with get_session() as session:
-        run_history = session.query(RunHistory).filter(
-            RunHistory.id == run_history_id
-        ).first()
+        query = session.query(RunHistory).filter(RunHistory.id == run_history_id)
+        if condition_status is not None:
+            query = query.filter(RunHistory.status == condition_status)
+        run_history = query.first()
         if run_history:
             for key, value in kwargs.items():
                 setattr(run_history, key, value)
@@ -167,26 +182,23 @@ def update_run_history(run_history_id: int, **kwargs) -> Optional[RunHistory]:
 
 
 def clear_run_histories(workflow_id: int) -> int:
-    """清除指定工作流的所有运行历史（优化：使用批量删除，避免加载所有对象）
+    """清除指定工作流的所有运行历史（优化：使用子查询批量删除，避免大 IN 子句）
 
     Returns:
         删除的记录数
     """
     from database import get_session
     with get_session() as session:
-        # 先获取所有历史ID（仅查询ID，不加载完整对象）
-        history_ids = [
-            h.id for h in session.query(RunHistory.id).filter(
-                RunHistory.workflow_id == workflow_id
-            )
-        ]
-
-        if not history_ids:
-            return 0
+        # 使用子查询避免将全部 ID 加载到 Python 侧
+        history_id_subquery = (
+            session.query(RunHistory.id)
+            .filter(RunHistory.workflow_id == workflow_id)
+            .subquery()
+        )
 
         # 批量删除关联的步骤日志
         session.query(StepLog).filter(
-            StepLog.run_history_id.in_(history_ids)
+            StepLog.run_history_id.in_(session.query(history_id_subquery.c.id))
         ).delete(synchronize_session=False)
 
         # 批量删除运行历史

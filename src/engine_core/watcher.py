@@ -93,6 +93,7 @@ def scan_folder_mtimes_result(
     folders: list,
     max_depth: int | None = MTIME_SCAN_MAX_DEPTH,
     warning_cb: Callable[[str], None] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> MtimeScanResult:
     """扫描每个监听根目录聚合后的最大修改时间（os.scandir 递归）
 
@@ -106,6 +107,8 @@ def scan_folder_mtimes_result(
     aborted = False
 
     def _should_abort() -> bool:
+        if stop_event is not None and stop_event.is_set():
+            return True
         return scanned_directories >= MTIME_SCAN_MAX_DIRECTORIES or time.perf_counter() >= deadline
 
     def _scan_dir(root_key: str, current_path: str, depth: int):
@@ -308,6 +311,11 @@ class FileWatcher:
                     "警告：部分监听目录未能启用事件驱动，已整体回退 mtime 轮询："
                     + "；".join(failed)
                 )
+                try:
+                    observer.unschedule_all()
+                    observer.stop()
+                except Exception:
+                    pass
                 self._observer = None
                 return
             observer.start()
@@ -335,7 +343,7 @@ class FileWatcher:
           运行输出吞并并刷新基线，闭合"运行刚结束、settle 才到期→立刻重跑"的竞态。
         """
         try:
-            initial_scan = scan_folder_mtimes_result(folders, warning_cb=self._log)
+            initial_scan = scan_folder_mtimes_result(folders, warning_cb=self._log, stop_event=self._stop)
             baseline_valid = not initial_scan.aborted
             last_success_folder_mtimes = (
                 dict(initial_scan.folder_mtimes) if baseline_valid else {}
@@ -355,7 +363,7 @@ class FileWatcher:
                 """全量重扫并刷新基线；中止时标记基线不可信，等待下一次完整扫描重建。"""
                 nonlocal baseline_valid, last_mtime, last_success_folder_mtimes, scan_degraded
                 try:
-                    refresh_scan = scan_folder_mtimes_result(folders, warning_cb=self._log)
+                    refresh_scan = scan_folder_mtimes_result(folders, warning_cb=self._log, stop_event=self._stop)
                 except Exception as e:
                     logger.warning("%s基线刷新异常: %s", context, e)
                     self._log(f"警告：{context}基线刷新失败，基线暂不可信，待完整扫描后重建：{e}")
@@ -386,7 +394,7 @@ class FileWatcher:
                     if self._stop.wait(cooldown):
                         break
                 try:
-                    scan_result = scan_folder_mtimes_result(folders, warning_cb=self._log)
+                    scan_result = scan_folder_mtimes_result(folders, warning_cb=self._log, stop_event=self._stop)
                 except Exception as e:
                     logger.warning("监听扫描异常: %s", e)
                     self._log(f"警告：监听扫描异常（将在下一轮重试）：{e}")

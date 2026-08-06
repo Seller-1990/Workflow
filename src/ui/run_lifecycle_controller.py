@@ -326,4 +326,4 @@ def on_force_stop_run(window, run_history_id: int):
     if reply == QMessageBox.Yes:
         window.engine.force_stop_run(run_history_id)
         if window._current_workflow_id:
-            window.run_history.load_history(window._current_workflow_id)
+            window.run_history.load_history_async(window._current_workflow_id)

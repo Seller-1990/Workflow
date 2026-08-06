@@ -147,16 +147,19 @@ def emit_run_completion(
 
         if workflow and log_dir and signal_policy.send_notification:
             try:
-                engine._executor.submit(
-                    engine._send_notification,
-                    workflow=workflow,
-                    run_id=run_id,
-                    status=final_status,
-                    log_dir=str(log_dir),
-                    reason=reason,
-                    start_time=start_time,
-                    end_time=end_time,
-                )
+                if engine._executor is not None:
+                    engine._executor.submit(
+                        engine._send_notification,
+                        workflow=workflow,
+                        run_id=run_id,
+                        status=final_status,
+                        log_dir=str(log_dir),
+                        reason=reason,
+                        start_time=start_time,
+                        end_time=end_time,
+                    )
+                else:
+                    logger.warning("通知未发送：executor 已关闭")
             except Exception as e:
                 logger.warning("提交通知任务失败: %s", e)
     except Exception as e:
@@ -263,6 +266,12 @@ def run_workflow(
         workflow = eng.get_workflow_by_id(workflow_id)
         if not workflow:
             raise eng.ConfigurationError(f"工作流不存在: {workflow_id}")
+
+        # SEC1: 首次运行含 risky import path 的工作流时检查确认标记
+        from database_import_validation import workflow_has_unconfirmed_risky_paths
+        if workflow_has_unconfirmed_risky_paths(workflow):
+            engine._emit_log("错误：此工作流包含未经确认的导入路径（绝对路径或上级目录引用），请在工作流配置中确认路径安全后再运行")
+            return False
 
         # 自动清理过期日志（后台线程执行，避免阻塞启动）
         engine._cleanup_old_logs_async(workflow)
@@ -534,12 +543,22 @@ def execute_steps(
         # 执行步骤
         if len(batch) == 1:
             step = batch[0]
-            result = engine._execute_single_step(
-                workflow, step, run_history_id, log_dir, signal_policy,
-                prev_step_status_map=prev_step_status_map,
-                run_cancel_event=run_cancel_event,
-                run_arg_overrides=run_arg_overrides,
-            )
+            try:
+                result = engine._execute_single_step(
+                    workflow, step, run_history_id, log_dir, signal_policy,
+                    prev_step_status_map=prev_step_status_map,
+                    run_cancel_event=run_cancel_event,
+                    run_arg_overrides=run_arg_overrides,
+                )
+            except Exception as e:
+                logger.warning("单步执行异常: step=%s, error=%s", step.name, e)
+                result = eng.StepResult(
+                    step_id=step.id,
+                    step_name=step.name,
+                    status="failure",
+                    exit_code=-1,
+                    error_message=str(e),
+                )
             completed_steps += 1
             engine._update_execution_progress(completed_steps, total_steps, signal_policy)
 
@@ -669,7 +688,7 @@ def handle_batch_results(
 
 
 def cleanup_old_logs_async(engine: WorkflowEngine, workflow: Workflow):
-    """在后台线程执行日志清理，避免阻塞工作流启动"""
+    """在后台执行日志清理，避免阻塞工作流启动"""
     def cleanup():
         try:
             engine._cleanup_old_logs(workflow)
@@ -684,8 +703,15 @@ def cleanup_old_logs_async(engine: WorkflowEngine, workflow: Workflow):
                 pass
             pass  # 清理失败不应影响主流程
 
-    thread = threading.Thread(target=cleanup, daemon=True)
-    thread.start()
+    if engine._executor is not None:
+        try:
+            engine._executor.submit(cleanup)
+        except (RuntimeError, AttributeError):
+            thread = threading.Thread(target=cleanup, daemon=True)
+            thread.start()
+    else:
+        thread = threading.Thread(target=cleanup, daemon=True)
+        thread.start()
 
 
 def cleanup_old_logs(engine: WorkflowEngine, workflow: Workflow):

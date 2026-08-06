@@ -64,6 +64,7 @@ def build_subprocess_kwargs(
         built["env"] = dict(env)
     if creationflags:
         built["creationflags"] = creationflags
+    built.setdefault("stdin", subprocess.DEVNULL)
     return built
 
 

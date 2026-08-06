@@ -593,7 +593,7 @@ def test_watch_refreshes_file_baseline_after_failed_trigger(monkeypatch):
 
     scan_calls = {"count": 0}
 
-    def fake_scan(folders, max_depth=8, warning_cb=None):
+    def fake_scan(folders, max_depth=8, warning_cb=None, stop_event=None):
         scan_calls["count"] += 1
         if scan_calls["count"] == 1:
             return watcher_mod.MtimeScanResult({"watch": 1}, False)

@@ -32,6 +32,31 @@ class PowerBIRestError(Exception):
     """REST 刷新失败；message 为面向用户的中文说明，不包含 token"""
 
 
+import re as _re
+
+
+def _safe_exception_message(exc: Exception) -> str:
+    """脱敏异常消息中的 Bearer token 和 access_token 查询参数。"""
+    text = str(exc)
+    text = _re.sub(r"Bearer\s+[^\s]+", "Bearer <redacted>", text)
+    text = _re.sub(r"(?i)(access_token=)([^\s&#?]+)", r"\1<redacted>", text)
+    return text
+
+
+
+def _validate_guid(value: str, name: str) -> None:
+    """验证 workspace_id / dataset_id 不为空，且含路径遍历字符时拒绝。
+
+    GUID 格式验证为宽松模式：仅当值包含 '/' 或 '..' 等路径遍历字符时拒绝，
+    不强制 GUID 格式以兼容测试和简写 ID。
+    """
+    stripped = (value or "").strip()
+    if not stripped:
+        raise PowerBIRestError(f"{name} 不能为空")
+    if '/' in stripped or '\\' in stripped or '..' in stripped:
+        raise PowerBIRestError(f"{name} 包含非法字符，不允许路径遍历")
+
+
 def _excerpt(text, limit: int = BODY_EXCERPT_LIMIT) -> str:
     """压缩空白并截取响应正文摘录，避免错误信息过长"""
     cleaned = " ".join(str(text or "").split())
@@ -123,6 +148,9 @@ def refresh_dataset(
     Raises:
         PowerBIRestError: 触发失败、刷新失败、刷新被禁用、用户取消或轮询超时
     """
+    _validate_guid(workspace_id, "workspace_id")
+    _validate_guid(dataset_id, "dataset_id")
+
     if http is None:
         http = requests
 
@@ -142,7 +170,7 @@ def refresh_dataset(
             timeout=REQUEST_TIMEOUT,
         )
     except requests.exceptions.RequestException as exc:
-        raise PowerBIRestError(f"网络请求失败（触发刷新）: {exc}") from exc
+        raise PowerBIRestError(f"网络请求失败（触发刷新）: {_safe_exception_message(exc)}") from exc
     _raise_for_trigger_response(response)
     _log(f"刷新请求已受理 (HTTP 202)，开始轮询刷新状态（间隔 {poll_interval}秒，上限 {timeout_seconds}秒）...")
 
@@ -157,7 +185,7 @@ def refresh_dataset(
         try:
             poll_response = http.get(poll_url, headers=headers, timeout=REQUEST_TIMEOUT)
         except requests.exceptions.RequestException as exc:
-            raise PowerBIRestError(f"网络请求失败（查询刷新状态）: {exc}") from exc
+            raise PowerBIRestError(f"网络请求失败（查询刷新状态）: {_safe_exception_message(exc)}") from exc
 
         if _evaluate_poll_response(poll_response, _log) == "Completed":
             _log("数据集刷新完成 (Completed)")

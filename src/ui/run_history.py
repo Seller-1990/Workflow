@@ -300,6 +300,14 @@ class RunHistoryPanel(QWidget):
 
     def _render_table(self, histories):
         """渲染表格"""
+        self.table.setUpdatesEnabled(False)
+        try:
+            self._render_table_impl(histories)
+        finally:
+            self.table.setUpdatesEnabled(True)
+
+    def _render_table_impl(self, histories):
+        """渲染表格内部实现"""
         self.table.setRowCount(0)
         try:
             self.table.clearSpans()
@@ -548,7 +556,7 @@ class RunHistoryPanel(QWidget):
         reply = msg_question(self, self._dark, "确认", "确定要清除所有运行历史吗？")
         if reply == QMessageBox.Yes:
             clear_run_histories(self._workflow_id)
-            self.load_history(self._workflow_id)
+            self.load_history_async(self._workflow_id)
 
     def refresh_theme(self, dark: bool):
         self._dark = dark

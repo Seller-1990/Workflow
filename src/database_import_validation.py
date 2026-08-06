@@ -15,6 +15,7 @@ EXPORT_SCHEMA_VERSION = 1
 _WATCH_MODES = {"any_change", "all_folders_updated_since_success"}
 _EXECUTABLE_TYPES = {"python", "excel_powerquery", "powerbi_refresh", "sub_workflow"}
 _IMPORTED_PATH_WARNING = "[导入提示] 此工作流包含绝对路径或上级目录引用，首次运行前请确认脚本和工作目录来源可信。"
+_IMPORTED_PATH_CONFIRMED = "[已确认] 用户已确认导入路径安全。"
 _NOTIFY_SCHEMA_FIELDS = {
     "enabled",
     "webhook_id",
@@ -71,6 +72,23 @@ def mark_risky_import_paths(workflow: Workflow, wf_data: dict) -> None:
         workflow.uid,
         workflow.name,
     )
+
+
+def workflow_has_unconfirmed_risky_paths(workflow) -> bool:
+    """检查工作流是否包含未经用户确认的 risky import path 标记。
+
+    用于运行前安全检查：若 description 包含导入告警但不含确认标记，
+    则运行方应弹窗要求用户确认后才允许执行。
+    """
+    desc = getattr(workflow, "description", None) or ""
+    return _IMPORTED_PATH_WARNING in desc and _IMPORTED_PATH_CONFIRMED not in desc
+
+
+def confirm_risky_paths(workflow: Workflow) -> None:
+    """用户确认导入路径安全后调用，追加确认标记到 description。"""
+    desc = workflow.description or ""
+    if _IMPORTED_PATH_CONFIRMED not in desc:
+        workflow.description = f"{desc}\n{_IMPORTED_PATH_CONFIRMED}"
 
 
 def _json_error(path: str, message: str) -> ValueError:

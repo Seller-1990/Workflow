@@ -97,7 +97,7 @@ def test_run_process_preserves_timeout_cwd_env_contract(monkeypatch, tmp_path):
     )
 
     assert result.returncode == 0
-    assert calls == [(["tool"], {"timeout": 3, "text": True, "cwd": str(tmp_path), "env": env})]
+    assert calls == [(["tool"], {"timeout": 3, "text": True, "cwd": str(tmp_path), "env": env, "stdin": -3})]
     assert calls[0][1]["env"] is not env
 
 
