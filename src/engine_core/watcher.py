@@ -374,7 +374,11 @@ class FileWatcher:
 
             while not self._stop.is_set():
                 if use_observer:
-                    self._dirty.wait(timeout=cooldown)
+                    # P1-A: observer 模式下 watchdog 已在真实文件事件（及 stop 唤醒）时
+                    # dispatch 置位 dirty；wait 超时说明 cooldown 内无任何事件——
+                    # 跳过本轮全树扫描，避免空闲时每 cooldown 仍无条件递归扫整棵监听树。
+                    if not self._dirty.wait(timeout=cooldown):
+                        continue
                     if self._stop.is_set():
                         break
                     self._dirty.clear()

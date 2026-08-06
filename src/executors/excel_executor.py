@@ -159,14 +159,7 @@ class ExcelExecutor(BaseExecutor):
             )
         
         # 准备日志目录
-        if log_dir is None:
-            from config import LOG_DIR
-            log_dir = LOG_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_dir = Path(log_dir)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        
-        stdout_path = log_dir / "stdout.txt"
-        stderr_path = log_dir / "stderr.txt"
+        log_dir, stdout_path, stderr_path = self.build_log_dir(log_dir)
         
         # 默认超时（MA3：来自 constants.py）
         if timeout is None:

@@ -7,7 +7,6 @@
 
 import logging
 import time
-import uuid
 from datetime import datetime
 from typing import Optional, List
 
@@ -67,8 +66,8 @@ def create_run_history(
         trace_id: 追踪 ID（同一次完整执行的顶级 ID，子工作流继承父级）
         parent_run_id: 父运行 ID（子工作流设置，用于关联父工作流）
     """
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
-    from database import get_session
+    from database import generate_uid, get_session
+    run_id = generate_uid()
     with get_session() as session:
         run_history = RunHistory(
             workflow_id=workflow_id,

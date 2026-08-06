@@ -509,7 +509,9 @@ class WorkbenchBoardPanel(QWidget):
         self._edit_enabled = bool(enabled)
         self._refresh_button_state()
 
-    def load_workflow(self, workflow_id: int):
+    def load_workflow(self, workflow_id: int, *, steps=None, stages=None, workflow=None):
+        # P1-B: 切换工作流时由主窗口预加载 steps/stages/workflow 一次传入，
+        # 避免与 step_table / header 各自重复 SELECT 同一批数据。
         self._workflow_id = workflow_id
         self._cards.clear()
         self._lanes.clear()
@@ -517,9 +519,9 @@ class WorkbenchBoardPanel(QWidget):
         self._ordered_step_ids.clear()
         self._clear_layout()
 
-        stages = list_stages(workflow_id)
-        steps = get_steps_by_workflow(workflow_id)
-        workflow = get_workflow_by_id(workflow_id)
+        stages = list_stages(workflow_id) if stages is None else stages
+        steps = get_steps_by_workflow(workflow_id) if steps is None else steps
+        workflow = get_workflow_by_id(workflow_id) if workflow is None else workflow
         stage_map = get_stage_order_map(workflow_id)
 
         stage_uids = {stage.uid for stage in stages}

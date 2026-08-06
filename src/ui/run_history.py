@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import threading
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QMenu, QMessageBox, QComboBox, QLineEdit, QLabel,
@@ -37,6 +38,8 @@ class RunHistoryPanel(QWidget):
 
     open_failures_requested = Signal(int)  # run_history_id
     force_stop_requested = Signal(int)        # run_history_id
+    # P1-C: 后台线程查询结果跨线程回传 GUI 线程（AutoConnection → queued）
+    _history_page_fetched = Signal(int, object, object, bool)  # (workflow_id, records, summary, has_more)
 
     # 列定义（新增：触发原因）
     COLUMNS = [
@@ -61,6 +64,7 @@ class RunHistoryPanel(QWidget):
         self._history_step_summary = {}
         self._has_more_history = False
         self._status_filter = "all"
+        self._history_page_fetched.connect(self._on_history_page_fetched)
         self._search_text = ""
         self._dark = False
         # 任务8：列宽持久化——复用步骤表格的 QSettings 模式
@@ -194,17 +198,56 @@ class RunHistoryPanel(QWidget):
         self._load_history_page(offset=len(self._all_histories))
         self._apply_filter()
 
+    def load_history_async(self, workflow_id: int):
+        """运行完成后的历史重载（P1-C）。
+
+        后台线程执行 DB 查询（get_run_histories + step summary，~30-80ms），经
+        ``_history_page_fetched`` Signal（AutoConnection → queued）回传 GUI 线程渲染，
+        避免在 finished 信号触发瞬间于主线程卡顿。ORM 对象列已在 worker 侧
+        ``with get_session()`` 退出时 detached，主线程仅读已加载的标量列。
+        """
+        self._workflow_id = workflow_id
+        self._all_histories = []
+        self._has_more_history = False
+
+        def _background():
+            try:
+                new_histories, summary, has_more = self._fetch_history_page(0)
+            except Exception:
+                logger.exception("读取运行历史失败: workflow_id=%s", workflow_id)
+                new_histories, summary, has_more = [], {}, True
+            self._history_page_fetched.emit(workflow_id, new_histories, summary, has_more)
+
+        threading.Thread(target=_background, daemon=True).start()
+
+    def _on_history_page_fetched(self, workflow_id, new_histories, summary, has_more):
+        """主线程槽：应用后台查询结果（P1-C，Signal 自动切回 GUI 线程执行）。
+
+        不用 QTimer.singleShot 从后台线程回程——实测 PySide6 6.10.1 下无事件循环
+        的裸线程里该调用永不触发，历史面板会永远空白。
+        """
+        self._apply_history_page_if_current(workflow_id, new_histories, summary, has_more)
+
+    def _apply_history_page_if_current(self, workflow_id, new_histories, summary, has_more):
+        """仅当仍处于目标工作流时才应用查询结果（丢弃异步宽限期已切换的结果）。"""
+        if self._workflow_id != workflow_id:
+            return
+        self._apply_history_page(0, new_histories, summary, has_more)
+
     def _load_history_page(self, offset: int):
+        # 同步路径（load_history / load_more_history）：查询与渲染在同一调用线程
+        new_histories, summary, has_more = self._fetch_history_page(offset)
+        self._apply_history_page(offset, new_histories, summary, has_more)
+
+    def _fetch_history_page(self, offset: int):
+        """纯数据库分页查询（可在后台线程执行）：返回 (records, summary, has_more)。"""
         page = get_run_histories_by_workflow(
             self._workflow_id,
             limit=self.PAGE_SIZE + 1,
             offset=offset,
         )
-        self._has_more_history = len(page) > self.PAGE_SIZE
+        has_more = len(page) > self.PAGE_SIZE
         new_histories = page[:self.PAGE_SIZE]
-        self._all_histories.extend(new_histories)
-        self.btn_load_more.setVisible(self._has_more_history)
-        # 安全地提取新增 history ID，避免加载更多时重复汇总已缓存记录。
         history_ids = []
         for h in new_histories:
             hid = getattr(h, "id", None)
@@ -213,11 +256,22 @@ class RunHistoryPanel(QWidget):
                     history_ids.append(int(hid))
                 except (ValueError, TypeError):
                     pass
+        summary = {}
         if history_ids:
             try:
-                self._history_step_summary.update(get_step_log_summary_by_runs(history_ids))
+                summary = get_step_log_summary_by_runs(history_ids)
             except Exception:
                 logger.exception("加载运行历史统计失败: workflow_id=%s", self._workflow_id)
+        return new_histories, summary, has_more
+
+    def _apply_history_page(self, offset: int, new_histories, summary, has_more):
+        """主线程侧应用一页查询结果（须在 GUI 线程调用）。"""
+        self._has_more_history = has_more
+        self._all_histories.extend(new_histories)
+        self.btn_load_more.setVisible(has_more)
+        if summary:
+            self._history_step_summary.update(summary)
+        self._apply_filter()
 
     def _on_filter_changed(self):
         """状态筛选变更"""

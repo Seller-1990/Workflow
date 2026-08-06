@@ -128,6 +128,24 @@ class BaseExecutor(ABC):
             except Exception:
                 pass
 
+    def build_log_dir(self, log_dir: Path = None) -> tuple[Path, Path, Path]:
+        """统一的日志目录引导（P2：消 4× 重复的 excel/powerbi×2/python 引导块）。
+
+        - log_dir 缺省时用全局 LOG_DIR + ``%Y%m%d_%H%M%S`` 时间戳子目录
+        - 确保目录已创建（``exist_ok``），推导 stdout/stderr 路径
+
+        Returns:
+            tuple[Path, Path, Path]: (log_dir, stdout_path, stderr_path)
+        """
+        if log_dir is None:
+            from config import LOG_DIR
+            log_dir = LOG_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_dir = Path(log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path = log_dir / "stdout.txt"
+        stderr_path = log_dir / "stderr.txt"
+        return log_dir, stdout_path, stderr_path
+
     @abstractmethod
     def execute(
         self,

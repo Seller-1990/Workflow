@@ -378,7 +378,9 @@ class TestRunStepsParallel:
                 metrics=metrics,
             )
 
-        assert [r.step_id for r in results] == [1, 2]
+        # P0-2: 取消后整批步骤都必须有结果条目——已执行步骤的 result + 未提交
+        # 步骤的 cancelled 占位（len==len(batch)），供调用方 zip 配对/进度计数。
+        assert [r.step_id for r in results] == [1, 2, 3, 4]
         assert set(started) == {1, 2}
         assert all(r.status == "cancelled" for r in results)
         assert metrics.submitted == 2

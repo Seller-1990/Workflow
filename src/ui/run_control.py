@@ -68,7 +68,7 @@ class RunControlPanel(QWidget):
         # V9：图标化
         from ui.icons import set_icon_button
         set_icon_button(self.btn_run_all, "run.all")
-        self.btn_run_all.clicked.connect(self._run_all)
+        self.btn_run_all.clicked.connect(lambda: self._run("full"))
         layout.addWidget(self.btn_run_all)
 
         ghost = QWidget()
@@ -83,7 +83,7 @@ class RunControlPanel(QWidget):
         self.btn_run_from.setToolTip("从当前选中的步骤开始运行后续步骤")
         self.btn_run_from.setAccessibleName("从选中步骤开始")
         set_icon_button(self.btn_run_from, "run.from")
-        self.btn_run_from.clicked.connect(self._run_from)
+        self.btn_run_from.clicked.connect(lambda: self._run("from_step"))
         ghost_layout.addWidget(self.btn_run_from)
 
         self.btn_run_only = QPushButton(" 只运行选中步骤")
@@ -92,7 +92,7 @@ class RunControlPanel(QWidget):
         self.btn_run_only.setToolTip("只运行当前选中的单个步骤")
         self.btn_run_only.setAccessibleName("只运行选中步骤")
         set_icon_button(self.btn_run_only, "run.only")
-        self.btn_run_only.clicked.connect(self._run_only)
+        self.btn_run_only.clicked.connect(lambda: self._run("only_step"))
         ghost_layout.addWidget(self.btn_run_only)
 
         self.btn_run_stage = QPushButton(" 只运行该阶段")
@@ -101,7 +101,7 @@ class RunControlPanel(QWidget):
         self.btn_run_stage.setToolTip("只运行当前选中步骤所属的阶段")
         self.btn_run_stage.setAccessibleName("只运行该阶段")
         set_icon_button(self.btn_run_stage, "run.only")
-        self.btn_run_stage.clicked.connect(self._run_stage)
+        self.btn_run_stage.clicked.connect(lambda: self._run("only_stage"))
         ghost_layout.addWidget(self.btn_run_stage)
 
         self.btn_run_from_stage = QPushButton(" 从该阶段开始")
@@ -110,7 +110,7 @@ class RunControlPanel(QWidget):
         self.btn_run_from_stage.setToolTip("从当前阶段开始运行后续阶段")
         self.btn_run_from_stage.setAccessibleName("从该阶段开始")
         set_icon_button(self.btn_run_from_stage, "run.from")
-        self.btn_run_from_stage.clicked.connect(self._run_from_stage)
+        self.btn_run_from_stage.clicked.connect(lambda: self._run("from_stage"))
         ghost_layout.addWidget(self.btn_run_from_stage)
 
         self.btn_retry = QPushButton(" 重试失败步骤")
@@ -119,7 +119,7 @@ class RunControlPanel(QWidget):
         self.btn_retry.setToolTip("重试最近一次运行失败的步骤")
         self.btn_retry.setAccessibleName("重试失败步骤")
         set_icon_button(self.btn_retry, "run.retry")
-        self.btn_retry.clicked.connect(self._retry_failed)
+        self.btn_retry.clicked.connect(lambda: self._run("retry_failed"))
         ghost_layout.addWidget(self.btn_retry)
 
         # 预演（默认可用，但视觉为「次要」）
@@ -178,30 +178,19 @@ class RunControlPanel(QWidget):
         self.btn_run_stage.setEnabled(has_stage and not self._is_running)
         self.btn_run_from_stage.setEnabled(has_stage and not self._is_running)
 
-    def _run_all(self):
-        """全流程运行"""
-        self.run_requested.emit("full", None)
-    
-    def _run_from(self):
-        """从指定步骤开始"""
-        if self._selected_step_id:
-            self.run_requested.emit("from_step", self._selected_step_id)
-    
-    def _run_only(self):
-        """只运行指定步骤"""
-        if self._selected_step_id:
-            self.run_requested.emit("only_step", self._selected_step_id)
-    
-    def _run_stage(self):
-        """只运行该阶段"""
-        if self._selected_stage_uid:
-            self.run_requested.emit("only_stage", self._selected_stage_uid)
+    def _run(self, mode: str, param=None):
+        """统一运行入口（P2 精简：收敛原 _run_all/_run_from/_run_only/_run_stage/
+        _run_from_stage/_retry_failed 六个近相同按钮体）。
 
-    def _run_from_stage(self):
-        """从该阶段开始运行"""
-        if self._selected_stage_uid:
-            self.run_requested.emit("from_stage", self._selected_stage_uid)
-    
-    def _retry_failed(self):
-        """重试失败步骤"""
-        self.run_requested.emit("retry_failed", None)
+        mode: full / from_step / only_step / only_stage / from_stage / retry_failed
+        param: 显式参数；缺省时按 mode 从当前选中步骤/阶段推导。
+        """
+        if mode in ("from_step", "only_step"):
+            if not self._selected_step_id:
+                return
+            param = self._selected_step_id
+        elif mode in ("from_stage", "only_stage"):
+            if not self._selected_stage_uid:
+                return
+            param = self._selected_stage_uid
+        self.run_requested.emit(mode, param)

@@ -171,13 +171,7 @@ class PowerBIExecutor(BaseExecutor):
         不打开本地 .pbix、不依赖 Power BI Desktop；script_path 仅用于日志展示。
         access token 只从环境变量 POWERBI_ACCESS_TOKEN 读取，不落地、不写日志。
         """
-        if log_dir is None:
-            from config import LOG_DIR
-            log_dir = LOG_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_dir = Path(log_dir)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        stdout_path = log_dir / "stdout.txt"
-        stderr_path = log_dir / "stderr.txt"
+        log_dir, stdout_path, stderr_path = self.build_log_dir(log_dir)
 
         start_time = datetime.now()
         log_messages: List[str] = []
@@ -327,14 +321,7 @@ class PowerBIExecutor(BaseExecutor):
             )
         
         # 准备日志目录
-        if log_dir is None:
-            from config import LOG_DIR
-            log_dir = LOG_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_dir = Path(log_dir)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        
-        stdout_path = log_dir / "stdout.txt"
-        stderr_path = log_dir / "stderr.txt"
+        log_dir, stdout_path, stderr_path = self.build_log_dir(log_dir)
         
         # 解析参数
         mtime_proof_enabled = True

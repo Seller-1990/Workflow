@@ -31,7 +31,7 @@
   "src/ui/mini_dag.py": 1,
   "src/ui/panel_controller.py": 2,
   "src/ui/run_dispatch.py": 6,
-  "src/ui/run_history.py": 4,
+  "src/ui/run_history.py": 5,
   "src/ui/run_lifecycle_controller.py": 13,
   "src/ui/step_editor.py": 18,
   "src/ui/step_table/panel.py": 7,

@@ -505,7 +505,11 @@ def test_async_history_refresh_callback_ignores_stale_workflow_id():
     window._current_workflow_id = 2
 
     history_calls = []
-    window.run_history = SimpleNamespace(load_history=lambda workflow_id: history_calls.append(workflow_id))
+    window.run_history = SimpleNamespace(
+        load_history=lambda workflow_id: history_calls.append(workflow_id),
+        # P1-C: 异步加载接口 —— 触发时应走 load_history_async
+        load_history_async=lambda workflow_id: history_calls.append(workflow_id),
+    )
 
     window._async_load_history(1)
 

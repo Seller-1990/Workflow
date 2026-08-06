@@ -169,8 +169,12 @@ class StepTablePanel(QWidget):
         """编辑/单脚本模式联动（实现在 ui.step_table.panel_build）"""
         panel_build.apply_enabled_state(self)
 
-    def load_steps(self, workflow_id: int):
-        """加载步骤列表（按执行阶段分组展示；批次(Bx)由 compute_batches 自动计算）"""
+    def load_steps(self, workflow_id: int, *, steps=None, stages=None, workflow=None):
+        """加载步骤列表（按执行阶段分组展示；批次(Bx)由 compute_batches 自动计算）
+
+        P1-B: 切换工作流时由主窗口预加载 steps/stages/workflow 一次传入，
+        避免三个组件各自重复 SELECT 同一批数据。其它调用点不传则回退自查。
+        """
         self._workflow_id = workflow_id
         self._selected_step_id = None
         self.table.setRowCount(0)
@@ -178,7 +182,7 @@ class StepTablePanel(QWidget):
         self.hint_label.setVisible(False)
         self.hint_label.setText("")
 
-        steps = get_steps_by_workflow(workflow_id)
+        steps = get_steps_by_workflow(workflow_id) if steps is None else steps
         # CA1 修复：用轻量映射替代 list_workflows() 全 ORM 加载
         workflow_map = get_workflow_uid_name_map()
         if self._single_script_mode:
@@ -189,7 +193,9 @@ class StepTablePanel(QWidget):
         self._stage_uid_to_index = {}
         if not self._single_script_mode:
             try:
-                self._stages, self._stage_uid_to_index = build_stage_records(list_stages(workflow_id))
+                self._stages, self._stage_uid_to_index = build_stage_records(
+                    list_stages(workflow_id) if stages is None else stages
+                )
             except Exception:
                 self._stages, self._stage_uid_to_index = [], {}
 
@@ -207,7 +213,7 @@ class StepTablePanel(QWidget):
             try:
                 from engine import WorkflowEngine
                 from exceptions import WorkflowError
-                wf = get_workflow_by_id(workflow_id)
+                wf = get_workflow_by_id(workflow_id) if workflow is None else workflow
                 stage_map = get_stage_order_map(workflow_id)
                 if wf:
                     batches = WorkflowEngine.compute_batches(wf, steps, stage_map)

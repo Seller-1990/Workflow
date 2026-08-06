@@ -401,8 +401,10 @@ def test_execute_parallel_steps_stops_submitting_after_cancel(monkeypatch, tmp_p
         )
 
         assert calls == [1]
-        assert [result.step_id for result in results] == [1]
-        assert results[0].status == "cancelled"
+        # P0-2: 取消后整批都有结果条目——实际执行 A 返回 cancelled result，
+        # 未提交的 B/C 补 cancelled 占位（len == len(batch)）。
+        assert [result.step_id for result in results] == [1, 2, 3]
+        assert all(result.status == "cancelled" for result in results)
     finally:
         engine.shutdown(wait=False)
 

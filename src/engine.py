@@ -223,21 +223,20 @@ class WorkflowEngine(QObject):
         修复 H1/H12：使用嵌套运行栈 _active_run_ids 识别——
         命中栈内任一 run_history_id 即触发 cancel，避免父运行被误置 cancelled 但引擎仍跑子工作流。
         """
-        # 1) 如果引擎正在运行且该 run_history_id 在嵌套栈中，走正常 cancel
+        # 1) 引擎正在运行且目标在活动运行栈中 → 正常 cancel。
+        # 2) 其余一律只做 DB 孤儿记录清理，绝不设置 _cancelled。
+        #
+        # P0-1：旧实现只要 self._running 为真就无条件取消，导致用户从历史列表停止一条
+        # 孤儿记录 B 时，把真正在跑的 A 误杀（且 B 的库记录根本没写终态）。
+        # 说明：run_orchestration 在同一 lock 内原子写入 _current_run_history_id 与
+        # _active_run_ids.add，真正在跑的 run 必然已在栈中；启动瞬间（_begin_run 已建
+        # DB 记录、但尚未进入该 lock 段）无法用 current 区分"正在启动的 run"与"旧孤儿
+        # 记录"（此刻 current 仍是上一值）——对该极窄窗口宁可只做 DB 清理（停止无效，
+        # 引擎继续跑），也绝不再误伤正在运行的其它任务。
         with self._lock:
             if self._running and run_history_id in self._active_run_ids:
                 self._cancelled = True
                 self._emit_log(f"已发送停止信号给当前运行 (run_history_id={run_history_id})")
-                return
-            # R4-#6: 闭合竞态窗口——_running 已置位但 _active_run_ids.add 尚未完成的时刻，
-            # 若直接走路径 2 写 DB 会被后续 finalize 覆盖，且引擎不会真正停止。
-            # 仍是引擎正在运行（不论是不是这个 run_history_id），先把 _cancelled 置位，
-            # 让引擎自身去 finalize 该运行；UI 上用户感知到的就是"已请求停止"。
-            if self._running:
-                self._cancelled = True
-                self._emit_log(
-                    f"引擎正在启动/运行中，已发送停止信号 (run_history_id={run_history_id})"
-                )
                 return
 
         # 2) 否则直接在数据库中标记为 cancelled（孤儿记录）

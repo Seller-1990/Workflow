@@ -227,7 +227,11 @@ class MainWindow(QMainWindow):
         # 然后把更重的运行历史推到下一轮事件循环异步加载。
         self.workflow_config.load_workflow(workflow_id)
 
+        # P1-B: 一次读取 workflow/steps/stages，下发给 step_table / workbench_board /
+        # header 三个组件，替代各自重复 SELECT（get_steps_by_workflow 3×→1×）。
         workflow = get_workflow_by_id(workflow_id)
+        steps = get_steps_by_workflow(workflow_id)
+        stages = list_stages(workflow_id)
         single_enabled = bool(workflow.single_script_enabled) if workflow else False
         self.step_table.set_single_script_mode(single_enabled)
         self.step_editor.set_single_script_mode(single_enabled)
@@ -236,9 +240,9 @@ class MainWindow(QMainWindow):
         self.step_table.set_parallel_available(parallel_enabled)
         self.step_editor.set_parallel_available(parallel_enabled)
 
-        self.step_table.load_steps(workflow_id)
-        self.workbench_board.load_workflow(workflow_id)
-        self._refresh_workbench_header(workflow_id)
+        self.step_table.load_steps(workflow_id, steps=steps, stages=stages, workflow=workflow)
+        self.workbench_board.load_workflow(workflow_id, steps=steps, stages=stages, workflow=workflow)
+        self._refresh_workbench_header(workflow_id, steps=steps, stages=stages, workflow=workflow)
 
         # P-4: 异步推迟相对重的运行历史；先让 UI 把已加载内容渲染出来
         QTimer.singleShot(0, lambda wid=workflow_id: self._async_load_history(wid))
@@ -261,7 +265,8 @@ class MainWindow(QMainWindow):
         if workflow_id != self._current_workflow_id:
             return
         try:
-            self.run_history.load_history(workflow_id)
+            # P1-C: DB 查询下放后台线程，主线程只渲染——避免完成回调瞬间卡顿。
+            self.run_history.load_history_async(workflow_id)
         except Exception as e:
             logger.warning("异步加载历史失败: %s", e)
 
@@ -427,14 +432,17 @@ class MainWindow(QMainWindow):
             self.log_panel.set_context(workflow_id=None, step_id=None)
             self._refresh_workbench_header(None)
 
-    def _refresh_workbench_header(self, workflow_id: int | None):
+    def _refresh_workbench_header(
+        self, workflow_id: int | None, *, steps=None, stages=None, workflow=None
+    ):
         if not workflow_id:
             self.lbl_workflow_title.setText("请选择工作流")
             self.lbl_workflow_meta.setText("0 阶段 · 0 步 · 未运行")
             return
-        workflow = get_workflow_by_id(workflow_id)
-        stages = list_stages(workflow_id)
-        steps = get_steps_by_workflow(workflow_id)
+        # P1-B: 切换工作流路径已由 _switch_workflow 预加载并传入，其余调用点回退自查。
+        workflow = get_workflow_by_id(workflow_id) if workflow is None else workflow
+        stages = list_stages(workflow_id) if stages is None else stages
+        steps = get_steps_by_workflow(workflow_id) if steps is None else steps
         self.lbl_workflow_title.setText(workflow.name if workflow else f"工作流 #{workflow_id}")
         parallel = "自动并行" if (workflow and workflow.parallel_enabled) else "串行"
         self.lbl_workflow_meta.setText(f"{len(stages)} 阶段 · {len(steps)} 步 · {parallel}")

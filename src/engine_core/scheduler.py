@@ -20,6 +20,27 @@ from typing import Any, Callable, List, Optional
 logger = logging.getLogger(__name__)
 
 
+class _CancelledResult:
+    """取消步骤的占位结果（P0-2 修复）。
+
+    并行批次中途取消时，被取消的步骤不应从结果中丢失，否则 ``zip(batch, results)``
+    会把后续结果错配到前面被取消的步骤、``completed_steps += len(results)`` 少计
+    （进度"停住"）。本占位使 ``len(results) == len(batch)`` 恒成立。
+
+    刻意不 import engine.StepResult（调度模块是纯调度、不自也不该反向依赖 engine，
+    避免链式循环 import）；仅携带调用方消费所需字段，语义与 StepResult 对齐：
+    - ``status == "cancelled"`` → 调用方视为取消，立即短路退出
+    - ``success is False`` → 与 StepResult.success 属性（non-``{success,skipped}``）一致
+    - ``step_id`` → 供按 order 排序时归位
+    """
+
+    def __init__(self) -> None:
+        self.step_id = None
+        self.status = "cancelled"
+        self.success = False
+        self.error_message = None
+
+
 @dataclass
 class SchedulerMetrics:
     """Lightweight counters for one parallel scheduling batch."""
@@ -77,7 +98,12 @@ def run_steps_parallel(
         for pending_future in list(futures_by_future):
             if pending_future.cancel():
                 metrics.cancelled += 1
-                futures_by_future.pop(pending_future, None)
+                step = futures_by_future.pop(pending_future, None)
+                if step is not None:
+                    # P0-2: 被取消的步骤补 cancelled 占位，保证结果条数与 batch 一致。
+                    cancelled = _CancelledResult()
+                    cancelled.step_id = getattr(step, "id", None)
+                    results.append(cancelled)
 
     if _stop_requested():
         return []
@@ -93,6 +119,10 @@ def run_steps_parallel(
             step = futures.pop(future)
             if future.cancelled():
                 metrics.cancelled += 1
+                # P0-2: 与 _cancel_not_started 同理，取消的 future 也要补占位，避免结果错位。
+                cancelled = _CancelledResult()
+                cancelled.step_id = getattr(step, "id", None)
+                results.append(cancelled)
                 continue
             try:
                 results.append(future.result())
@@ -107,6 +137,16 @@ def run_steps_parallel(
             if _stop_requested():
                 stop_submitting = True
                 _cancel_not_started(futures)
+                # P0-2: 滑动窗口下尚未提交的尾部步骤同样不再执行，一并补 cancelled
+                # 占位并推进 next_idx，保证 len(results) == len(pending)（调用方按
+                # batch 配对 / completed_steps 计数不再少计，进度不会"停住"）。
+                # 不计入 metrics.cancelled——它们从未被 submit，metrics 只统计实际
+                # 调度活动（submitted/completed/cancelled futures）。
+                for unsubmitted in pending[next_idx:]:
+                    cancelled = _CancelledResult()
+                    cancelled.step_id = getattr(unsubmitted, "id", None)
+                    results.append(cancelled)
+                next_idx = len(pending)
             if not stop_submitting and next_idx < len(pending):
                 nxt = pending[next_idx]
                 next_idx += 1
