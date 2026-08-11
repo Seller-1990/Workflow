@@ -8,6 +8,8 @@
 - 并发上限由提交侧滑动窗口控制，不再用 BoundedSemaphore 占用池线程等待
   （M6：等待执行的步骤不占池线程，避免与嵌套子工作流争抢共享池导致饥饿/死锁）
 - 异常路径通过 ``on_exception`` 由调用方决定如何转成 StepResult
+- R5：短超时轮询等待（WAIT_POLL_SECONDS），无 future 完成事件时也能周期性
+  观察 ``should_stop``，及时取消未启动的 future / 停止补提交
 """
 
 from __future__ import annotations
@@ -17,7 +19,48 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 
+from constants import (
+    WAIT_POLL_SECONDS,
+    WORKFLOW_MAX_WORKERS_MIN,
+    WORKFLOW_MAX_WORKERS_MAX,
+    WORKFLOW_MAX_WORKERS_DEFAULT,
+)
+
 logger = logging.getLogger(__name__)
+
+
+class ResourceBudgetExceededError(RuntimeError):
+    """R5: 子工作流资源预算耗尽（嵌套深度超限 / 并发子工作流数量超限）。
+
+    携带明确的中文资源错误信息；由 SubWorkflowExecutor 映射为 non-retryable
+    的步骤失败（不触发重试、不创建新的 RunHistory），避免父步骤无谓重试。
+    """
+
+
+def normalize_workflow_max_workers(value) -> int:
+    """R5: 执行期把 ``workflow.max_workers`` 夹紧到 [MIN, MAX] 并返回整数。
+
+    - 缺失/非法/<=0 → ``WORKFLOW_MAX_WORKERS_DEFAULT``
+    - 越界 → 夹紧并告警
+
+    导入/UI 层校验归其它模块（R1/主会话范围）；执行期夹紧只保证线程资源不失控。
+    """
+    try:
+        raw = int(value)
+    except (TypeError, ValueError):
+        raw = 0
+    if raw <= 0:
+        return WORKFLOW_MAX_WORKERS_DEFAULT
+    clamped = min(max(raw, WORKFLOW_MAX_WORKERS_MIN), WORKFLOW_MAX_WORKERS_MAX)
+    if clamped != raw:
+        logger.warning(
+            "workflow.max_workers=%s 超出允许范围 [%s, %s]，已夹紧为 %s",
+            raw,
+            WORKFLOW_MAX_WORKERS_MIN,
+            WORKFLOW_MAX_WORKERS_MAX,
+            clamped,
+        )
+    return clamped
 
 
 class _CancelledResult:
@@ -113,8 +156,30 @@ def run_steps_parallel(
     next_idx = window
     results: List[Any] = []
     stop_submitting = False
+
+    def _stop_submitting_and_pad_tail() -> None:
+        """停止补提交 + 取消未启动 futures + 尾部补 cancelled 占位（幂等）。
+
+        - 未启动 futures 用 future.cancel() 取消，计入 metrics.cancelled
+        - 被取消 / 未提交的尾部步骤补 _CancelledResult 占位，
+          保证 len(results) == len(pending)（调用方按 batch 配对不错位）
+        """
+        nonlocal next_idx
+        _cancel_not_started(futures)
+        for unsubmitted in pending[next_idx:]:
+            cancelled = _CancelledResult()
+            cancelled.step_id = getattr(unsubmitted, "id", None)
+            results.append(cancelled)
+        next_idx = len(pending)
+
     while futures:
-        done, _ = wait(futures, return_when=FIRST_COMPLETED)
+        # R5: 短超时轮询等待——没有任何 future 完成时，wait 也会在
+        # WAIT_POLL_SECONDS 后返回，让 should_stop 能及时被观察（取消未启动
+        # futures / 停止补提交），而不是阻塞在无超时 wait 上等一个完成事件。
+        done, _ = wait(futures, timeout=WAIT_POLL_SECONDS, return_when=FIRST_COMPLETED)
+        if not stop_submitting and _stop_requested():
+            stop_submitting = True
+            _stop_submitting_and_pad_tail()
         for future in done:
             step = futures.pop(future)
             if future.cancelled():
@@ -136,17 +201,7 @@ def run_steps_parallel(
                 results.append(on_exception(step, e))
             if _stop_requested():
                 stop_submitting = True
-                _cancel_not_started(futures)
-                # P0-2: 滑动窗口下尚未提交的尾部步骤同样不再执行，一并补 cancelled
-                # 占位并推进 next_idx，保证 len(results) == len(pending)（调用方按
-                # batch 配对 / completed_steps 计数不再少计，进度不会"停住"）。
-                # 不计入 metrics.cancelled——它们从未被 submit，metrics 只统计实际
-                # 调度活动（submitted/completed/cancelled futures）。
-                for unsubmitted in pending[next_idx:]:
-                    cancelled = _CancelledResult()
-                    cancelled.step_id = getattr(unsubmitted, "id", None)
-                    results.append(cancelled)
-                next_idx = len(pending)
+                _stop_submitting_and_pad_tail()
             if not stop_submitting and next_idx < len(pending):
                 nxt = pending[next_idx]
                 next_idx += 1

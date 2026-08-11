@@ -95,9 +95,45 @@ def find_workflow(name_or_id):
     return None
 
 
-def cmd_run(workflow_name):
+def _ensure_risky_paths_confirmed(wf, auto_confirm: bool) -> bool:
+    """R1 门禁：返回 True 允许运行；False 表示用户取消 / 自动拒绝。
+
+    - auto_confirm（--auto / --confirm-risky-paths）为唯一自动确认路径。
+    - TTY：交互式 y/N（EOFError 防御）；非 TTY 且未自动确认 → 拒绝。
+    """
+    from risk_path_review import build_run_plan, evaluate_run_plan, format_risk_records
+    from database import confirm_risky_paths, get_steps_by_workflow
+
+    steps = get_steps_by_workflow(wf.id) or []
+    plan = build_run_plan(wf, steps)
+    if evaluate_run_plan(plan) is None:
+        return True
+    print("警告: 此工作流包含未经确认的风险路径（绝对路径或上级目录引用）:", flush=True)
+    print(format_risk_records(plan.risk_records), flush=True)
+    if auto_confirm:
+        confirm_risky_paths(wf.id)
+        return True
+    if not sys.stdin.isatty():
+        print("错误: 非交互环境请显式使用 --confirm-risky-paths 确认路径安全", flush=True)
+        return False
+    try:
+        answer = input("确认这些路径安全并允许运行? (y/N): ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() != "y":
+        print("已取消: 风险路径未确认", flush=True)
+        return False
+    confirm_risky_paths(wf.id)
+    return True
+
+
+def cmd_run(workflow_name, auto_confirm=False):
     wf = find_workflow(workflow_name)
     if not wf:
+        sys.exit(1)
+
+    # R1: run 与 --auto 同一门禁
+    if not _ensure_risky_paths_confirmed(wf, auto_confirm):
         sys.exit(1)
 
     print(f"工作流: {wf.name} (ID: {wf.id})\n", flush=True)
@@ -177,6 +213,11 @@ def main():
     )
     parser.add_argument("--auto", action="store_true", help="导入后自动运行月度数据处理")
     parser.add_argument(
+        "--confirm-risky-paths",
+        action="store_true",
+        help="自动确认导入风险路径（配合 run / --auto 使用；非交互环境必须显式指定）",
+    )
+    parser.add_argument(
         "--workflows-json",
         type=Path,
         default=DEFAULT_WORKFLOWS_JSON,
@@ -187,6 +228,11 @@ def main():
     p_import = sub.add_parser("import", help="从 workflows_export.json 导入工作流")
     p_run = sub.add_parser("run", help="运行工作流")
     p_run.add_argument("name", help="工作流名称或 ID")
+    p_run.add_argument(
+        "--confirm-risky-paths",
+        action="store_true",
+        help="自动确认导入风险路径",
+    )
 
     args = parser.parse_args()
 
@@ -194,11 +240,11 @@ def main():
         if args.auto:
             cmd_import(args.workflows_json)
             print("\n" + "="*60, flush=True)
-            cmd_run("月度数据处理")
+            cmd_run("月度数据处理", auto_confirm=args.confirm_risky_paths or args.auto)
         elif args.cmd == "import":
             cmd_import(args.workflows_json)
         elif args.cmd == "run":
-            cmd_run(args.name)
+            cmd_run(args.name, auto_confirm=args.confirm_risky_paths)
         else:
             parser.print_help()
     except FileNotFoundError as exc:

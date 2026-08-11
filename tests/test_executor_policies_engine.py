@@ -337,7 +337,7 @@ def test_execute_parallel_steps_cleans_up_worker_sessions(monkeypatch, tmp_path:
         monkeypatch.setattr(
             engine,
             "_execute_single_step",
-            lambda workflow, step, run_history_id, log_dir, signal_policy, prev_step_status_map=None, run_cancel_event=None, run_arg_overrides=None: StepResult(
+            lambda workflow, step, run_history_id, log_dir, signal_policy, prev_step_status_map=None, run_cancel_event=None, run_arg_overrides=None, subworkflow_depth=None: StepResult(
                 step_id=step.id,
                 step_name=step.name,
                 status="success",
@@ -379,6 +379,7 @@ def test_execute_parallel_steps_stops_submitting_after_cancel(monkeypatch, tmp_p
             prev_step_status_map=None,
             run_cancel_event=None,
             run_arg_overrides=None,
+            subworkflow_depth=None,
         ):
             calls.append(step.id)
             engine.cancel()

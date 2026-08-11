@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
 from run_policy_notes import append_policy_risk_note
+from engine_core.run_finalization import get_run_thread_context
 
 logger = logging.getLogger(__name__)
 
@@ -183,8 +185,11 @@ def execute_step_attempt(
     run_cancel_event: threading.Event,
     signal_policy: RunSignalPolicy,
     run_arg_overrides=None,
+    subworkflow_depth: Optional[int] = None,
     ) -> tuple[Optional[StepResult], Optional[str]]:
     eng = _engine_module()
+    if subworkflow_depth is None:
+        subworkflow_depth = get_run_thread_context().subworkflow_depth
     try:
         from script_arg_utils import format_cli_args_for_log, resolve_effective_args
 
@@ -202,6 +207,9 @@ def execute_step_attempt(
                 f"步骤 [{step.order}] {step.name} 参数: {format_cli_args_for_log(effective_args)}"
             )
 
+        # R5: 深度沿执行链显式透传——本 run 深度 +1 即子工作流的深度。
+        # SubWorkflowExecutor 用它做深度预算 fail-fast，并透传给 run_sub_workflow/_run；
+        # 其它执行器经 **kwargs 接收后忽略。
         exec_result = executor.execute(
             script_path=step.script_path,
             args=effective_args,
@@ -212,6 +220,7 @@ def execute_step_attempt(
             workflow_id=workflow.id,
             workflow_runner=engine.run_sub_workflow,
             cancel_event=cancel_event,
+            subworkflow_depth=subworkflow_depth + 1,
         )
 
         if engine._is_run_cancelled(run_cancel_event) or cancel_event.is_set():
@@ -363,8 +372,11 @@ def execute_step_with_retries(
     signal_policy: RunSignalPolicy,
     run_cancel_event: threading.Event = None,
     run_arg_overrides=None,
+    subworkflow_depth: Optional[int] = None,
 ) -> StepResult:
     eng = _engine_module()
+    if subworkflow_depth is None:
+        subworkflow_depth = get_run_thread_context().subworkflow_depth
     max_retries = step.retry_count + 1
     last_error = None
     cancel_event = threading.Event()
@@ -393,6 +405,7 @@ def execute_step_with_retries(
                 run_cancel_event=run_cancel_event,
                 signal_policy=signal_policy,
                 run_arg_overrides=run_arg_overrides,
+                subworkflow_depth=subworkflow_depth,
             )
             if result is not None:
                 return result
@@ -421,9 +434,12 @@ def execute_single_step(
     prev_step_status_map: Optional[dict] = None,
     run_cancel_event: threading.Event = None,
     run_arg_overrides=None,
+    subworkflow_depth: Optional[int] = None,
 ) -> StepResult:
     """执行单个步骤（带重试）"""
     eng = _engine_module()
+    if subworkflow_depth is None:
+        subworkflow_depth = get_run_thread_context().subworkflow_depth
     # R2-#1: prev_step_status_map 来自 _execute_steps 的 local，避免父子工作流共享 self 属性互相覆盖
     skipped_result = engine._execute_skip_on_success_if_needed(
         step,
@@ -462,6 +478,7 @@ def execute_single_step(
             signal_policy=signal_policy,
             run_cancel_event=run_cancel_event,
             run_arg_overrides=run_arg_overrides,
+            subworkflow_depth=subworkflow_depth,
         )
     except Exception as e:
         logger.exception(
@@ -491,15 +508,27 @@ def execute_parallel_steps(
     prev_step_status_map: Optional[dict] = None,
     run_cancel_event: threading.Event = None,
     run_arg_overrides=None,
+    subworkflow_depth: Optional[int] = None,
 ) -> List[StepResult]:
     """并行执行多个步骤（Fan-Out/Fan-In 模式）
 
     CA2: 调度逻辑下沉到 engine_core.scheduler.run_steps_parallel
     MA2: 尊重 workflow.max_workers，避免独占资源的步骤一窝蜂打入
     R2-#1: prev_step_status_map 由 caller 透传，避免 self 属性被并行/嵌套覆盖
+    R5: 每 run 独立步骤池——threading.local 绑定本 run 线程，首次并行批次惰性创建，
+        run 结束由 finalization 统一关闭（shutdown_step_pool）。嵌套子工作流运行在
+        自己的线程/自己的 run 池上，不再回到父 run 或全局共享池，消除
+        "父等子、子无槽运行"的池饥饿死锁。
     """
     eng = _engine_module()
-    max_workers = max(1, int(getattr(workflow, "max_workers", 0) or 1))
+    ctx = get_run_thread_context()
+    if subworkflow_depth is None:
+        subworkflow_depth = ctx.subworkflow_depth
+    max_workers = eng.normalize_workflow_max_workers(getattr(workflow, "max_workers", 0))
+    pool = ctx.step_pool
+    if pool is None:
+        pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="run-steps")
+        ctx.step_pool = pool
 
     def _step_runner(step):
         try:
@@ -508,6 +537,7 @@ def execute_parallel_steps(
                 prev_step_status_map=prev_step_status_map,
                 run_cancel_event=run_cancel_event,
                 run_arg_overrides=run_arg_overrides,
+                subworkflow_depth=subworkflow_depth,
             )
         finally:
             eng.cleanup_session()
@@ -524,7 +554,7 @@ def execute_parallel_steps(
     metrics = eng.SchedulerMetrics()
     results = eng._run_steps_parallel(
         steps,
-        executor=engine._executor,
+        executor=pool,
         max_workers=max_workers,
         step_runner=_step_runner,
         on_exception=_on_exception,

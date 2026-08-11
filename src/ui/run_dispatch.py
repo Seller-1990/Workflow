@@ -22,6 +22,49 @@ def _is_edit_mode_enabled(window) -> bool:
     return bool(getattr(window, "_edit_mode", False))
 
 
+def _confirm_risky_paths_gate(window, workflow_id: int) -> bool:
+    """R1: 主线程、创建 RunWorker 前弹窗确认风险路径。
+
+    仅当引擎判定需要确认时弹窗（msg_question，默认 No，展示实际路径明细）；
+    确认后走专用事务 confirm_risky_paths，引擎侧 RunPlan 校验作为兜底。
+    """
+    from database import (
+        confirm_risky_paths,
+        get_steps_by_workflow,
+        get_workflow_by_id,
+    )
+    from risk_path_review import build_run_plan, evaluate_run_plan, format_risk_records
+    from PySide6.QtWidgets import QMessageBox
+
+    workflow = get_workflow_by_id(workflow_id)
+    if workflow is None:
+        return True
+    steps = get_steps_by_workflow(workflow_id) or []
+    plan = build_run_plan(workflow, steps)
+    if evaluate_run_plan(plan) is None:
+        return True
+    text = (
+        "此工作流包含未经确认的风险路径（绝对路径或上级目录引用），"
+        "首次运行前请确认脚本和工作目录来源可信：\n\n"
+        f"{format_risk_records(plan.risk_records)}\n\n"
+        "确认这些路径安全并允许运行？"
+    )
+    from ui.theme import msg_question
+
+    choice = msg_question(
+        window,
+        getattr(window, "_dark_mode", False),
+        "风险路径确认",
+        text,
+        buttons=QMessageBox.Yes | QMessageBox.No,
+        default_button=QMessageBox.No,
+    )
+    if choice != QMessageBox.Yes:
+        return False
+    confirm_risky_paths(workflow_id)
+    return True
+
+
 def on_run_requested(window, mode: str, param):
     """运行请求"""
     if not window._current_workflow_id:
@@ -108,6 +151,10 @@ def on_run_requested(window, mode: str, param):
         return
 
     workflow_id = window._current_workflow_id
+
+    # R1: 创建 RunWorker 前（主线程）完成风险路径确认门禁
+    if not _confirm_risky_paths_gate(window, workflow_id):
+        return
 
     run_arg_overrides = {}
     if mode == "only_step":

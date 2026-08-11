@@ -467,6 +467,42 @@ def cmd_list(args):
     print(f"\n共 {len(workflows)} 个工作流\n")
 
 
+def _confirm_risky_paths(workflow_id: int, auto_confirm: bool) -> bool:
+    """R1 门禁：返回 True 允许运行；False 由调用方以退出码 1 结束。
+
+    - TTY：交互式 y/N（EOFError 防御，视为拒绝）。
+    - 非 TTY 且无 --confirm-risky-paths：打印错误退出码 1。
+    - --confirm-risky-paths 为唯一自动确认参数。
+    """
+    from database import confirm_risky_paths, get_steps_by_workflow, get_workflow_by_id
+    from risk_path_review import build_run_plan, evaluate_run_plan, format_risk_records
+
+    workflow = get_workflow_by_id(workflow_id)
+    if workflow is None:
+        return True
+    steps = get_steps_by_workflow(workflow_id) or []
+    plan = build_run_plan(workflow, steps)
+    if evaluate_run_plan(plan) is None:
+        return True
+    print("错误：此工作流包含未经确认的风险路径（绝对路径或上级目录引用）：")
+    print(format_risk_records(plan.risk_records))
+    if auto_confirm:
+        confirm_risky_paths(workflow_id)
+        return True
+    if not sys.stdin.isatty():
+        print("错误：非交互环境请显式使用 --confirm-risky-paths 确认路径安全")
+        return False
+    try:
+        answer = input("确认这些路径安全并允许运行? (y/N): ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() != "y":
+        print("已取消：风险路径未确认")
+        return False
+    confirm_risky_paths(workflow_id)
+    return True
+
+
 def cmd_run(args):
     """运行工作流"""
     init_db()
@@ -489,6 +525,10 @@ def cmd_run(args):
         step_id = resolve_step_id(workflow_id, args.only_step)
         mode = "only_step"
 
+    # R1: 运行前风险路径确认门禁
+    if not _confirm_risky_paths(workflow_id, bool(getattr(args, "confirm_risky_paths", False))):
+        sys.exit(1)
+
     cli = CLIEngine()
     success = cli.run(workflow_id, mode=mode, step_id=step_id, stage_uid=stage_uid)
     cli.close()
@@ -499,6 +539,11 @@ def cmd_retry(args):
     """重试失败步骤"""
     init_db()
     workflow_id = resolve_workflow_id(args.workflow_id)
+
+    # R1: 重试前同样走风险路径确认门禁
+    if not _confirm_risky_paths(workflow_id, bool(getattr(args, "confirm_risky_paths", False))):
+        sys.exit(1)
+
     cli = CLIEngine()
     success = cli.run(workflow_id, mode="retry")
     cli.close()
@@ -725,10 +770,20 @@ def main(argv=None):
     run_parser.add_argument("--from-stage", "-S", dest="from_stage", help="从指定阶段开始运行（名称 / UID）")
     run_parser.add_argument("--only", "-o", dest="only_step", help="只运行指定步骤（名称 / UID / ID）")
     run_parser.add_argument("--from", "-f", dest="from_step", help="从指定步骤开始（名称 / UID / ID）")
+    run_parser.add_argument(
+        "--confirm-risky-paths",
+        action="store_true",
+        help="自动确认导入风险路径（唯一自动确认参数；非交互环境必须显式指定）",
+    )
 
     # retry
     retry_parser = subparsers.add_parser("retry", aliases=["rerun"], help="重试失败步骤")
     retry_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
+    retry_parser.add_argument(
+        "--confirm-risky-paths",
+        action="store_true",
+        help="自动确认导入风险路径（唯一自动确认参数；非交互环境必须显式指定）",
+    )
 
     # history
     hist_parser = subparsers.add_parser("history", aliases=["hist"], help="查看运行历史")

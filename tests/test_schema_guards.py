@@ -475,6 +475,10 @@ def test_create_step_log_does_not_retry_after_refresh_failure(monkeypatch, tmp_p
 
 
 def test_import_marks_risky_script_paths_for_review(monkeypatch, tmp_path: Path, caplog):
+    """R1: 导入含风险路径（绝对路径/.. 逃逸）的工作流强制 review_required=1、digest 空。
+
+    旧文本标记（[导入提示]）不再追加到 description；退役字段 single_script 不参与。
+    """
     db = _use_temp_database(monkeypatch, tmp_path)
     payload_path = tmp_path / "risky-paths.json"
     payload_path.write_text(
@@ -514,9 +518,13 @@ def test_import_marks_risky_script_paths_for_review(monkeypatch, tmp_path: Path,
 
     workflow = db.get_workflow_by_uid("wf_risky_paths")
 
-    assert "原说明" in workflow.description
-    assert "[导入提示]" in workflow.description
-    assert "首次运行前请确认" in workflow.description
+    # description 不再追加旧文本标记（旧文本不参与运行判定）
+    assert workflow.description == "原说明"
+    assert "[导入提示]" not in workflow.description
+    # 新状态列：强制要求确认、digest 空、revision 因步骤写入递增
+    assert workflow.risky_paths_review_required == 1
+    assert workflow.risky_paths_confirmed_digest is None
+    assert workflow.risky_paths_revision >= 1
     assert "需复核的脚本路径" in caplog.text
 
 

@@ -11,7 +11,6 @@
 import logging
 import time
 import threading
-import os
 import traceback
 
 logger = logging.getLogger(__name__)
@@ -30,7 +29,12 @@ from engine_core.lifecycle import (
     record_skip_on_success as _record_skip_on_success,
     build_prev_step_status_map as _build_prev_step_status_map,
 )
-from engine_core.scheduler import SchedulerMetrics, run_steps_parallel as _run_steps_parallel
+from engine_core.scheduler import (
+    SchedulerMetrics,
+    run_steps_parallel as _run_steps_parallel,
+    normalize_workflow_max_workers,
+    ResourceBudgetExceededError,
+)
 from engine_core.cancel import install_cancel_watcher as _install_cancel_watcher
 from engine_core.stages import (
     build_stage_meta as _build_stage_meta,
@@ -46,6 +50,17 @@ from engine_core.selection import select_steps as _select_steps
 from engine_core.force_stop import (
     force_cancel_run_record as _force_cancel_run_record,
     read_run_history_status as _read_run_history_status,
+)
+# R5: run 线程局部上下文（步骤池/深度）+ 步骤池统一关闭
+from engine_core.run_finalization import (
+    get_run_thread_context as _get_run_thread_context,
+    shutdown_step_pool as _shutdown_step_pool,
+)
+# R5: worker 常量（辅助池/预算/深度/轮询）
+from constants import (
+    ENGINE_AUXILIARY_MAX_WORKERS,
+    MAX_SUBWORKFLOW_DEPTH,
+    MAX_ACTIVE_SUBWORKFLOWS,
 )
 # batch-3: 单步执行完整生命周期（skip 判定/StepLog/重试/取消/失败诊断/并行批执行/收尾）
 # 下沉到 engine_core.step_execution；WorkflowEngine 保留同签名薄委托。
@@ -169,9 +184,46 @@ class WorkflowEngine(QObject):
         # 嵌套运行栈：所有「正在跑」的 run_history_id（用于 force_stop_run 命中任一即触发）
         self._active_run_ids: set[int] = set()
         self._lock = threading.Lock()
-        # 动态计算线程池大小：基于 CPU 核心数，上限 32
-        max_workers = min(32, (os.cpu_count() or 4) + 4)
-        self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        # R5: engine._executor 降级为辅助池（通知/日志清理等轻量任务）；
+        # 步骤并行改用每 run 独立步骤池（threading.local 绑定 run 线程，见
+        # engine_core.step_execution.execute_parallel_steps / run_finalization）。
+        self._executor = ThreadPoolExecutor(max_workers=ENGINE_AUXILIARY_MAX_WORKERS)
+        # R5: 子工作流并发预算（引擎全局计数+锁，仅统计非根 child）
+        self._active_subworkflow_count = 0
+        self._subworkflow_budget_lock = threading.Lock()
+    def _submit_auxiliary(self, fn, *args, **kwargs):
+        """R5: 辅助任务（通知/日志清理等）统一提交入口。
+
+        优先提交到 ``engine._executor``（辅助池）；池不存在/已关闭时降级为
+        daemon 线程，保证通知等任务不因池不可用而丢失。
+        """
+        try:
+            if self._executor is not None:
+                return self._executor.submit(fn, *args, **kwargs)
+        except (RuntimeError, AttributeError):
+            pass
+        thread = threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True)
+        thread.start()
+        return None
+
+    def _acquire_subworkflow_slot(self) -> bool:
+        """R5: 非阻塞获取一个子工作流预算槽位（引擎全局，仅统计非根 child）。
+
+        耗尽时立即返回 False（fail-fast），不等待；调用方抛
+        ``ResourceBudgetExceededError`` 拒绝启动子工作流。
+        """
+        with self._subworkflow_budget_lock:
+            if self._active_subworkflow_count >= MAX_ACTIVE_SUBWORKFLOWS:
+                return False
+            self._active_subworkflow_count += 1
+            return True
+
+    def _release_subworkflow_slot(self) -> None:
+        """R5: 释放一个子工作流预算槽位（幂等，防重复释放造成计数下溢）。"""
+        with self._subworkflow_budget_lock:
+            if self._active_subworkflow_count > 0:
+                self._active_subworkflow_count -= 1
+
     @property
     def is_running(self) -> bool:
         with self._lock:
@@ -312,6 +364,11 @@ class WorkflowEngine(QObject):
         if self._executor:
             self._executor.shutdown(wait=wait, cancel_futures=not wait)
             self._executor = None
+        # R5: 顺带回收当前线程遗留的 run 步骤池（正常运行由 _run finally 关闭，这里兜底）
+        try:
+            _shutdown_step_pool(wait=wait, cancel_futures=True)
+        except Exception:
+            logger.warning("关闭 run 步骤池失败", exc_info=True)
 
     def __del__(self):
         """析构函数，确保资源释放"""
@@ -395,8 +452,14 @@ class WorkflowEngine(QObject):
         workflow_id: int,
         reason: str = "sub_workflow",
         cancel_event: threading.Event = None,
+        subworkflow_depth: int = 1,
     ) -> bool:
-        """在当前运行上下文中执行子工作流，不重复触发顶层 UI 状态。"""
+        """在当前运行上下文中执行子工作流，不重复触发顶层 UI 状态。
+
+        R5: ``subworkflow_depth`` 为子工作流自身的嵌套深度（根 run 的子工作流为 1），
+        由 SubWorkflowExecutor 沿执行链显式透传；深度预算超限在 executor 与
+        ``_run`` 双层 fail-fast。
+        """
         with self._lock:
             parent_run_id = self._current_run_id
             trace_id = self._current_trace_id
@@ -416,6 +479,7 @@ class WorkflowEngine(QObject):
             parent_run_id=parent_run_id,
             trace_id=trace_id,
             external_cancel_event=cancel_event,
+            subworkflow_depth=subworkflow_depth,
         )
 
     # ============== 运行编排（batch-4: 下沉到 engine_core.run_orchestration） ==============
@@ -515,6 +579,7 @@ class WorkflowEngine(QObject):
         trace_id: Optional[str] = None,
         external_cancel_event: threading.Event = None,
         run_arg_overrides=None,
+        subworkflow_depth: int = 0,
     ) -> bool:
         """执行工作流（batch-4: 方法体下沉到 run_orchestration.run_workflow）
 
@@ -525,24 +590,64 @@ class WorkflowEngine(QObject):
             stage_uid: 阶段 UID（用于 FROM_STAGE 和 ONLY_STAGE 模式）
             reason: 运行原因
             run_arg_overrides: 本次运行临时参数覆盖，key=step.uid
+            subworkflow_depth: 本 run 的子工作流嵌套深度（根 run 为 0）
+
+        R5: 本入口统一管理每 run 的执行上下文——
+        - 深度预算：``subworkflow_depth > MAX_SUBWORKFLOW_DEPTH`` 时 fail-fast
+          抛 ``ResourceBudgetExceededError``（不启动运行、不创建 RunHistory）
+        - 非根 child（allow_nested=True）非阻塞获取子工作流预算槽位，耗尽同样
+          fail-fast；run 结束（含异常路径）统一释放
+        - run 结束统一关闭本 run 线程绑定的独立步骤池（shutdown_step_pool）
 
         Returns:
             是否成功
         """
-        return _run_orchestration.run_workflow(
-            self,
-            workflow_id,
-            mode,
-            step_id=step_id,
-            stage_uid=stage_uid,
-            reason=reason,
-            allow_nested=allow_nested,
-            signal_policy=signal_policy,
-            parent_run_id=parent_run_id,
-            trace_id=trace_id,
-            external_cancel_event=external_cancel_event,
-            run_arg_overrides=run_arg_overrides,
-        )
+        # R5: 深度预算校验（主防线在 SubWorkflowExecutor 的 pre-check，这里兜底
+        # 直接调用 _run 的路径）。失败立即抛出，不启动运行、不创建 RunHistory。
+        if subworkflow_depth > MAX_SUBWORKFLOW_DEPTH:
+            raise ResourceBudgetExceededError(
+                f"子工作流嵌套深度超出限制（最大 {MAX_SUBWORKFLOW_DEPTH} 层）"
+            )
+        ctx = _get_run_thread_context()
+        prev_depth = ctx.subworkflow_depth
+        ctx.subworkflow_depth = subworkflow_depth
+        slot_acquired = False
+        if allow_nested:
+            # R5: 非阻塞获取预算槽位——失败即拒绝，绝不"持父许可等子许可"。
+            # 在 _begin_run（创建 RunHistory）之前发生，超限不创建 RunHistory。
+            slot_acquired = self._acquire_subworkflow_slot()
+            if not slot_acquired:
+                ctx.subworkflow_depth = prev_depth
+                raise ResourceBudgetExceededError(
+                    f"并发子工作流数量超出限制（最大 {MAX_ACTIVE_SUBWORKFLOWS} 个），"
+                    "请减少并行子工作流步骤或等待当前运行完成"
+                )
+        try:
+            return _run_orchestration.run_workflow(
+                self,
+                workflow_id,
+                mode,
+                step_id=step_id,
+                stage_uid=stage_uid,
+                reason=reason,
+                allow_nested=allow_nested,
+                signal_policy=signal_policy,
+                parent_run_id=parent_run_id,
+                trace_id=trace_id,
+                external_cancel_event=external_cancel_event,
+                run_arg_overrides=run_arg_overrides,
+            )
+        finally:
+            # R5: run 结束统一收尾——释放预算槽位（child finalization）、
+            # 关闭本 run 线程的步骤池（wait=True + cancel_futures=True，
+            # 异常路径同样收敛，无泄漏）、恢复线程局部深度。
+            if slot_acquired:
+                self._release_subworkflow_slot()
+            try:
+                _shutdown_step_pool()
+            except Exception:
+                logger.warning("关闭 run 步骤池失败", exc_info=True)
+            ctx.subworkflow_depth = prev_depth
 
     def _select_steps(
         self,
@@ -741,6 +846,7 @@ class WorkflowEngine(QObject):
         run_cancel_event: threading.Event,
         signal_policy: RunSignalPolicy,
         run_arg_overrides=None,
+        subworkflow_depth: Optional[int] = None,
         ) -> tuple[Optional[StepResult], Optional[str]]:
         return _step_execution.execute_step_attempt(
             self,
@@ -753,6 +859,7 @@ class WorkflowEngine(QObject):
             run_cancel_event=run_cancel_event,
             signal_policy=signal_policy,
             run_arg_overrides=run_arg_overrides,
+            subworkflow_depth=subworkflow_depth,
         )
 
     @staticmethod
@@ -810,6 +917,7 @@ class WorkflowEngine(QObject):
         signal_policy: RunSignalPolicy,
         run_cancel_event: threading.Event = None,
         run_arg_overrides=None,
+        subworkflow_depth: Optional[int] = None,
         ) -> StepResult:
         return _step_execution.execute_step_with_retries(
             self,
@@ -821,6 +929,7 @@ class WorkflowEngine(QObject):
             signal_policy=signal_policy,
             run_cancel_event=run_cancel_event,
             run_arg_overrides=run_arg_overrides,
+            subworkflow_depth=subworkflow_depth,
         )
 
     def _execute_single_step(
@@ -833,6 +942,7 @@ class WorkflowEngine(QObject):
         prev_step_status_map: Optional[dict] = None,
         run_cancel_event: threading.Event = None,
         run_arg_overrides=None,
+        subworkflow_depth: Optional[int] = None,
         ) -> StepResult:
         """执行单个步骤（带重试）"""
         return _step_execution.execute_single_step(
@@ -845,6 +955,7 @@ class WorkflowEngine(QObject):
             prev_step_status_map=prev_step_status_map,
             run_cancel_event=run_cancel_event,
             run_arg_overrides=run_arg_overrides,
+            subworkflow_depth=subworkflow_depth,
         )
 
     def _execute_parallel_steps(
@@ -857,6 +968,7 @@ class WorkflowEngine(QObject):
         prev_step_status_map: Optional[dict] = None,
         run_cancel_event: threading.Event = None,
         run_arg_overrides=None,
+        subworkflow_depth: Optional[int] = None,
         ) -> List[StepResult]:
         """并行执行多个步骤（Fan-Out/Fan-In 模式；batch-3 委托 engine_core.step_execution）"""
         return _step_execution.execute_parallel_steps(
@@ -869,6 +981,7 @@ class WorkflowEngine(QObject):
             prev_step_status_map=prev_step_status_map,
             run_cancel_event=run_cancel_event,
             run_arg_overrides=run_arg_overrides,
+            subworkflow_depth=subworkflow_depth,
         )
 
     def _finish_step(

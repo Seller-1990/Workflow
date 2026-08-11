@@ -1,5 +1,15 @@
 # -*- coding: utf-8 -*-
-"""子工作流执行器"""
+"""子工作流执行器
+
+R5（子工作流线程池饥饿修复）：
+- 子工作流运行在独立 1 线程池上（threading.local 按线程隔离），不占父 run 步骤池；
+- 深度预算：``subworkflow_depth`` 沿执行链显式透传（execute_step_attempt → 本
+  execute → run_sub_workflow → _run），超过 ``MAX_SUBWORKFLOW_DEPTH`` 时 fail-fast
+  返回 non-retryable 结果，不启动子线程、不创建 RunHistory；
+- 并发预算：子工作流运行入口（engine._run）非阻塞获取引擎全局槽位，耗尽抛
+  ``ResourceBudgetExceededError``，本执行器把它映射为 non-retryable 的中文资源
+  错误结果（不触发父步骤重试）。
+"""
 
 import concurrent.futures
 import inspect
@@ -15,7 +25,8 @@ from database import (
     get_workflow_by_uid, get_workflow_by_id,
     has_cross_workflow_cycle
 )
-from constants import SUB_WORKFLOW_TIMEOUT
+from constants import SUB_WORKFLOW_TIMEOUT, MAX_SUBWORKFLOW_DEPTH
+from engine_core.scheduler import ResourceBudgetExceededError
 
 
 class SubWorkflowExecutor(BaseExecutor):
@@ -27,6 +38,11 @@ class SubWorkflowExecutor(BaseExecutor):
     @staticmethod
     def _workflow_runner_accepts_cancel_event(workflow_runner) -> bool:
         """判断 workflow_runner 是否显式支持 cancel_event。"""
+        return SubWorkflowExecutor._runner_accepts_param(workflow_runner, "cancel_event")
+
+    @staticmethod
+    def _runner_accepts_param(workflow_runner, param_name: str) -> bool:
+        """判断 workflow_runner 是否显式支持指定参数（含 **kwargs）。"""
         try:
             signature = inspect.signature(workflow_runner)
         except (TypeError, ValueError):
@@ -35,7 +51,7 @@ class SubWorkflowExecutor(BaseExecutor):
         for param in signature.parameters.values():
             if param.kind == inspect.Parameter.VAR_KEYWORD:
                 return True
-        return "cancel_event" in signature.parameters
+        return param_name in signature.parameters
 
     def _wait_for_child_exit(
         self,
@@ -102,6 +118,7 @@ class SubWorkflowExecutor(BaseExecutor):
         timeout: int = None,
         workflow_id: int = None,
         cancel_event: threading.Event = None,
+        subworkflow_depth: int = 1,
         **kwargs
     ) -> ExecutorResult:
         if not script_path:
@@ -150,6 +167,21 @@ class SubWorkflowExecutor(BaseExecutor):
 
         start_time = datetime.now()
 
+        # R5: 深度预算——子工作流嵌套超过 MAX_SUBWORKFLOW_DEPTH 时 fail-fast，
+        # 不启动子线程、不创建 RunHistory；non-retryable，避免父步骤无谓重试。
+        if subworkflow_depth > MAX_SUBWORKFLOW_DEPTH:
+            return ExecutorResult(
+                success=False,
+                exit_code=1,
+                start_time=start_time,
+                end_time=datetime.now(),
+                error_message=(
+                    f"子工作流嵌套深度超出限制（最大 {MAX_SUBWORKFLOW_DEPTH} 层），"
+                    "请检查工作流是否构成过深嵌套"
+                ),
+                extra=build_policy_extra(non_retryable=True),
+            )
+
         # 检查取消状态
         if cancel_event and cancel_event.is_set():
             return ExecutorResult(
@@ -169,11 +201,12 @@ class SubWorkflowExecutor(BaseExecutor):
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         def _invoke_runner():
-            return workflow_runner(
-                target.id,
-                reason="sub_workflow",
-                cancel_event=child_cancel_event,
-            )
+            # R5: 深度沿执行链显式透传——runner 支持时带上 subworkflow_depth
+            # （engine.run_sub_workflow 支持；测试注入的 lambda 可能不支持则不传）。
+            kwargs = {"reason": "sub_workflow", "cancel_event": child_cancel_event}
+            if self._runner_accepts_param(workflow_runner, "subworkflow_depth"):
+                kwargs["subworkflow_depth"] = subworkflow_depth
+            return workflow_runner(target.id, **kwargs)
 
         future = executor.submit(_invoke_runner)
         # MA3：默认超时来自 constants.py
@@ -205,6 +238,18 @@ class SubWorkflowExecutor(BaseExecutor):
                     break
                 except concurrent.futures.TimeoutError:
                     continue
+                except ResourceBudgetExceededError as e:
+                    # R5: 子工作流资源预算耗尽（深度/并发超限）——明确中文资源错误，
+                    # non-retryable，避免父步骤无谓重试；不当作普通执行异常。
+                    child_cancel_event.set()
+                    return ExecutorResult(
+                        success=False,
+                        exit_code=1,
+                        start_time=start_time,
+                        end_time=datetime.now(),
+                        error_message=str(e),
+                        extra=build_policy_extra(non_retryable=True),
+                    )
                 except Exception as e:
                     child_cancel_event.set()
                     return ExecutorResult(

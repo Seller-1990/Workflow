@@ -44,6 +44,12 @@ class Workflow(Base):
     settle_seconds: Mapped[int] = mapped_column(Integer, default=15)
     log_retention_days: Mapped[int] = mapped_column(Integer, default=30)  # 日志保留天数
 
+    # R1: 导入风险路径确认机制（仅「从外部 JSON 导入且含风险路径」的工作流参与；
+    # 由迁移 v10 提供列；risky_paths_* 不进 update_workflow 白名单）
+    risky_paths_review_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    risky_paths_revision: Mapped[int] = mapped_column(Integer, default=0)
+    risky_paths_confirmed_digest: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # 单脚本模式
     single_script_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     single_script_type: Mapped[str] = mapped_column(String(32), default="python")

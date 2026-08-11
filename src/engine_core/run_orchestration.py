@@ -147,19 +147,19 @@ def emit_run_completion(
 
         if workflow and log_dir and signal_policy.send_notification:
             try:
-                if engine._executor is not None:
-                    engine._executor.submit(
-                        engine._send_notification,
-                        workflow=workflow,
-                        run_id=run_id,
-                        status=final_status,
-                        log_dir=str(log_dir),
-                        reason=reason,
-                        start_time=start_time,
-                        end_time=end_time,
-                    )
-                else:
-                    logger.warning("通知未发送：executor 已关闭")
+                # R5: 通知改走辅助池统一入口（engine._submit_auxiliary）——
+                # engine._executor 已降级为辅助池（通知/日志清理等轻量任务），
+                # 池不可用（已关闭）时降级 daemon 线程，不丢通知。
+                engine._submit_auxiliary(
+                    engine._send_notification,
+                    workflow=workflow,
+                    run_id=run_id,
+                    status=final_status,
+                    log_dir=str(log_dir),
+                    reason=reason,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
             except Exception as e:
                 logger.warning("提交通知任务失败: %s", e)
     except Exception as e:
@@ -267,21 +267,23 @@ def run_workflow(
         if not workflow:
             raise eng.ConfigurationError(f"工作流不存在: {workflow_id}")
 
-        # SEC1: 首次运行含 risky import path 的工作流时检查确认标记
-        from database_import_validation import workflow_has_unconfirmed_risky_paths
-        if workflow_has_unconfirmed_risky_paths(workflow):
-            engine._emit_log("错误：此工作流包含未经确认的导入路径（绝对路径或上级目录引用），请在工作流配置中确认路径安全后再运行")
+        # SEC1(R1): 同一数据库快照生成不可变 RunPlan（含 revision + 结构化路径记录），
+        # 基于 RunPlan 校验；执行消费同一快照（all_steps）。不在后台线程弹 Qt 对话框。
+        all_steps = eng.get_steps_by_workflow(workflow_id)
+        if not all_steps:
+            raise eng.ConfigurationError("工作流没有步骤")
+
+        from risk_path_review import build_run_plan, evaluate_run_plan
+        run_plan = build_run_plan(workflow, all_steps)
+        blocked_reason = evaluate_run_plan(run_plan)
+        if blocked_reason is not None:
+            engine._emit_log(f"错误：{blocked_reason}")
             return False
 
         # 自动清理过期日志（后台线程执行，避免阻塞启动）
         engine._cleanup_old_logs_async(workflow)
 
-        # 获取步骤
-        all_steps = eng.get_steps_by_workflow(workflow_id)
-        if not all_steps:
-            raise eng.ConfigurationError("工作流没有步骤")
-
-        # 根据模式筛选步骤
+        # 根据模式筛选步骤（消费与 RunPlan 相同的快照）
         steps = engine._select_steps(all_steps, mode, step_id, workflow, stage_uid=stage_uid)
         if not steps:
             engine._emit_log("没有需要执行的步骤")

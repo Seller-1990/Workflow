@@ -1,9 +1,18 @@
 # -*- coding: utf-8 -*-
-"""RunHistory / StepLog finalization consistency helpers."""
+"""RunHistory / StepLog finalization consistency helpers + R5 run 收尾上下文。
+
+R5（子工作流线程池饥饿修复）新增：
+- ``_run_thread_ctx``：按 run 线程隔离的执行上下文（threading.local），
+  持有该 run 的独立步骤池与子工作流深度；嵌套子工作流跑在自己的线程上，
+  天然拿到自己的上下文，不回父 run / 全局共享池。
+- ``shutdown_step_pool``：run 结束统一关闭当前线程绑定的步骤池
+  （wait=True + cancel_futures=True），异常路径同样收敛，避免线程泄漏。
+"""
 
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime
 from typing import Callable
 
@@ -83,3 +92,42 @@ def _warn(warn_cb: Callable[[str, object], None] | None, template: str, exc: obj
             logger.warning(template, *exc)
         else:
             logger.warning(template, exc)
+
+
+# ============== R5: run 线程局部执行上下文 ==============
+
+class _RunThreadContext(threading.local):
+    """每个 run 线程的局部执行上下文（线程隔离）。
+
+    - ``step_pool``: 本 run 的独立步骤池（首次并行批次惰性创建，run 结束统一关闭）
+    - ``subworkflow_depth``: 本 run 的子工作流嵌套深度（根 run 为 0）
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.step_pool = None
+        self.subworkflow_depth = 0
+
+
+_run_thread_ctx = _RunThreadContext()
+
+
+def get_run_thread_context() -> _RunThreadContext:
+    """返回当前 run 线程的局部上下文（线程隔离，天然支持并行/嵌套 run）。"""
+    return _run_thread_ctx
+
+
+def shutdown_step_pool(*, wait: bool = True, cancel_futures: bool = True) -> None:
+    """R5: 关闭当前 run 线程绑定的步骤池（幂等，无池时 no-op）。
+
+    由 run 收尾（engine._run finally）统一调用；``wait=True`` 等待已运行任务，
+    ``cancel_futures=True`` 取消未启动任务。
+    """
+    ctx = _run_thread_ctx
+    pool = getattr(ctx, "step_pool", None)
+    if pool is None:
+        return
+    try:
+        pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+    finally:
+        ctx.step_pool = None

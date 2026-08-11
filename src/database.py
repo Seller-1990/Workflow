@@ -38,6 +38,8 @@ from webhook_url_policy import (
 )
 from models import Base, Workflow, WorkflowStage, Step, RunHistory, StepLog, RecentWorkflow, WebhookConfig
 
+import risk_path_review
+
 logger = logging.getLogger(__name__)
 
 MASKED_WEBHOOK_URL = "__WORKFLOW_WEBHOOK_URL_MASKED__"
@@ -204,6 +206,7 @@ SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
     (7, "_migrate_v7_step_output_paths"),
     (8, "_migrate_v8_run_history_step_log_perf_indexes"),
     (9, "_migrate_v9_step_saved_run_args"),
+    (10, "_migrate_v10_risky_paths_review"),
 ]
 
 
@@ -301,6 +304,49 @@ def _migrate_v9_step_saved_run_args(engine):
         existing = {row[1] for row in rows}
         if "saved_run_args" not in existing:
             conn.execute(text("ALTER TABLE steps ADD COLUMN saved_run_args TEXT"))
+
+
+# 旧版文本标记（v10 迁移只读取它来回填，运行判定不再使用）
+_LEGACY_IMPORTED_PATH_WARNING = "[导入提示]"
+
+
+def _migrate_v10_risky_paths_review(engine):
+    """v10 (R1): workflows 增加风险路径确认三列，并按旧文本标记回填。
+
+    迁移规则：
+    1. 旧记录默认不建立信任（review_required=0、digest NULL —— 运行判定放行）。
+    2. description 含旧 `[导入提示]` 字面标记的记录置 review_required=1、digest 空
+       （用 instr 精确匹配字面量，不用 LIKE 防 `[...]` 字符类假阳性）。
+    3. 即使 description 含 `[已确认]` 也不 backfill 信任（description 是用户可控输入）。
+    4. 旧文本不再参与运行判定（运行时只读三列）。
+
+    幂等：列存在则跳过 ALTER；UPDATE 重复执行无副作用。
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(workflows)")).fetchall()
+        existing = {row[1] for row in rows}
+        if "risky_paths_review_required" not in existing:
+            conn.execute(text(
+                "ALTER TABLE workflows ADD COLUMN "
+                "risky_paths_review_required INTEGER NOT NULL DEFAULT 0"
+            ))
+        if "risky_paths_revision" not in existing:
+            conn.execute(text(
+                "ALTER TABLE workflows ADD COLUMN "
+                "risky_paths_revision INTEGER NOT NULL DEFAULT 0"
+            ))
+        if "risky_paths_confirmed_digest" not in existing:
+            conn.execute(text(
+                "ALTER TABLE workflows ADD COLUMN "
+                "risky_paths_confirmed_digest TEXT"
+            ))
+        conn.execute(text(
+            "UPDATE workflows SET "
+            "risky_paths_review_required = 1, "
+            "risky_paths_confirmed_digest = NULL "
+            "WHERE description IS NOT NULL "
+            "AND instr(description, :marker) > 0"
+        ), {"marker": _LEGACY_IMPORTED_PATH_WARNING})
 
 
 def _migrate_v2_version_table_and_step_uid_unique(engine):
@@ -645,6 +691,95 @@ def generate_uid() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
 
 
+# ============== R1: 导入风险路径确认机制 ==============
+
+@event.listens_for(Session, "before_flush")
+def _before_flush_bump_risky_paths_revision(session, flush_context, instances):
+    """R1: 所有 Step 写路径在同一事务内递增所属工作流 risky_paths_revision。
+
+    覆盖 create / copy / import / clone / delete / script_path、cwd 变更，
+    使既有确认 digest 失效（删除后恢复同路径也不得沿用旧确认）。
+    递增失败只记日志不阻断写入（避免把普通写路径变成高危操作）。
+    """
+    try:
+        _bump_risky_paths_revision(session)
+    except Exception:
+        logger.exception("R1: 风险路径 revision 递增失败")
+
+
+def _step_path_fields_changed(step) -> bool:
+    """dirty 步骤是否发生 script_path / cwd 变更。"""
+    from sqlalchemy import inspect as _orm_inspect
+
+    state = _orm_inspect(step)
+    for field in ("script_path", "cwd"):
+        try:
+            attr = state.attrs[field]
+        except KeyError:
+            continue
+        if attr.history.has_changes():
+            return True
+    return False
+
+
+def _bump_risky_paths_revision(session) -> None:
+    """收集本次 flush 中受 Step 写路径影响的工作流 ID 并递增 revision。"""
+    if not (session.new or session.dirty or session.deleted):
+        return
+    touched: set[int] = set()
+    for step in session.new:
+        if isinstance(step, Step) and step.workflow_id:
+            touched.add(step.workflow_id)
+    for step in session.deleted:
+        if isinstance(step, Step) and step.workflow_id:
+            touched.add(step.workflow_id)
+    for step in session.dirty:
+        if isinstance(step, Step) and step.workflow_id and _step_path_fields_changed(step):
+            touched.add(step.workflow_id)
+    for workflow_id in touched:
+        workflow = session.get(Workflow, workflow_id)
+        if workflow is None:
+            continue
+        workflow.risky_paths_revision = int(workflow.risky_paths_revision or 0) + 1
+
+
+def confirm_risky_paths(workflow_id: int) -> bool:
+    """R1: 用户确认导入风险路径安全（专用事务 API）。
+
+    同一事务内重读当前路径 → revision+1 → compute_digest → review_required=0。
+    之后任何 Step 写路径都会递增 revision 使本确认失效。
+    """
+    with get_session() as session:
+        workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
+        if workflow is None:
+            return False
+        steps = session.query(Step).filter(Step.workflow_id == workflow_id).all()
+        records = risk_path_review.collect_risk_paths(steps)
+        workflow.risky_paths_revision = int(workflow.risky_paths_revision or 0) + 1
+        workflow.risky_paths_confirmed_digest = risk_path_review.compute_digest(
+            workflow.risky_paths_revision, records
+        )
+        workflow.risky_paths_review_required = 0
+        session.commit()
+        return True
+
+
+def _reset_risky_review_after_clone(workflow_id: int) -> None:
+    """R1: 克隆仍含风险路径 → 强制 review_required=1、digest 空（包装层二次事务）。
+
+    不继承原工作流的确认状态；克隆成功后单独事务落库。
+    """
+    with get_session() as session:
+        workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
+        if workflow is None:
+            return
+        steps = session.query(Step).filter(Step.workflow_id == workflow_id).all()
+        if risk_path_review.collect_risk_paths(steps):
+            workflow.risky_paths_review_required = 1
+            workflow.risky_paths_confirmed_digest = None
+            session.commit()
+
+
 # ============== 跨工作流循环依赖检测 ==============
 
 def has_cross_workflow_cycle(parent_id: int, target_uid: str) -> bool:
@@ -770,12 +905,16 @@ def export_to_json(
 
 def clone_workflow(workflow_id: int, new_name: str = None) -> Optional[Workflow]:
     """克隆工作流（含阶段和步骤）。"""
-    return clone_workflow_impl(
+    cloned = clone_workflow_impl(
         workflow_id,
         new_name,
         get_session=get_session,
         generate_uid=generate_uid,
     )
+    if cloned is not None:
+        # R1: 仍含风险路径的克隆强制重新确认（包装层二次事务，不继承原确认）
+        _reset_risky_review_after_clone(cloned.id)
+    return cloned
 
 
 # ============== 自动备份 ==============

@@ -5,16 +5,15 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import PurePosixPath, PureWindowsPath
 
 from models import Workflow
+
+import risk_path_review
 
 logger = logging.getLogger(__name__)
 
 EXPORT_SCHEMA_VERSION = 1
 _EXECUTABLE_TYPES = {"python", "bat", "sub_workflow"}
-_IMPORTED_PATH_WARNING = "[导入提示] 此工作流包含绝对路径或上级目录引用，首次运行前请确认脚本和工作目录来源可信。"
-_IMPORTED_PATH_CONFIRMED = "[已确认] 用户已确认导入路径安全。"
 _NOTIFY_SCHEMA_FIELDS = {
     "enabled",
     "webhook_id",
@@ -39,31 +38,22 @@ def validate_import_payload(data) -> dict:
 
 
 def mark_risky_import_paths(workflow: Workflow, wf_data: dict) -> None:
-    if not _workflow_has_risky_import_paths(wf_data):
+    """R1: 导入含风险路径的工作流强制 review_required=1、digest 空。
+
+    - 风险路径 = 活动步骤的绝对 script_path/cwd + `..` 逃逸路径（退役字段不参与）。
+    - 忽略 JSON 中同名内部字段（risky_paths_* 永不采信导入值）。
+    - 不再向 description 追加旧文本标记（旧文本已不参与运行判定）。
+    """
+    records = risk_path_review.collect_risk_paths(wf_data.get("steps", []))
+    if not records:
         return
-    workflow.description = _append_import_path_warning(workflow.description or "")
+    workflow.risky_paths_review_required = 1
+    workflow.risky_paths_confirmed_digest = None
     logger.warning(
         "导入工作流包含需复核的脚本路径或工作目录: uid=%r, name=%r",
         workflow.uid,
         workflow.name,
     )
-
-
-def workflow_has_unconfirmed_risky_paths(workflow) -> bool:
-    """检查工作流是否包含未经用户确认的 risky import path 标记。
-
-    用于运行前安全检查：若 description 包含导入告警但不含确认标记，
-    则运行方应弹窗要求用户确认后才允许执行。
-    """
-    desc = getattr(workflow, "description", None) or ""
-    return _IMPORTED_PATH_WARNING in desc and _IMPORTED_PATH_CONFIRMED not in desc
-
-
-def confirm_risky_paths(workflow: Workflow) -> None:
-    """用户确认导入路径安全后调用，追加确认标记到 description。"""
-    desc = workflow.description or ""
-    if _IMPORTED_PATH_CONFIRMED not in desc:
-        workflow.description = f"{desc}\n{_IMPORTED_PATH_CONFIRMED}"
 
 
 def _json_error(path: str, message: str) -> ValueError:
@@ -224,31 +214,3 @@ def _validate_steps(steps: list, wf_path: str) -> None:
         _expect_str_list_if_present(step, "saved_run_args", step_path)
         _expect_optional_list(step, "depends_on", step_path)
         _expect_str_list_if_present(step, "output_paths", step_path)
-
-
-def _looks_risky_import_path(value: object) -> bool:
-    if not isinstance(value, str) or not value.strip():
-        return False
-    raw = value.strip()
-    try:
-        windows_path = PureWindowsPath(raw)
-        posix_path = PurePosixPath(raw)
-    except (TypeError, ValueError):
-        return True
-    if windows_path.is_absolute() or posix_path.is_absolute():
-        return True
-    return ".." in windows_path.parts or ".." in posix_path.parts
-
-
-def _workflow_has_risky_import_paths(wf_data: dict) -> bool:
-    for step_data in wf_data.get("steps", []):
-        if _looks_risky_import_path(step_data.get("script")) or _looks_risky_import_path(step_data.get("cwd")):
-            return True
-    return False
-
-
-def _append_import_path_warning(description: str) -> str:
-    description = description or ""
-    if _IMPORTED_PATH_WARNING in description:
-        return description
-    return f"{description}\n\n{_IMPORTED_PATH_WARNING}" if description else _IMPORTED_PATH_WARNING

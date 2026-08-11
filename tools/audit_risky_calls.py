@@ -34,6 +34,7 @@ ALLOWED_RISKY_CALLS: dict[tuple[str, str], str] = {
     ("tests/test_cli_subprocess.py", "subprocess.run"): "CLI subprocess regression test validates command behavior.",
     ("tests/test_dependency_manifest.py", "subprocess.run"): "Dependency manifest test invokes the checker script.",
     ("tests/test_import_and_run_warnings.py", "subprocess.run"): "Import-and-run warning tests run _import_and_run.py in a child interpreter for WORKFLOW_APP_DATA_DIR isolation (same pattern as test_import_warnings).",
+    ("tests/test_risk_path_review.py", "subprocess.run"): "R1 risk-path review tests run cli.py / _import_and_run.py in child interpreters for WORKFLOW_APP_DATA_DIR isolation (same pattern as test_cli_contracts).",
     ("tests/test_import_warnings.py", "subprocess.run"): "Import-warning tests run CLI import in a child interpreter for WORKFLOW_APP_DATA_DIR isolation (same pattern as test_cli_contracts).",
     ("tests/test_install_hooks.py", "subprocess.run"): "Hook installer tests run git and the installer CLI against a throwaway temp repository using explicit args.",
     ("tests/test_main_self_check.py", "subprocess.run"): "Self-check test runs the packaged entrypoint contract.",

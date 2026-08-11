@@ -3,6 +3,14 @@ HISTORY_PAGE_SIZE = 100
 MAX_WORKERS_MIN = 1
 MAX_WORKERS_MAX = 64
 MAX_WORKERS_DEFAULT = 2
+# ============== R5: 子工作流线程池饥饿与取消修复（worker 常量） ==============
+WORKFLOW_MAX_WORKERS_MIN = 1      # workflow.max_workers 执行期夹紧下限
+WORKFLOW_MAX_WORKERS_MAX = 8      # workflow.max_workers 执行期夹紧上限
+WORKFLOW_MAX_WORKERS_DEFAULT = 2  # 缺失/非法时的默认并发
+ENGINE_AUXILIARY_MAX_WORKERS = 4  # engine._executor（辅助池：通知/日志清理等轻量任务）
+MAX_SUBWORKFLOW_DEPTH = 4         # 子工作流最大嵌套深度（根 run 为 0）
+MAX_ACTIVE_SUBWORKFLOWS = 16      # 引擎全局并发子工作流预算（仅统计非根 child）
+WAIT_POLL_SECONDS = 0.2           # scheduler 取消观察轮询间隔（秒）
 PYTHON_STEP_TIMEOUT = 7200  # python 步骤默认超时（秒）：2 小时，防止挂死脚本永久占用运行
 BAT_STEP_TIMEOUT = 3600  # bat 步骤默认超时（秒）：1 小时
 SUB_WORKFLOW_TIMEOUT = 3600
