@@ -314,16 +314,28 @@ def run_workflow(
             # 修复 H1/H12：所有 run（包括 nested）的 history_id 都加入栈，用于 force_stop 命中
             engine._active_run_ids.add(run_history_id)
 
+        # H4(TOCTOU)：_begin_run 内 create_run_history / update_run_history 已 commit，
+        # scoped_session(expire_on_commit=True) 使已加载的 ORM workflow/steps 全部过期；
+        # 执行链路若继续读 ORM 属性会触发重新 SELECT（拿到未确认的新值）。
+        # 从此刻起只消费 RunPlan 的不可变拷贝：exec_workflow 代替 workflow，
+        # steps 逐条替换为 StepSnapshot（鸭式读取，不改下游函数签名）。
+        # 注：run_plan 可能为 None（R5 测试伪件契约 build_run_plan→None 绕过 R1），
+        # 此时退化为原 ORM 直读路径。
+        exec_workflow = workflow
+        if run_plan is not None:
+            exec_workflow = run_plan.workflow_view or workflow
+            steps = [run_plan.step_snapshots.get(s.id, s) for s in steps]
+
         if signal_policy.emit_run_signals:
             engine.workflow_started.emit(workflow_id, run_id)
             started_emitted = True
-        engine._emit_log(f"开始运行工作流: {workflow.name}")
+        engine._emit_log(f"开始运行工作流: {exec_workflow.name}")
         engine._emit_log(f"运行模式: {mode.value}")
         engine._emit_log(f"日志目录: {log_dir}")
 
-        # 执行步骤
+        # 执行步骤（H4: 只消费 plan 快照拷贝）
         success = engine._execute_steps(
-            workflow,
+            exec_workflow,
             steps,
             run_history_id,
             log_dir,
@@ -352,6 +364,14 @@ def run_workflow(
         end_time = datetime.now()
         final_status = engine._resolve_final_status(status, external_cancel_event)
         engine._finalize_run_history(run_history_id, final_status, end_time, signal_policy)
+        # H4: _finalize_run_history 的 commit 已使主线程 workflow ORM 对象过期；
+        # 通知线程跨 session 访问过期属性会触发 refresh 竞态/DetachedInstanceError，
+        # 主线程重新取一次最新对象（属性已加载、未过期）再交给完成信号与通知；
+        # 刷新失败仅降级 workflow=None，不阻断收尾。
+        try:
+            workflow = eng.get_workflow_by_id(workflow_id)
+        except Exception:
+            workflow = None
         engine._emit_run_completion(
             workflow_id=workflow_id,
             workflow=workflow,
@@ -391,7 +411,6 @@ def select_steps(
         step_id=step_id,
         workflow=workflow,
         stage_uid=stage_uid,
-        get_single_script_step=engine._get_single_script_step,
         get_stage_order_map=eng.get_stage_order_map,
         get_latest_run_history=eng.get_latest_run_history,
         get_step_logs_by_run=eng.get_step_logs_by_run,
@@ -399,15 +418,6 @@ def select_steps(
         pending_status_value=eng.RunStatus.PENDING.value,
         log_cb=engine._emit_log,
     )
-
-
-def get_single_script_step(engine: WorkflowEngine, workflow: Workflow) -> Optional[Step]:
-    """获取已存在的单脚本步骤（退役：单脚本生产路径已移除，不再自动创建）"""
-    steps = engine.get_steps_by_workflow(workflow.id)
-    for step in steps:
-        if step.uid == "single_script":
-            return step
-    return None
 
 
 def dry_run(engine: WorkflowEngine, workflow_id: int):

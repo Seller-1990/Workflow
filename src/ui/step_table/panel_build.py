@@ -233,7 +233,7 @@ def show_header_menu(panel, pos):
 
 
 def apply_enabled_state(panel):
-    can_edit = panel._edit_enabled and (not panel._single_script_mode)
+    can_edit = panel._edit_enabled
     panel.btn_add.setEnabled(can_edit and panel._workflow_id is not None)
     panel._update_stage_context_ui()
 
@@ -306,12 +306,9 @@ def update_stage_context_ui(panel):
         panel.stage_context_label.setText("")
         panel.btn_add.setToolTip("添加步骤")
         return
-    can_edit = panel._edit_enabled and (not panel._single_script_mode)
+    can_edit = panel._edit_enabled
     stage_label = panel._stage_label_for_uid(panel._selected_stage_uid)
-    if panel._single_script_mode:
-        text = "当前为单脚本模式：步骤由右侧配置生成。"
-        add_tip = "单脚本模式下不能新增步骤"
-    elif stage_label:
+    if stage_label:
         text = f"当前阶段：{stage_label} · 点击「添加步骤」会加入此阶段。"
         add_tip = f"添加步骤到当前阶段：{stage_label}"
     else:
@@ -325,7 +322,7 @@ def update_stage_context_ui(panel):
 
 
 def refresh_stage_headers(panel):
-    if panel._single_script_mode or not panel._stage_header_rows:
+    if not panel._stage_header_rows:
         return
     counts = {}
     for meta in panel._row_meta:
@@ -356,7 +353,7 @@ def render_stage_header_row(
 ):
     """渲染用途阶段标题条（iOS grouped list 风格）"""
     colors = get_colors(panel._dark)
-    can_edit = panel._edit_enabled and (not panel._single_script_mode)
+    can_edit = panel._edit_enabled
     is_first = stage_idx <= 0
     is_last = stage_idx >= max(0, len(panel._stages) - 1)
     render_stage_header_row_widget(
@@ -396,7 +393,7 @@ def set_row_data(
     batch_idx: int = 0,
 ):
     """设置行数据"""
-    can_edit = panel._edit_enabled and (not panel._single_script_mode)
+    can_edit = panel._edit_enabled
     panel.table.setItem(row, 0, create_order_item(step, panel._stages, stage_idx, within_idx, batch_idx))
     panel.table.setItem(row, 1, create_type_item(step.step_type, panel._dark))
     panel.table.setItem(row, 2, QTableWidgetItem(step.name))

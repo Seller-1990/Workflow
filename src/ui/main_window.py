@@ -228,9 +228,6 @@ class MainWindow(QMainWindow):
         workflow = get_workflow_by_id(workflow_id)
         steps = get_steps_by_workflow(workflow_id)
         stages = list_stages(workflow_id)
-        single_enabled = bool(workflow.single_script_enabled) if workflow else False
-        self.step_table.set_single_script_mode(single_enabled)
-        self.step_editor.set_single_script_mode(single_enabled)
 
         parallel_enabled = bool(workflow.parallel_enabled) if workflow else False
         self.step_table.set_parallel_available(parallel_enabled)
@@ -758,9 +755,6 @@ class MainWindow(QMainWindow):
             wid = self._current_workflow_id
             self.workflow_list.load_workflows(selected_workflow_id=wid)
             workflow = get_workflow_by_id(wid)
-            single_enabled = bool(workflow.single_script_enabled) if workflow else False
-            self.step_table.set_single_script_mode(single_enabled)
-            self.step_editor.set_single_script_mode(single_enabled)
             parallel_enabled = bool(workflow.parallel_enabled) if workflow else False
             self.step_table.set_parallel_available(parallel_enabled)
             self.step_editor.set_parallel_available(parallel_enabled)

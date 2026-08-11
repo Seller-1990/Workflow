@@ -64,7 +64,7 @@ class StepEditorPanel(QWidget):
         super().__init__(parent)
         self._dark = False
         self._step_id = None
-        self._single_script_mode = False
+        self._loaded_step_type = None  # H3: 最近一次加载步骤的真实类型（退役类型迁移判定用）
         self._workflow_targets = []
         self._current_target_uid = None  # 当前选中的子工作流 UID
         self._current_workflow_id = None  # 当前步骤所属的工作流 ID
@@ -202,7 +202,7 @@ class StepEditorPanel(QWidget):
         self.context_banner.hide()
 
     def _update_action_tooltips(self):
-        can_edit = self._edit_enabled and (not self._single_script_mode)
+        can_edit = self._edit_enabled
         has_step = self._step_id is not None
         self.btn_more.setToolTip("更多操作：高级设置、依赖摘要" if has_step else "请先选中一个步骤")
         self.btn_save.setToolTip("保存当前步骤配置" if can_edit and has_step else "保存当前步骤配置（需要先选中步骤并开启编辑）")
@@ -231,11 +231,6 @@ class StepEditorPanel(QWidget):
             return
         self.step_run_requested.emit(mode, int(self._step_id))
 
-    def set_single_script_mode(self, enabled: bool):
-        """设置单脚本模式"""
-        self._single_script_mode = enabled
-        self._apply_enabled_state()
-
     def set_edit_enabled(self, enabled: bool):
         self._edit_enabled = enabled
         self._apply_enabled_state()
@@ -254,7 +249,7 @@ class StepEditorPanel(QWidget):
             logger.warning("更新步骤编辑器控件状态失败: %s", label, exc_info=True)
 
     def _apply_enabled_state(self):
-        can_edit = self._edit_enabled and (not self._single_script_mode)
+        can_edit = self._edit_enabled
         has_step = self._step_id is not None
         can_edit_step = can_edit and has_step
         # 编辑模式只做「写操作门禁」，不应让用户无法查看/复制字段内容
@@ -336,6 +331,9 @@ class StepEditorPanel(QWidget):
             detected = "powerbi_refresh"
 
         if not detected or detected == current:
+            return
+        if step_editor_build.is_retired_step_type(detected):
+            # 退役类型不再自动应用（避免把当前步骤静默改成已停用类型）
             return
 
         idx = self.combo_type.findData(detected)
@@ -633,6 +631,7 @@ class StepEditorPanel(QWidget):
         self._suppress_dirty = True
         try:
             self._step_id = None
+            self._loaded_step_type = None  # H3: 清空后复位，避免残留类型参与迁移判定
             self.edit_name.clear()
             self._type_manual_override = False
             self._suppress_type_override = True
@@ -735,6 +734,14 @@ class StepEditorPanel(QWidget):
 
         # 更新步骤
         step_type = self.combo_type.currentData()
+        # H3: 保存忠实读取 combo（加载期已保证当前值=步骤真实类型，结构上读不到残留值）；
+        # 仅当「加载类型为退役类型且与保存类型不同」才视为主动迁移
+        loaded_type = getattr(self, "_loaded_step_type", None)
+        migrated_from_retired = bool(
+            loaded_type
+            and step_editor_build.is_retired_step_type(loaded_type)
+            and loaded_type != step_type
+        )
         script_path = self.edit_script.text().strip()
         if step_type == "sub_workflow":
             uid = self.combo_target_workflow.currentData()
@@ -797,7 +804,14 @@ class StepEditorPanel(QWidget):
 
         # #5: 保存成功后复位脏标记
         self.reset_dirty_state()
-        self._notify_status("已保存步骤配置。")
+        # H3: 保存成功后同步加载类型（迁移后第二次保存不再重复提示）
+        self._loaded_step_type = step_type
+        if migrated_from_retired:
+            old_display = step_editor_build.retired_type_display(loaded_type)
+            new_display = StepType.display_name(step_type)
+            self._notify_status(f"类型已从已停用类型{old_display}迁移为{new_display}。")
+        else:
+            self._notify_status("已保存步骤配置。")
         self.step_saved.emit()
         return True
 

@@ -11,9 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sys
-from dataclasses import dataclass
-from typing import Iterable, List, NamedTuple, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Iterable, List, Mapping, NamedTuple, Optional, Tuple
+
+from exceptions import ConfigurationError
+
+logger = logging.getLogger(__name__)
 
 
 class RiskRecord(NamedTuple):
@@ -25,11 +30,92 @@ class RiskRecord(NamedTuple):
 
 
 @dataclass(frozen=True)
+class StepSnapshot:
+    """执行期不可变步骤拷贝（H4: 校验后执行链路只消费本拷贝）。
+
+    - 覆盖执行链路读取的全部字段（id/workflow_id/uid/order/name/stage_uid/
+      step_type/script_path/cwd/timeout_seconds/retry_count/chart_theme/
+      is_gate/skip_on_success/args/saved_run_args/depends_on）。
+    - get_args() / get_saved_run_args() / get_depends_on() 与 ORM Step 同签名
+      同行为；属性访问不触达数据库（修复 expire_on_commit 过期后执行期
+      重新 SELECT 最新值的 TOCTOU）。
+    - args / saved_run_args / depends_on 保留原始 JSON 串，解析延迟到访问期：
+      快照构建 lenient；depends_on 损坏数据在访问期抛 ConfigurationError，
+      保留「阻止错误调度」语义（与 models.Step.get_depends_on 一致）。
+    """
+
+    id: int
+    workflow_id: int
+    uid: str
+    order: int
+    name: str
+    stage_uid: Optional[str]
+    step_type: str
+    script_path: Optional[str]
+    cwd: Optional[str]
+    timeout_seconds: Optional[int]
+    retry_count: int
+    chart_theme: Optional[str]
+    is_gate: bool
+    skip_on_success: bool
+    args: Optional[str]
+    saved_run_args: Optional[str]
+    depends_on: Optional[str]
+
+    def get_args(self) -> list:
+        """与 ORM Step.get_args() 同签名同行为（损坏 JSON 宽容降级为 []）。"""
+        if self.args:
+            try:
+                return json.loads(self.args)
+            except json.JSONDecodeError as exc:
+                logger.warning("步骤参数 JSON 解析失败: step=%s", self.uid)
+        return []
+
+    def get_saved_run_args(self) -> list:
+        """与 ORM Step.get_saved_run_args() 同签名同行为。"""
+        if self.saved_run_args:
+            try:
+                value = json.loads(self.saved_run_args)
+                if isinstance(value, list) and all(isinstance(arg, str) for arg in value):
+                    return value
+                logger.warning("步骤已保存运行参数不是字符串数组: step=%s", self.uid)
+            except json.JSONDecodeError as exc:
+                logger.warning("步骤已保存运行参数 JSON 解析失败: %s", exc)
+        return []
+
+    def get_depends_on(self) -> list:
+        """与 ORM Step.get_depends_on() 同签名同行为（损坏数据抛 ConfigurationError）。"""
+        if not self.depends_on:
+            return []
+        try:
+            value = json.loads(self.depends_on)
+        except json.JSONDecodeError as exc:
+            raise ConfigurationError(f"步骤依赖 JSON 损坏: step={self.uid}") from exc
+        if not isinstance(value, list) or not all(isinstance(uid, str) for uid in value):
+            raise ConfigurationError(f"步骤依赖格式无效: step={self.uid}")
+        return value
+
+
+@dataclass(frozen=True)
+class WorkflowView:
+    """执行期不可变工作流视图（H4: 执行链路读取本拷贝，避免 ORM 过期重查）。"""
+
+    id: int
+    uid: str
+    name: str
+    parallel_enabled: bool
+    max_workers: int
+    chart_theme: str
+
+
+@dataclass(frozen=True)
 class RunPlan:
     """同一数据库快照生成的不可变运行计划（R1 校验输入）。
 
     - risk_records 来自生成时的步骤快照;执行消费同一快照。
     - revision + confirmed_digest 用于校验「既有确认是否仍然有效」。
+    - H4: step_snapshots / workflow_view 物化执行所需不可变拷贝，校验后执行
+      链路只消费计划内数据，不重新查询数据库（TOCTOU 承诺落空修复）。
     """
 
     workflow_id: int
@@ -37,6 +123,8 @@ class RunPlan:
     revision: int
     confirmed_digest: Optional[str]
     risk_records: Tuple[RiskRecord, ...]
+    step_snapshots: Mapping[int, "StepSnapshot"] = field(default_factory=dict)
+    workflow_view: Optional["WorkflowView"] = None
 
     @property
     def has_risk_records(self) -> bool:
@@ -180,14 +268,72 @@ def compute_digest(revision: object, records: Iterable[RiskRecord]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _as_int(value, default: int = 0) -> int:
+    """宽容转 int（None / 非数字 → default），快照构建不因脏数据抛错。"""
+    try:
+        return int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _build_step_snapshot(step) -> StepSnapshot:
+    """由 ORM Step（或同构对象）物化不可变 StepSnapshot（构建 lenient）。"""
+    return StepSnapshot(
+        id=_as_int(getattr(step, "id", 0)),
+        workflow_id=_as_int(getattr(step, "workflow_id", 0)),
+        uid=str(getattr(step, "uid", "") or ""),
+        order=_as_int(getattr(step, "order", 0)),
+        name=str(getattr(step, "name", "") or ""),
+        stage_uid=getattr(step, "stage_uid", None),
+        step_type=str(getattr(step, "step_type", "python") or "python"),
+        script_path=getattr(step, "script_path", None),
+        cwd=getattr(step, "cwd", None),
+        timeout_seconds=getattr(step, "timeout_seconds", None),
+        retry_count=_as_int(getattr(step, "retry_count", 0)),
+        chart_theme=getattr(step, "chart_theme", None),
+        is_gate=bool(getattr(step, "is_gate", False)),
+        skip_on_success=bool(getattr(step, "skip_on_success", False)),
+        args=getattr(step, "args", None),
+        saved_run_args=getattr(step, "saved_run_args", None),
+        depends_on=getattr(step, "depends_on", None),
+    )
+
+
+def _build_workflow_view(workflow) -> Optional[WorkflowView]:
+    """由 ORM Workflow（或同构对象）物化不可变 WorkflowView。"""
+    if workflow is None:
+        return None
+    return WorkflowView(
+        id=_as_int(getattr(workflow, "id", 0)),
+        uid=str(getattr(workflow, "uid", "") or ""),
+        name=str(getattr(workflow, "name", "") or ""),
+        parallel_enabled=bool(getattr(workflow, "parallel_enabled", False)),
+        max_workers=_as_int(getattr(workflow, "max_workers", 0)),
+        chart_theme=str(getattr(workflow, "chart_theme", "") or ""),
+    )
+
+
 def build_run_plan(workflow, steps) -> RunPlan:
-    """由同一数据库快照（workflow + steps）生成不可变 RunPlan。"""
+    """由同一数据库快照（workflow + steps）生成不可变 RunPlan。
+
+    H4: 同时物化执行所需拷贝——step_snapshots（StepSnapshot，按 step.id 索引）
+    与 workflow_view（WorkflowView）。校验与执行从此只消费同一份不可变数据，
+    不受 ORM ``expire_on_commit`` 过期后重新 SELECT 的影响（TOCTOU）。
+    快照构建 lenient：不解析 args/saved_run_args/depends_on，损坏数据在
+    执行期访问 get_depends_on() 时抛 ConfigurationError（阻止错误调度）。
+    """
+    step_snapshots: dict = {}
+    for step in steps or []:
+        snapshot = _build_step_snapshot(step)
+        step_snapshots[snapshot.id] = snapshot
     return RunPlan(
         workflow_id=int(getattr(workflow, "id", 0) or 0),
         review_required=bool(getattr(workflow, "risky_paths_review_required", False)),
         revision=int(getattr(workflow, "risky_paths_revision", 0) or 0),
         confirmed_digest=getattr(workflow, "risky_paths_confirmed_digest", None),
         risk_records=tuple(collect_risk_paths(steps)),
+        step_snapshots=step_snapshots,
+        workflow_view=_build_workflow_view(workflow),
     )
 
 

@@ -18,7 +18,33 @@ def resolve_ca_bundle() -> Path:
         if candidate.is_file():
             return candidate
     attempted = ", ".join(str(path) for path in candidates) or "<none>"
-    raise FileNotFoundError(f"No usable TLS CA certificate bundle found; attempted: {attempted}")
+    hint = _cleanup_hint()
+    message = f"No usable TLS CA certificate bundle found; attempted: {attempted}"
+    if hint:
+        message += f" {hint}"
+    raise FileNotFoundError(message)
+
+
+def _cleanup_hint() -> str:
+    """检测运行时临时目录被系统清理的迹象,给出可操作的恢复提示。
+
+    PyInstaller onefile 模式下,应用长时间运行期间系统磁盘清理可能删除
+    %TEMP%/_MEI* 中未被进程锁定的数据文件(certifi/cacert.pem 等),导致
+    通知发送时 CA bundle 缺失。常见恢复方式:重启应用(重新解压)。
+    """
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if not bundle_root:
+        return ""
+    root = Path(bundle_root)
+    if root.exists():
+        missing = not (root / "certifi").exists()
+        if missing:
+            return (
+                "运行时临时目录存在但缺少解压文件(可能被系统磁盘清理删除),"
+                "请关闭并重新启动应用后重试。"
+            )
+    return ""
+
 
 
 def configure_ca_bundle_environment() -> Path:

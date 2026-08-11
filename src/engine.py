@@ -662,10 +662,6 @@ class WorkflowEngine(QObject):
             self, all_steps, mode, step_id, workflow, stage_uid=stage_uid,
         )
 
-    def _get_single_script_step(self, workflow: Workflow) -> Optional[Step]:
-        """获取已存在的单脚本步骤（退役：不再自动创建）"""
-        return _run_orchestration.get_single_script_step(self, workflow)
-
     @staticmethod
     def compute_batches(
         workflow,

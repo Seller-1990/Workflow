@@ -22,7 +22,6 @@ def select_steps(
     step_id: int | None,
     workflow,
     stage_uid: str | None = None,
-    get_single_script_step: Callable[[object], object | None],
     get_stage_order_map: Callable[[int], dict],
     get_latest_run_history: Callable[..., object | None],
     get_step_logs_by_run: Callable[[int], Iterable[object]],
@@ -30,15 +29,11 @@ def select_steps(
     pending_status_value: str,
     log_cb: Callable[[str], None] | None = None,
 ) -> List[object]:
-    """根据运行模式筛选待执行步骤。"""
-    if getattr(workflow, "single_script_enabled", False):
-        return _select_single_script_step(
-            workflow=workflow,
-            mode_value=mode_value,
-            step_id=step_id,
-            get_single_script_step=get_single_script_step,
-        )
+    """根据运行模式筛选待执行步骤。
 
+    注意：single_script_enabled 已退役，本函数按步骤表正常选择，
+    忽略该字段（旧库 single_script_enabled=1 的工作流按普通工作流处理）。
+    """
     if mode_value == MODE_FULL:
         return all_steps
     if mode_value == MODE_FROM_STEP:
@@ -65,25 +60,6 @@ def select_steps(
             log_cb=log_cb,
         )
     return all_steps
-
-
-def _select_single_script_step(
-    *,
-    workflow,
-    mode_value: str,
-    step_id: int | None,
-    get_single_script_step: Callable[[object], object | None],
-) -> List[object]:
-    step = get_single_script_step(workflow)
-    if not step:
-        raise ConfigurationError("单脚本模式未配置脚本路径")
-    if mode_value in {MODE_FULL, MODE_RETRY_FAILED, MODE_ONLY_STAGE, MODE_FROM_STAGE}:
-        return [step]
-    if mode_value in {MODE_FROM_STEP, MODE_ONLY_STEP}:
-        if step.id == step_id:
-            return [step]
-        raise ConfigurationError("单脚本模式仅支持运行单脚本步骤")
-    return [step]
 
 
 def _select_from_step(all_steps: List[object], step_id: int | None) -> List[object]:

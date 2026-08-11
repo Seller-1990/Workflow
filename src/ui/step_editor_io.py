@@ -15,6 +15,7 @@ from database import (
     list_workflows,
 )
 from models import Step
+from ui import step_editor_build
 
 
 def load_step(panel, step_id: int):
@@ -37,6 +38,11 @@ def load_step(panel, step_id: int):
 
         # 设置步骤类型
         index = panel.combo_type.findData(step.step_type)
+        if index < 0:
+            # 退役/未知历史类型：动态补禁用的占位项，
+            # 确保下拉「当前值」始终=加载步骤的真实类型（不会残留上一步骤的类型）
+            index = step_editor_build.add_retired_type_placeholder(panel.combo_type, step.step_type)
+        panel._loaded_step_type = step.step_type
         if index >= 0:
             panel._suppress_type_override = True
             try:

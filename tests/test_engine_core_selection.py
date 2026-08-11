@@ -44,7 +44,6 @@ def _select(
     latest_run=None,
     step_logs=None,
     log_messages=None,
-    single_script_step=None,
 ):
     return select_steps(
         all_steps=all_steps,
@@ -52,7 +51,6 @@ def _select(
         step_id=step_id,
         workflow=workflow or _workflow(),
         stage_uid=stage_uid,
-        get_single_script_step=lambda _workflow: single_script_step,
         get_stage_order_map=lambda _workflow_id: stage_map or {},
         get_latest_run_history=lambda *args, **kwargs: latest_run,
         get_step_logs_by_run=lambda _run_id: step_logs or [],
@@ -111,14 +109,24 @@ def test_select_retry_failed_logs_when_previous_run_has_no_failures():
     assert messages == ["上次运行没有失败的步骤"]
 
 
-def test_single_script_mode_rejects_other_step_id():
+def test_single_script_enabled_flag_ignored_by_selection():
+    """退役字段 single_script_enabled=1 不影响普通选择路径（按步骤表正常执行）。"""
     workflow = _workflow(single_script_enabled=True)
 
-    with pytest.raises(ConfigurationError, match="单脚本模式仅支持运行单脚本步骤"):
+    # 普通工作流为空步骤表时按普通路径处理：only_step 找不到步骤报错（不再走单脚本分支）
+    with pytest.raises(ConfigurationError, match="未找到步骤"):
         _select(
             [StepLike(1, "A")],
             "only_step",
             step_id=2,
             workflow=workflow,
-            single_script_step=StepLike(1, "single"),
         )
+
+    # 找到步骤则正常返回（旧单脚本工作流中的步骤表内容照常被选择）
+    selected = _select(
+        [StepLike(1, "A"), StepLike(2, "B")],
+        "only_step",
+        step_id=2,
+        workflow=workflow,
+    )
+    assert [step.id for step in selected] == [2]

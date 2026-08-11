@@ -14,7 +14,6 @@ from ui.step_table.view_model import (
     build_row_meta,
     build_stage_records,
     build_stage_render_context,
-    build_single_script_uid_display_map,
     ensure_default_stage_records,
     sort_steps_by_stage,
 )
@@ -52,7 +51,6 @@ def test_sort_steps_and_build_row_meta_by_stage():
     rows = build_row_meta(
         sorted_steps,
         [{"uid": "s1", "name": "抽取"}, {"uid": "s2", "name": "报表"}],
-        single_script_mode=False,
     )
 
     assert [step.id for step in sorted_steps] == [1, 2, 3]
@@ -66,13 +64,11 @@ def test_sort_steps_and_build_row_meta_by_stage():
     assert build_prev_by_id(sorted_steps)[3].id == 2
 
 
-def test_display_maps_are_stable_for_single_and_stage_modes():
+def test_display_maps_are_stable_for_stage_mode():
     steps = [
         _step(1, "a", "A", 0, "s1"),
         _step(2, "b", "B", 1, "s1"),
     ]
-
-    assert build_single_script_uid_display_map(steps)["b"]["code"] == "S1-2"
 
     context = build_stage_render_context(steps, [{"uid": "s1", "name": "抽取"}])
 

@@ -249,7 +249,7 @@ def show_context_menu(panel, pos):
         # 阶段标题条：请使用行内"⋯"按钮
         return
 
-    can_edit = panel._edit_enabled and (not panel._single_script_mode)
+    can_edit = panel._edit_enabled
     menu = QMenu(panel)
     menu.setStyleSheet(get_menu_stylesheet(panel._dark))
 
@@ -331,7 +331,7 @@ def _build_batch_menu(panel, menu, selected_rows, can_edit):
 
 def show_stage_menu(panel, stage_uid: str, global_pos):
     """阶段标题条的"⋯"菜单"""
-    if not panel._workflow_id or panel._single_script_mode:
+    if not panel._workflow_id:
         return
     can_edit = panel._edit_enabled
 
@@ -443,7 +443,7 @@ def run_stage_mutation(panel, action, dependency_title: str, dependency_detail: 
 
 def migrate_stage_steps(panel, from_stage_uid: str, to_stage_uid: str) -> bool:
     """把某用途阶段的所有步骤迁移到目标阶段（带预校验与回滚）"""
-    if not panel._workflow_id or panel._single_script_mode:
+    if not panel._workflow_id:
         return False
     ok = panel._run_stage_mutation(
         lambda: migrate_stage_steps_service(panel._workflow_id, from_stage_uid, to_stage_uid),
@@ -470,7 +470,7 @@ def apply_orders_and_stage_updates(panel, stage_overrides: dict[int, str], step_
 
 def move_stage_order(panel, stage_uid: str, delta: int):
     """调整用途阶段顺序（带预校验与回滚）"""
-    if not panel._workflow_id or panel._single_script_mode:
+    if not panel._workflow_id:
         return
     if not panel._edit_enabled:
         panel._notify_status('需要先开启左侧"编辑"开关。')
@@ -492,7 +492,7 @@ def move_stage_order(panel, stage_uid: str, delta: int):
 
 def insert_stage_before(panel, stage_uid: str):
     """在指定阶段之前插入一个新阶段"""
-    if not panel._workflow_id or panel._single_script_mode:
+    if not panel._workflow_id:
         return
     if not panel._edit_enabled:
         panel._notify_status('需要先开启左侧"编辑"开关。')
@@ -507,7 +507,7 @@ def insert_stage_before(panel, stage_uid: str):
 
 def insert_stage_after(panel, stage_uid: str):
     """在指定阶段后插入一个新阶段（安全模式：不自动改步骤依赖）"""
-    if not panel._workflow_id or panel._single_script_mode:
+    if not panel._workflow_id:
         return
     if not panel._edit_enabled:
         panel._notify_status('需要先开启左侧"编辑"开关。')
@@ -532,7 +532,7 @@ def apply_orders_and_stage_update(
 
 def move_step_to_stage(panel, step_id: int, target_stage_uid: str):
     """将步骤移动到指定用途阶段（默认放到该阶段末尾）"""
-    if not panel._workflow_id or panel._single_script_mode:
+    if not panel._workflow_id:
         return
     if not panel._edit_enabled:
         panel._notify_status('需要先开启左侧"编辑"开关。')
@@ -555,7 +555,7 @@ def on_rows_dragged(panel, from_row: int, to_row: int):
     """自定义拖拽：默认只改"用途阶段归类+顺序"，不改依赖"""
     if not panel._workflow_id:
         return
-    if not panel._edit_enabled or panel._single_script_mode:
+    if not panel._edit_enabled:
         panel._notify_status('拖拽排序需要先开启左侧"编辑"开关。')
         return
     if from_row < 0 or to_row < 0 or from_row == to_row:

@@ -35,6 +35,37 @@ from ui.theme import (
     get_danger_button_stylesheet,
 )
 
+# 退役步骤类型（历史 excel/powerbi 步骤仍可编辑展示，但不再允许新建/自动应用）
+RETIRED_STEP_TYPES = {
+    "excel_powerquery": "Excel",
+    "powerbi_refresh": "Power BI",
+}
+
+
+def is_retired_step_type(value: str) -> bool:
+    """类型是否已退役（不在当前可选类型中，含未知历史类型）。"""
+    return value not in {choice[0] for choice in StepType.choices()}
+
+
+def retired_type_display(value: str) -> str:
+    """退役类型的展示名（未知历史类型回退为原始值）。"""
+    return RETIRED_STEP_TYPES.get(value, value)
+
+
+def add_retired_type_placeholder(combo: QComboBox, step_type: str) -> int:
+    """追加禁用的「已停用(原类型:…)」占位项，返回其 index。
+
+    占位项携带真实 data（step_type），保证加载历史退役类型步骤时
+    下拉「当前值」始终等于步骤的真实类型，保存可忠实回写；禁用使
+    用户不能主动改选到退役类型。
+    """
+    combo.addItem(f"已停用(原类型:{retired_type_display(step_type)})", step_type)
+    index = combo.count() - 1
+    item = combo.model().item(index)
+    if item is not None:
+        item.setEnabled(False)
+    return index
+
 
 def setup_ui(panel):
     """设置 UI"""
@@ -181,6 +212,9 @@ def setup_ui(panel):
     panel.combo_type = QComboBox()
     for value, display in StepType.choices():
         panel.combo_type.addItem(display, value)
+    # 构建期：为每个已知退役类型追加禁用的占位项（未知历史类型由加载期动态兜底）
+    for retired in RETIRED_STEP_TYPES:
+        add_retired_type_placeholder(panel.combo_type, retired)
     panel.combo_type.setFixedHeight(30)
     panel.combo_type.setMinimumWidth(0)
     panel.combo_type.setMinimumContentsLength(0)

@@ -9,6 +9,8 @@
 - CLI run/retry 门禁、--confirm-risky-paths、非 TTY、TTY 交互（含 EOFError）
 - _import_and_run.py run 与 --auto 同一门禁
 - 引擎 RunPlan 快照（阻断/放行/失配）
+- H4: RunPlan 物化执行拷贝（StepSnapshot/WorkflowView）；真实 _begin_run 提交后
+  并发修改 DB，执行仍消费校验时的快照（TOCTOU 不落空）
 """
 
 from __future__ import annotations
@@ -637,29 +639,125 @@ def test_engine_run_blocked_on_digest_mismatch(monkeypatch, tmp_path):
         engine.shutdown(wait=False)
 
 
-def test_engine_run_allowed_after_confirm_same_snapshot(monkeypatch, tmp_path):
-    """确认后运行放行：RunPlan 校验与执行消费同一快照（all_steps）。"""
+def test_build_run_plan_materializes_snapshots_and_views():
+    """H4: RunPlan 物化执行拷贝——StepSnapshot（按 id 索引）与 WorkflowView。
+
+    - 快照字段覆盖执行链路读取值；get_args/get_saved_run_args/get_depends_on
+      与 ORM 同签名同行为。
+    - depends_on 损坏数据：快照构建 lenient，访问期抛 ConfigurationError
+      （保留「阻止错误调度」语义）。
+    """
+    steps = [
+        SimpleNamespace(
+            id=3, workflow_id=1, uid="s1", order=0, name="A", stage_uid="stg",
+            step_type="python", script_path="C:/x.py", cwd="C:/w",
+            timeout_seconds=30, retry_count=2, chart_theme=None,
+            is_gate=False, skip_on_success=True,
+            args='["a", "b"]', saved_run_args='["s"]', depends_on='["s0"]',
+        ),
+        SimpleNamespace(
+            id=4, workflow_id=1, uid="s2", order=1, name="B", stage_uid=None,
+            step_type="sub_workflow", script_path=None, cwd=None,
+            timeout_seconds=None, retry_count=0, chart_theme="dark",
+            is_gate=True, skip_on_success=False,
+            args=None, saved_run_args=None, depends_on='{"bad": true}',
+        ),
+    ]
+    workflow = SimpleNamespace(
+        id=1, uid="wf-1", name="主", parallel_enabled=True, max_workers=4,
+        chart_theme="default", risky_paths_review_required=False,
+        risky_paths_revision=0, risky_paths_confirmed_digest=None,
+    )
+    plan = build_run_plan(workflow, steps)
+
+    assert isinstance(plan.workflow_view, risk_path_review.WorkflowView)
+    assert plan.workflow_view.name == "主"
+    assert plan.workflow_view.parallel_enabled is True
+    assert plan.workflow_view.max_workers == 4
+    assert plan.workflow_view.chart_theme == "default"
+    assert set(plan.step_snapshots) == {3, 4}
+
+    snap = plan.step_snapshots[3]
+    assert isinstance(snap, risk_path_review.StepSnapshot)
+    assert snap.script_path == "C:/x.py"
+    assert snap.cwd == "C:/w"
+    assert snap.stage_uid == "stg"
+    assert snap.skip_on_success is True
+    assert snap.get_args() == ["a", "b"]
+    assert snap.get_saved_run_args() == ["s"]
+    assert snap.get_depends_on() == ["s0"]
+
+    # depends_on 损坏数据：构建 lenient，访问期抛 ConfigurationError
+    bad = plan.step_snapshots[4]
+    assert bad.depends_on == '{"bad": true}'
+    with pytest.raises(risk_path_review.ConfigurationError):
+        bad.get_depends_on()
+
+
+def test_engine_run_executes_plan_snapshot_not_fresh_db(monkeypatch, tmp_path):
+    """H4(TOCTOU): 真实临时 DB + 真实 _begin_run 链路（真实 commit 使 ORM 过期）。
+
+    校验通过后（spy 在 _begin_run 的 update_run_history 提交后调用 update_step）
+    并发修改 script_path，执行收到的仍是 plan 快照旧值（StepSnapshot）；
+    DB 中已是新路径，且重新校验需确认（revision 递增 → digest 失配）。
+    """
+    import engine_core.lifecycle as lifecycle_module
     from engine import RunMode, WorkflowEngine
+
+    db = _use_temp_database(monkeypatch, tmp_path)
+    workflow = _import_risky_workflow(db, tmp_path)  # script="../outside.py"
+    assert db.confirm_risky_paths(workflow.id) is True
+    assert evaluate_run_plan(_current_plan(db, workflow.id)) is None
+    workflow_id = workflow.id
+    step_id = db.get_steps_by_workflow(workflow_id)[0].id
 
     engine = WorkflowEngine()
     try:
-        steps = [SimpleNamespace(
-            id=1, uid="step-a", order=1, name="A",
-            step_type="python", script_path="C:/evil.py", cwd=None,
-        )]
-        records = collect_risk_paths(steps)
-        workflow = SimpleNamespace(
-            id=1, uid="wf-1", name="主工作流", log_retention_days=1,
-            single_script_enabled=False, parallel_enabled=False,
-            get_notify_config=lambda: {},
-            risky_paths_review_required=0, risky_paths_revision=7,
-            risky_paths_confirmed_digest=compute_digest(7, records),
-        )
-        engine, logs, executed = _make_engine_run_test(monkeypatch, tmp_path, {"workflow": workflow}, steps)
+        captured = {}
 
-        ok = engine.run(1, RunMode.FULL)
+        def fake_execute_steps(
+            current_workflow, selected_steps, run_history_id, log_dir,
+            signal_policy, run_cancel_event=None, run_arg_overrides=None,
+        ):
+            captured["workflow"] = current_workflow
+            captured["steps"] = list(selected_steps)
+            return True
+
+        logs = []
+        monkeypatch.setattr("engine_core.lifecycle.LOG_DIR", tmp_path / "logs")
+        monkeypatch.setattr(engine, "_cleanup_old_logs", lambda current_workflow: None)
+        monkeypatch.setattr(engine, "_emit_log", lambda message: logs.append(message))
+        monkeypatch.setattr(engine, "_execute_steps", fake_execute_steps)
+
+        # spy：真实 update_run_history（含 commit）执行后，模拟并发修改 script_path
+        real_update_run_history = lifecycle_module.update_run_history
+
+        def spying_update_run_history(*args, **kwargs):
+            result = real_update_run_history(*args, **kwargs)
+            if kwargs.get("status") == "running":
+                db.update_step(step_id, script_path="C:/changed.py")
+            return result
+
+        monkeypatch.setattr(
+            "engine_core.lifecycle.update_run_history", spying_update_run_history
+        )
+
+        ok = engine.run(workflow_id, RunMode.FULL)
         assert ok is True
-        assert executed == [(11, 1)]
+
+        # 执行收到的是 plan 快照：类型 StepSnapshot、script_path 为校验时的旧值
+        assert captured["steps"]
+        step_snapshot = captured["steps"][0]
+        assert isinstance(step_snapshot, risk_path_review.StepSnapshot)
+        assert step_snapshot.script_path == "../outside.py"
+        assert isinstance(captured["workflow"], risk_path_review.WorkflowView)
+        assert captured["workflow"].name == "风险路径工作流"
+        assert any("开始运行工作流: 风险路径工作流" in message for message in logs)
+
+        # DB 中已是并发修改后的新路径；重新校验需确认
+        assert db.get_steps_by_workflow(workflow_id)[0].script_path == "C:/changed.py"
+        blocked = evaluate_run_plan(_current_plan(db, workflow_id))
+        assert blocked is not None and "已发生变化" in blocked
     finally:
         engine.shutdown(wait=False)
 

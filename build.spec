@@ -6,6 +6,7 @@
 
 import sys
 import runpy
+import os
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 
@@ -77,7 +78,9 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
+    runtime_tmpdir=os.path.join(
+        os.environ.get("LOCALAPPDATA", str(Path.home())), "工作流管理", "pyi-tmp"
+    ),
     console=False,  # False = 无控制台窗口
     disable_windowed_traceback=False,
     argv_emulation=False,

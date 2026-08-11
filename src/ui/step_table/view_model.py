@@ -42,13 +42,7 @@ def build_prev_by_id(steps_sorted: list) -> dict[int, object | None]:
     }
 
 
-def build_row_meta(steps_sorted: list, stages: list[dict], single_script_mode: bool) -> list[dict]:
-    if single_script_mode:
-        return [
-            {"kind": "step", "step_id": step.id, "stage_uid": getattr(step, "stage_uid", None)}
-            for step in steps_sorted
-        ]
-
+def build_row_meta(steps_sorted: list, stages: list[dict]) -> list[dict]:
     rows: list[dict] = []
     for stage in stages:
         stage_uid = stage["uid"]
@@ -57,18 +51,6 @@ def build_row_meta(steps_sorted: list, stages: list[dict], single_script_mode: b
             if getattr(step, "stage_uid", None) == stage_uid:
                 rows.append({"kind": "step", "step_id": step.id, "stage_uid": stage_uid})
     return rows
-
-
-def build_single_script_uid_display_map(steps_sorted: list) -> dict:
-    display_map = {}
-    for index, step in enumerate(steps_sorted, start=1):
-        display_map[step.uid] = {
-            "code": f"S1-{index}",
-            "stage_name": "默认阶段",
-            "step_name": step.name,
-            "step_id": step.id,
-        }
-    return display_map
 
 
 def build_stage_render_context(steps_sorted: list, stages: list[dict]) -> dict:

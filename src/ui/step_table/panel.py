@@ -32,7 +32,6 @@ from ui.step_table.view_model import (
     build_row_meta,
     build_stage_records,
     build_stage_render_context,
-    build_single_script_uid_display_map,
     ensure_default_stage_records,
     sort_steps_by_stage,
 )
@@ -79,7 +78,6 @@ class StepTablePanel(QWidget):
         super().__init__(parent)
         self._dark = False
         self._workflow_id = None
-        self._single_script_mode = False
         self._edit_enabled = True
         self._parallel_available = True
         self._selected_step_id = None
@@ -166,7 +164,7 @@ class StepTablePanel(QWidget):
         self._apply_enabled_state()
 
     def _apply_enabled_state(self):
-        """编辑/单脚本模式联动（实现在 ui.step_table.panel_build）"""
+        """编辑模式联动（实现在 ui.step_table.panel_build）"""
         panel_build.apply_enabled_state(self)
 
     def load_steps(self, workflow_id: int, *, steps=None, stages=None, workflow=None):
@@ -185,31 +183,26 @@ class StepTablePanel(QWidget):
         steps = get_steps_by_workflow(workflow_id) if steps is None else steps
         # CA1 修复：用轻量映射替代 list_workflows() 全 ORM 加载
         workflow_map = get_workflow_uid_name_map()
-        if self._single_script_mode:
-            steps = [s for s in steps if s.uid == "single_script"]
 
         # 执行阶段（固定顺序屏障）：始终展示阶段标题条（即使为空）
         self._stages = []
         self._stage_uid_to_index = {}
-        if not self._single_script_mode:
-            try:
-                self._stages, self._stage_uid_to_index = build_stage_records(
-                    list_stages(workflow_id) if stages is None else stages
-                )
-            except Exception:
-                self._stages, self._stage_uid_to_index = [], {}
+        try:
+            self._stages, self._stage_uid_to_index = build_stage_records(
+                list_stages(workflow_id) if stages is None else stages
+            )
+        except Exception:
+            self._stages, self._stage_uid_to_index = [], {}
 
         stage_uids = {st["uid"] for st in self._stages}
-        if self._single_script_mode:
-            self._selected_stage_uid = None
-        elif self._selected_stage_uid not in stage_uids:
+        if self._selected_stage_uid not in stage_uids:
             self._selected_stage_uid = None
 
         # 执行批次（自动）：用于展示 Bx（与 DAG/预演一致）
         self._step_batch_map = {}
         self._batch_deps_map = {}
         stage_map = {}
-        if steps and not self._single_script_mode:
+        if steps:
             try:
                 from engine import WorkflowEngine
                 from exceptions import WorkflowError
@@ -235,75 +228,59 @@ class StepTablePanel(QWidget):
         prev_by_id = build_prev_by_id(steps_sorted)
 
         # 构建视觉行模型（阶段标题条 + 该阶段步骤）
-        if self._single_script_mode:
-            self._row_meta = build_row_meta(steps_sorted, self._stages, single_script_mode=True)
-        else:
-            # 确保至少一个阶段（防御：极端情况下 list_stages 失败）
-            self._stages, self._stage_uid_to_index = ensure_default_stage_records(self._stages)
-            self._row_meta = build_row_meta(steps_sorted, self._stages, single_script_mode=False)
+        # 确保至少一个阶段（防御：极端情况下 list_stages 失败）
+        self._stages, self._stage_uid_to_index = ensure_default_stage_records(self._stages)
+        self._row_meta = build_row_meta(steps_sorted, self._stages)
 
         self.table.setRowCount(len(self._row_meta))
         self._update_group_ranges()
         # R2-#7: 空状态提示（无步骤时显式告知用户怎么办）
         if not steps:
-            if self._single_script_mode:
-                self.hint_label.setText("当前为单脚本模式：在右侧配置脚本路径")
-            else:
-                self.hint_label.setText("暂无步骤，点击「添加步骤」开始构建工作流")
+            self.hint_label.setText("暂无步骤，点击「添加步骤」开始构建工作流")
             self.hint_label.setVisible(True)
 
         # 渲染
         # R3-#8: 预建 id→step 映射 + (stage_uid, step_id)→within_idx 映射，
         # 替换原先每行 next(s for s in steps_sorted if s.id == ...) 的 O(n²) 查找
         step_by_id = {s.id: s for s in steps_sorted}
-        if self._single_script_mode:
-            # 依赖展示映射（单脚本模式下仍给出稳定编码，避免 tooltip/依赖列空白）
-            self._uid_display_map = build_single_script_uid_display_map(steps_sorted)
-            for row, meta in enumerate(self._row_meta):
-                step = step_by_id.get(meta["step_id"])
+        render_context = build_stage_render_context(steps_sorted, self._stages)
+        stage_uid_to_steps = render_context["stage_uid_to_steps"]
+        stage_display_index = render_context["stage_display_index"]
+        stage_name_by_uid = render_context["stage_name_by_uid"]
+        within_idx_by_step = render_context["within_idx_by_step"]
+        self._uid_display_map = render_context["uid_display_map"]
+
+        for row, meta in enumerate(self._row_meta):
+            if meta["kind"] == "stage_header":
+                stage_uid = meta["stage_uid"]
+                stage_idx = stage_display_index.get(stage_uid, 0)
+                self._render_stage_header_row(
+                    row=row,
+                    stage_uid=stage_uid,
+                    stage_idx=stage_idx,
+                    stage_name=stage_name_by_uid.get(stage_uid, "阶段"),
+                    step_count=len(stage_uid_to_steps.get(stage_uid, [])),
+                )
+            else:
+                step_id = meta["step_id"]
+                step = step_by_id.get(step_id)
                 if not step:
                     continue
                 prev_step = prev_by_id.get(step.id)
-                self._set_row_data(row, step, prev_step, workflow_map, stage_idx=0)
-        else:
-            render_context = build_stage_render_context(steps_sorted, self._stages)
-            stage_uid_to_steps = render_context["stage_uid_to_steps"]
-            stage_display_index = render_context["stage_display_index"]
-            stage_name_by_uid = render_context["stage_name_by_uid"]
-            within_idx_by_step = render_context["within_idx_by_step"]
-            self._uid_display_map = render_context["uid_display_map"]
+                stage_uid = meta.get("stage_uid")
+                stage_idx = stage_display_index.get(stage_uid, 0)
+                within = within_idx_by_step.get((stage_uid, step.id), 0)
+                # 给依赖编码与 tooltip 用：缓存 uid/stage/within 到 row_meta
+                try:
+                    meta["uid"] = step.uid
+                    meta["stage_idx"] = int(stage_idx)
+                    meta["within_idx"] = int(within)
+                except Exception:
+                    pass
+                batch_idx = self._step_batch_map.get(step.id, 0)
+                self._set_row_data(row, step, prev_step, workflow_map, stage_idx, within_idx=within, batch_idx=batch_idx)
 
-            for row, meta in enumerate(self._row_meta):
-                if meta["kind"] == "stage_header":
-                    stage_uid = meta["stage_uid"]
-                    stage_idx = stage_display_index.get(stage_uid, 0)
-                    self._render_stage_header_row(
-                        row=row,
-                        stage_uid=stage_uid,
-                        stage_idx=stage_idx,
-                        stage_name=stage_name_by_uid.get(stage_uid, "阶段"),
-                        step_count=len(stage_uid_to_steps.get(stage_uid, [])),
-                    )
-                else:
-                    step_id = meta["step_id"]
-                    step = step_by_id.get(step_id)
-                    if not step:
-                        continue
-                    prev_step = prev_by_id.get(step.id)
-                    stage_uid = meta.get("stage_uid")
-                    stage_idx = stage_display_index.get(stage_uid, 0)
-                    within = within_idx_by_step.get((stage_uid, step.id), 0)
-                    # 给依赖编码与 tooltip 用：缓存 uid/stage/within 到 row_meta
-                    try:
-                        meta["uid"] = step.uid
-                        meta["stage_idx"] = int(stage_idx)
-                        meta["within_idx"] = int(within)
-                    except Exception:
-                        pass
-                    batch_idx = self._step_batch_map.get(step.id, 0)
-                    self._set_row_data(row, step, prev_step, workflow_map, stage_idx, within_idx=within, batch_idx=batch_idx)
-
-        self.btn_add.setEnabled(self._edit_enabled and (not self._single_script_mode))
+        self.btn_add.setEnabled(self._edit_enabled)
 
         self._stage_header_rows = {}
         # R4-#5: 反查 dict，update_step_status / reset_all_status 不再扫整张表
@@ -342,8 +319,6 @@ class StepTablePanel(QWidget):
         return panel_build.stage_label_for_uid(self, stage_uid)
 
     def _set_stage_context(self, stage_uid: str | None):
-        if self._single_script_mode:
-            stage_uid = None
         if self._selected_stage_uid == stage_uid:
             self._update_stage_context_ui()
             return
@@ -425,11 +400,6 @@ class StepTablePanel(QWidget):
         except Exception:
             # 不影响主流程
             return
-
-    def set_single_script_mode(self, enabled: bool):
-        """设置单脚本模式"""
-        self._single_script_mode = enabled
-        self._apply_enabled_state()
 
     def set_selected_stage_context(self, stage_uid: str | None, *, clear_step_selection: bool = False):
         """同步当前阶段上下文，供外部视图切换后复用「添加步骤」目标阶段。"""
