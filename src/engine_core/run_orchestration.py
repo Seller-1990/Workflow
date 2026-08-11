@@ -22,7 +22,7 @@
   / ``_describe_batch_mode`` / ``_format_dry_run_lines`` /
   ``_cleanup_old_log_dirs`` / ``LOG_DIR`` / ``send_run_notification`` /
   ``get_stage_order_map`` / ``get_latest_run_history`` /
-  ``get_step_logs_by_run`` / ``ensure_single_script_step`` / ``list_stages``
+  ``get_step_logs_by_run`` / ``list_stages``
   等依赖同样经 engine 模块全局延迟解析（late-bound），保持
   ``monkeypatch.setattr("engine.xxx", ...)`` 模块级补丁语义不变。
 """
@@ -400,24 +400,11 @@ def select_steps(
 
 
 def get_single_script_step(engine: WorkflowEngine, workflow: Workflow) -> Optional[Step]:
-    """获取或创建单脚本步骤"""
-    eng = _engine_module()
-    steps = eng.get_steps_by_workflow(workflow.id)
+    """获取已存在的单脚本步骤（退役：单脚本生产路径已移除，不再自动创建）"""
+    steps = engine.get_steps_by_workflow(workflow.id)
     for step in steps:
         if step.uid == "single_script":
             return step
-    if workflow.single_script_path:
-        eng.ensure_single_script_step(
-            workflow.id,
-            step_type=workflow.single_script_type,
-            script_path=workflow.single_script_path,
-            args=workflow.get_single_args(),
-            cwd=workflow.single_script_cwd
-        )
-        steps = eng.get_steps_by_workflow(workflow.id)
-        for step in steps:
-            if step.uid == "single_script":
-                return step
     return None
 
 

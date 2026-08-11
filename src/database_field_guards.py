@@ -10,11 +10,6 @@ WORKFLOW_UPDATE_FIELDS = {
     "parallel_enabled",
     "max_workers",
     "log_retention_days",
-    "single_script_enabled",
-    "single_script_type",
-    "single_script_path",
-    "single_script_args",
-    "single_script_cwd",
     "notify_config",
 }
 STAGE_UPDATE_FIELDS = {"name", "order", "color"}

@@ -36,12 +36,7 @@ from webhook_url_policy import (
     is_masked_webhook_url as _is_masked_webhook_url,
     is_valid_dingtalk_webhook_url,
 )
-from database_versions import (
-    get_workflow_version_impl,
-    get_workflow_versions_impl,
-    save_workflow_version_impl,
-)
-from models import Base, Workflow, WorkflowStage, Step, RunHistory, StepLog, RecentWorkflow, WebhookConfig, WorkflowVersion
+from models import Base, Workflow, WorkflowStage, Step, RunHistory, StepLog, RecentWorkflow, WebhookConfig
 
 logger = logging.getLogger(__name__)
 
@@ -783,39 +778,6 @@ def clone_workflow(workflow_id: int, new_name: str = None) -> Optional[Workflow]
     )
 
 
-# ============== 配置版本控制 ==============
-
-def save_workflow_version(workflow_id: int, reason: str = None) -> Optional[int]:
-    """保存工作流当前配置的快照版本
-
-    Args:
-        workflow_id: 工作流 ID
-        reason: 变更原因
-
-    Returns:
-        版本号
-    """
-    return save_workflow_version_impl(
-        workflow_id,
-        reason=reason,
-        session_factory=get_session,
-    )
-
-
-def get_workflow_versions(workflow_id: int, limit: int = 20) -> List[WorkflowVersion]:
-    """获取工作流的版本历史"""
-    return get_workflow_versions_impl(
-        workflow_id,
-        limit=limit,
-        session_factory=get_session,
-    )
-
-
-def get_workflow_version(version_id: int) -> Optional[WorkflowVersion]:
-    """获取指定版本"""
-    return get_workflow_version_impl(version_id, session_factory=get_session)
-
-
 # ============== 自动备份 ==============
 
 
@@ -879,7 +841,6 @@ from database_workflows import (  # noqa: E402
     list_recent_workflows,
     update_recent_workflow,
     update_workflow,
-    ensure_single_script_step,
     delete_workflow,
     copy_workflow,
     list_stages,

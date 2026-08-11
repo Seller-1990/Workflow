@@ -244,7 +244,6 @@ Workflow/
 │   ├── database_clone.py       # 工作流克隆
 │   ├── database_backup.py      # 自动备份文件管理
 │   ├── database_field_guards.py # update_* 字段白名单
-│   ├── database_versions.py    # 工作流配置版本快照
 │   ├── models.py               # SQLAlchemy 数据模型
 │   ├── config.py               # 应用配置（路径、数据目录）
 │   ├── notifier.py             # 钉钉通知（模板渲染、发送）

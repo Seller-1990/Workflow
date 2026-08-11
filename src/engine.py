@@ -62,7 +62,7 @@ from database import (
     update_run_history,
     create_step_log, update_step_log,
     get_latest_run_history, get_step_logs_by_run,
-    ensure_single_script_step, get_stage_order_map, list_stages,
+    get_stage_order_map, list_stages,
     cleanup_session,
 )
 from models import Workflow, Step, RunHistory
@@ -423,7 +423,7 @@ class WorkflowEngine(QObject):
     # 跨方法调用经 ``engine._xxx`` 动态分发，实例级 monkeypatch（测试替身）语义不变；
     # _running / _cancelled / _active_run_ids 等实例状态仍在本类上，移动代码直接属性读写。
     # 注意：get_workflow_by_id / get_steps_by_workflow / get_stage_order_map /
-    # get_latest_run_history / get_step_logs_by_run / ensure_single_script_step /
+    # get_latest_run_history / get_step_logs_by_run /
     # list_stages / send_run_notification / _begin_run / _finalize_run /
     # _build_prev_step_status_map / _select_steps / _build_stage_meta /
     # _normalize_stage_uid / _build_stage_group_map / _describe_batch_mode /
@@ -558,7 +558,7 @@ class WorkflowEngine(QObject):
         )
 
     def _get_single_script_step(self, workflow: Workflow) -> Optional[Step]:
-        """获取或创建单脚本步骤"""
+        """获取已存在的单脚本步骤（退役：不再自动创建）"""
         return _run_orchestration.get_single_script_step(self, workflow)
 
     @staticmethod

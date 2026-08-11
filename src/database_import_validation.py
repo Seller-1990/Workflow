@@ -23,30 +23,6 @@ _NOTIFY_SCHEMA_FIELDS = {
 }
 
 
-def normalize_single_script_args(value) -> list[str]:
-    """将单脚本参数统一序列化为字符串数组。"""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    if isinstance(value, tuple):
-        return [str(item) for item in value]
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        try:
-            decoded = json.loads(text)
-        except json.JSONDecodeError:
-            return [text]
-        if isinstance(decoded, list):
-            return [str(item) for item in decoded]
-        if decoded is None:
-            return []
-        return [str(decoded)]
-    return [str(value)]
-
-
 def validate_import_payload(data) -> dict:
     data = _expect_mapping(data, "$")
     version = data.get("version")
@@ -265,9 +241,6 @@ def _looks_risky_import_path(value: object) -> bool:
 
 
 def _workflow_has_risky_import_paths(wf_data: dict) -> bool:
-    single_script = wf_data.get("single_script", {})
-    if _looks_risky_import_path(single_script.get("path")) or _looks_risky_import_path(single_script.get("cwd")):
-        return True
     for step_data in wf_data.get("steps", []):
         if _looks_risky_import_path(step_data.get("script")) or _looks_risky_import_path(step_data.get("cwd")):
             return True

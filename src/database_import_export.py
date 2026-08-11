@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session, selectinload
 from database_import_validation import (
     EXPORT_SCHEMA_VERSION,
     mark_risky_import_paths,
-    normalize_single_script_args,
     validate_import_payload,
 )
 from import_export_security import assert_no_plain_webhook_secrets
@@ -26,7 +25,6 @@ from webhook_url_policy import (
 )
 
 logger = logging.getLogger(__name__)
-WORKFLOW_PAYLOAD_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -314,10 +312,6 @@ def _update_existing_webhook(
 
 
 def _build_workflow(wf_data: dict, workflow_uid: str) -> Workflow:
-    single_args = json.dumps(
-        normalize_single_script_args(wf_data.get("single_script", {}).get("args")),
-        ensure_ascii=False,
-    )
     return Workflow(
         uid=workflow_uid,
         name=wf_data.get("name", "未命名工作流"),
@@ -325,11 +319,6 @@ def _build_workflow(wf_data: dict, workflow_uid: str) -> Workflow:
         chart_theme=wf_data.get("chart_theme", "default"),
         parallel_enabled=wf_data.get("parallel", {}).get("enabled", False),
         max_workers=wf_data.get("parallel", {}).get("max_workers", 2),
-        single_script_enabled=wf_data.get("single_script", {}).get("enabled", False),
-        single_script_type=wf_data.get("single_script", {}).get("type", "python"),
-        single_script_path=wf_data.get("single_script", {}).get("path"),
-        single_script_args=single_args,
-        single_script_cwd=wf_data.get("single_script", {}).get("cwd"),
     )
 
 
@@ -489,13 +478,6 @@ def serialize_workflow_payload(workflow: Workflow, webhook_map: Optional[dict[in
             "max_workers": workflow.max_workers,
         },
         "notify": notify,
-        "single_script": {
-            "enabled": workflow.single_script_enabled,
-            "type": workflow.single_script_type,
-            "path": workflow.single_script_path,
-            "args": normalize_single_script_args(workflow.single_script_args),
-            "cwd": workflow.single_script_cwd,
-        },
         "stages": _export_stages(workflow),
         "steps": _export_steps(workflow),
     }

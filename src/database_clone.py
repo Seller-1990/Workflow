@@ -28,11 +28,6 @@ def clone_workflow_impl(
             chart_theme=source.chart_theme,
             parallel_enabled=source.parallel_enabled,
             max_workers=source.max_workers,
-            single_script_enabled=source.single_script_enabled,
-            single_script_type=source.single_script_type,
-            single_script_path=source.single_script_path,
-            single_script_args=source.single_script_args,
-            single_script_cwd=source.single_script_cwd,
             log_retention_days=source.log_retention_days,
             notify_config=source.notify_config,
         )

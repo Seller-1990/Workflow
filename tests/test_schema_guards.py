@@ -520,9 +520,10 @@ def test_import_marks_risky_script_paths_for_review(monkeypatch, tmp_path: Path,
     assert "需复核的脚本路径" in caplog.text
 
 
-def test_single_script_args_export_as_array(monkeypatch, tmp_path: Path):
+def test_retired_single_script_field_import_ok_and_not_exported(monkeypatch, tmp_path: Path):
+    """退役字段 single_script：旧 JSON 含该对象可正常导入，导出不再包含该对象。"""
     db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "single-script.json"
+    payload_path = tmp_path / "single-script-retired.json"
     payload_path.write_text(
         json.dumps(
             {
@@ -552,7 +553,7 @@ def test_single_script_args_export_as_array(monkeypatch, tmp_path: Path):
     db.export_to_json(exported_path, workflow_ids=[workflow.id])
     exported = json.loads(exported_path.read_text(encoding="utf-8"))
 
-    assert exported["workflows"][0]["single_script"]["args"] == ["--month", "2026-06"]
+    assert "single_script" not in exported["workflows"][0]
 
 
 def test_pending_migration_failure_raises(monkeypatch, tmp_path: Path):

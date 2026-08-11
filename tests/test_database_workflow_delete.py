@@ -19,7 +19,10 @@ def test_delete_workflow_bulk_deletes_related_rows(monkeypatch, tmp_path: Path):
     workflow_uid = workflow.uid
     step_id = step.id
     db.create_step_log(run_history.id, step.id, order=1)
-    db.save_workflow_version(workflow.id, reason="delete cleanup")
+    # 版本快照服务已退役（database_versions 删除），但 workflow_versions 表与
+    # 删除时的显式清理仍在（workflow_id 无 ON DELETE CASCADE），直接插入一行验证契约。
+    with db.get_session() as session:
+        session.add(WorkflowVersion(workflow_id=workflow.id, version=1, snapshot="{}"))
     db.update_recent_workflow(workflow.uid)
 
     assert db.delete_workflow(workflow_id) is True

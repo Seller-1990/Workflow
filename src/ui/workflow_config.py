@@ -313,8 +313,6 @@ class WorkflowConfigPanel(QWidget):
                 parallel_enabled=self.check_parallel.isChecked(),
                 max_workers=self.spin_workers.value(),
                 notify_config=json.dumps(notify_config, ensure_ascii=False),
-                # 单脚本模式始终禁用
-                single_script_enabled=False
             )
             self.workflow_updated.emit()
             self._is_dirty = False

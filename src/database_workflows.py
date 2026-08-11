@@ -201,48 +201,6 @@ def update_workflow(workflow_id: int, **kwargs) -> Optional[Workflow]:
         return workflow
 
 
-def ensure_single_script_step(
-    workflow_id: int,
-    step_type: str,
-    script_path: str,
-    args: Optional[List[str]] = None,
-    cwd: Optional[str] = None
-) -> Optional[Step]:
-    """确保存在单脚本步骤"""
-    from database import get_session, _ensure_default_stage_in_session
-    with get_session() as session:
-        default_stage = _ensure_default_stage_in_session(session, workflow_id)
-        step = session.query(Step).filter(
-            Step.workflow_id == workflow_id,
-            Step.uid == "single_script"
-        ).first()
-        if not step:
-            step = Step(
-                workflow_id=workflow_id,
-                uid="single_script",
-                order=0,
-                name="单脚本模式",
-                stage_uid=default_stage.uid,
-                step_type=step_type,
-                script_path=script_path,
-                cwd=cwd,
-                is_gate=False,
-                is_parallel=False
-            )
-            session.add(step)
-        else:
-            step.step_type = step_type
-            step.script_path = script_path
-            step.cwd = cwd
-            if not step.stage_uid:
-                step.stage_uid = default_stage.uid
-        if args is not None:
-            step.set_args(args)
-        session.commit()
-        session.refresh(step)
-        return step
-
-
 def delete_workflow(workflow_id: int) -> bool:
     """删除工作流。
 
