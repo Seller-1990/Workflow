@@ -28,7 +28,6 @@ from ui.main_window_setup import create_brand_row
 from ui.error_summary import ErrorSummaryDialog
 from ui.step_editor import StepEditorPanel
 from ui.workflow_config import WorkflowConfigPanel
-from ui.dag_view import NodeCard
 
 
 @dataclass
@@ -324,32 +323,6 @@ def test_header_run_button_stops_when_engine_is_running():
     assert window.btn_header_run.objectName() == "DangerAction"
     assert window.btn_header_run.isEnabled() is False
     assert app is not None
-
-
-def test_node_card_shows_duration_badge_and_hides_it_when_empty():
-    app = QApplication.instance() or QApplication([])
-    card = NodeCard(
-        step_id=1,
-        title="1. 测试步骤",
-        step_type="python",
-        type_color="#1E40AF",
-        is_gate=True,
-    )
-    try:
-        assert card.duration_badge.isHidden() is True
-
-        card.set_duration_seconds(83)
-
-        assert card.duration_badge.isHidden() is False
-        assert card.duration_badge.text() == "1m23s"
-        assert "检查点" in card.type_label.text()
-
-        card.set_duration_seconds(None)
-
-        assert card.duration_badge.isHidden() is True
-    finally:
-        card.deleteLater()
-        assert app is not None
 
 
 def test_error_summary_open_step_log_emits_connected_handler():

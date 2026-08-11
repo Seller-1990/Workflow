@@ -38,7 +38,7 @@ import logging
 from PySide6.QtWidgets import QApplication
 
 from database import (
-    init_db, import_from_json, list_workflows, get_workflow_by_id,
+    init_db, import_from_json_with_warnings, list_workflows, get_workflow_by_id,
     get_workflow_by_name, get_run_histories_by_workflow, get_step_logs_by_run
 )
 from engine import WorkflowEngine, RunMode, RunSignalPolicy
@@ -62,8 +62,11 @@ def cmd_import(workflows_json: Path):
         name = wf.get("name", "")
         print(f"  [{uid}] {name}", flush=True)
 
-    count = import_from_json(workflows_json)
-    print(f"导入完成: {count} 个工作流\n", flush=True)
+    result = import_from_json_with_warnings(workflows_json)
+    print(f"导入完成: {result.imported_count} 个工作流", flush=True)
+    for warning in result.warnings:
+        print(f"警告: {warning}", flush=True)
+    print(flush=True)
     list_workflows()
 
 

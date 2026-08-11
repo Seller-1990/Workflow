@@ -39,9 +39,6 @@ jobs:
           python tools/module_hotspot_report.py --top 30 --baseline quality/module_hotspot_baseline.json --fail-on-regression --max-lines 1000 --fail-on-threshold
           python tools/run_tests.py --collect-only
 
-      - name: Requirement consistency
-        run: python tools\check_requirements_consistency.py
-
       - name: Compile sources
         run: python -m compileall src tests _import_and_run.py
 

@@ -21,7 +21,6 @@
   "src/main.py": 8,
   "src/notifier.py": 1,
   "src/ui/collapsible_section.py": 1,
-  "src/ui/dag_view.py": 6,
   "src/ui/dirty_guard.py": 8,
   "src/ui/error_summary.py": 2,
   "src/ui/icons.py": 1,

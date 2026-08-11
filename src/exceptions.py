@@ -12,15 +12,6 @@ class ConfigurationError(WorkflowError):
     pass
 
 
-class ExecutionError(WorkflowError):
-    """执行错误（可能可恢复）"""
-
-    def __init__(self, message: str, step_id: int = None, retryable: bool = True):
-        super().__init__(message)
-        self.step_id = step_id
-        self.retryable = retryable
-
-
 class DependencyError(WorkflowError):
     """依赖错误"""
     pass

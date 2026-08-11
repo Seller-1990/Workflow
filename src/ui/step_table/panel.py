@@ -558,7 +558,7 @@ class StepTablePanel(QWidget):
             return
         if not self._edit_enabled:
             from ui.theme import msg_information
-            msg_information(self, "提示", '请先开启"编辑"。')
+            msg_information(self, self._dark, "提示", '请先开启"编辑"。')
             return
         step_ids = []
         for row in rows:
@@ -571,7 +571,7 @@ class StepTablePanel(QWidget):
             return
         from ui.theme import msg_question
         answer = msg_question(
-            self, "批量删除确认",
+            self, self._dark, "批量删除确认",
             f"确定删除选中的 {len(step_ids)} 个步骤吗？此操作不可撤销。",
         )
         if answer != QMessageBox.Yes:
@@ -586,7 +586,7 @@ class StepTablePanel(QWidget):
             self.load_steps(self._workflow_id)
         except Exception as e:
             from ui.theme import msg_critical
-            msg_critical(self, "批量删除失败", str(e))
+            msg_critical(self, self._dark, "批量删除失败", str(e))
 
     def _batch_change_stage(self, rows, target_stage_uid):
         """任务9：批量改阶段"""
@@ -594,7 +594,7 @@ class StepTablePanel(QWidget):
             return
         if not self._edit_enabled:
             from ui.theme import msg_information
-            msg_information(self, "提示", '请先开启"编辑"。')
+            msg_information(self, self._dark, "提示", '请先开启"编辑"。')
             return
         step_ids = []
         for row in rows:
@@ -612,7 +612,7 @@ class StepTablePanel(QWidget):
             self.load_steps(self._workflow_id)
         except Exception as e:
             from ui.theme import msg_critical
-            msg_critical(self, "批量改阶段失败", str(e))
+            msg_critical(self, self._dark, "批量改阶段失败", str(e))
 
     def _copy_step(self, step_id: int):
         """复制步骤（实现在 ui.step_table.panel_actions）"""
