@@ -1,13 +1,12 @@
 # 工作流管理系统 (Workflow Manager)
 
-基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、Excel 刷新、Power BI 刷新等异构任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、文件监听、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：5.0.7。
+基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、批处理、子工作流等任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：5.0.7。
 
 ## 核心功能
 
-- **多类型任务编排** — Python 脚本、Excel 自动刷新（Win32 COM）、Power BI 数据集刷新、子工作流嵌套
+- **多类型任务编排** — Python 脚本、批处理脚本、子工作流嵌套
 - **阶段分组** — 将步骤按用途分组（如"数据导入"→"清洗"→"输出"），支持按阶段运行
 - **DAG 依赖** — 步骤间可配置依赖关系，引擎自动拓扑排序、并行执行无依赖步骤
-- **文件监听** — 监控指定文件夹，文件变化时自动触发工作流
 - **钉钉通知** — 运行完成/失败时推送消息，支持自定义模板变量
 - **运行历史** — 记录每次运行的步骤状态、耗时、日志，支持重试失败步骤
 - **CLI 接口** — 无需打开 GUI，命令行即可运行/管理工作流
@@ -95,7 +94,7 @@
 | 语言 | Python 3.10+ |
 | UI 框架 | PySide6 (Qt for Python) |
 | 数据存储 | SQLite + SQLAlchemy (scoped_session) |
-| 自动化 | pywin32 (Excel COM) / pywinauto (Power BI) |
+| 自动化 | 子进程执行（subprocess） |
 | 并行执行 | concurrent.futures.ThreadPoolExecutor |
 | 打包 | PyInstaller |
 
@@ -222,14 +221,6 @@ Webhook URL 在管理界面默认遮蔽，普通导出和自动备份默认脱�
 
 模板示例：`【通知】{工作流名称} {运行编号} {状态}`
 
-## 文件监听
-
-监听指定文件夹，文件变化在稳定窗口结束后自动触发工作流。使用时注意以下行为约束：
-
-- **监听目录不得包含工作流自身的输出**（含 Excel/PBIX 原地刷新文件）：检测到冲突时会拒绝启动监听，避免"自己触发自己"的循环运行。
-- **mtime 扫描不完整时只告警不触发**：基线扫描提前终止或部分文件不可读时，监听仅记录告警并等待完整扫描重建基线，不会凭不完整结果触发运行。
-- **运行期间/运行刚结束窗口内的文件变更会被吞并**：这些变更只用于刷新监听基线，不会自动补跑工作流；如确需处理请手动运行一次。
-
 ## 超时默认值
 
 步骤超时留空（0）时按步骤类型应用默认超时：
@@ -237,42 +228,7 @@ Webhook URL 在管理界面默认遮蔽，普通导出和自动备份默认脱�
 | 步骤类型 | 默认超时 |
 |------|------|
 | Python | 7200 秒 |
-| Excel | 300 秒 |
-| Power BI（桌面模式） | 600 秒 |
-| Power BI（REST 模式） | 1800 秒 |
 | 子工作流 | 3600 秒 |
-
-## Power BI 步骤说明
-
-Power BI 刷新步骤默认为**桌面半自动**模式：执行器打开 `.pbix` 后发送 F5 触发刷新，但刷新确认、保存并关闭需要人工完成；超时后仅强制关闭 Power BI Desktop，不会自动保存。无人值守场景会超时失败，请改用下方的 REST 刷新模式。
-
-### REST 刷新模式（无人值守推荐）
-
-在步骤参数中加入以下参数（仅支持 `--key=value` 形式）即可切换为 REST 刷新，通过 Power BI Service REST API 触发数据集刷新并轮询直至完成：
-
-```text
---refresh-mode=rest --workspace-id=<工作区GUID> --dataset-id=<数据集GUID>
-```
-
-同时在运行环境中设置环境变量 `POWERBI_ACCESS_TOKEN`（Power BI REST API 访问令牌）。应用不存储 token，也不会把它写入任何日志；令牌过期后需重新获取，例如用 az cli：
-
-```bash
-az account get-access-token --resource https://analysis.windows.net/powerbi/api --query accessToken -o tsv
-```
-
-也可通过 MSAL 以服务主体或交互式登录获取。
-
-前提条件：
-
-- 对目标工作区有 API 访问权限（工作区成员及以上角色）
-- 对目标数据集有刷新权限（数据集读写）
-- 数据集所在容量满足刷新要求：Premium/PPU，或 Pro 且未超出每日刷新配额
-
-行为说明：
-
-- REST 模式不打开本地 `.pbix`、不依赖 Power BI Desktop，刷新全程在 Power BI Service 完成，可真正无人值守
-- 步骤超时留空时默认 1800 秒，轮询间隔 15 秒；超时仅停止本地轮询，服务端刷新可能仍在进行
-- 桌面模式仍为默认；步骤参数不含 `--refresh-mode=rest` 时行为完全不变
 
 ## 目录结构
 
@@ -282,7 +238,7 @@ Workflow/
 │   ├── main.py                 # GUI 入口
 │   ├── cli.py                  # CLI 入口
 │   ├── engine.py               # 工作流引擎入口（运行生命周期、信号、执行编排）
-│   ├── engine_core/            # 引擎子模块（调度、监听、通知、阶段预览、日志清理）
+│   ├── engine_core/            # 引擎子模块（调度、通知、阶段预览、日志清理）
 │   ├── database.py             # 数据库操作入口（CRUD、会话管理）
 │   ├── database_import_export.py # 工作流 JSON 导入导出
 │   ├── database_clone.py       # 工作流克隆
@@ -304,7 +260,6 @@ Workflow/
 │   │   ├── workflow_config.py  # 工作流配置面板
 │   │   ├── step_table/         # 步骤表格（拖拽排序）
 │   │   ├── step_editor.py      # 步骤编辑器
-│   │   ├── dag_view.py         # DAG 依赖视图
 │   │   ├── run_control.py      # 运行控制面板
 │   │   ├── run_history.py      # 运行历史面板
 │   │   ├── log_panel.py        # 日志面板
@@ -313,9 +268,7 @@ Workflow/
 │   └── executors/              # 任务执行器
 │       ├── base.py             # 执行器基类
 │       ├── python_executor.py  # Python 脚本执行器
-│       ├── excel_executor.py   # Excel 刷新执行器
-│       ├── powerbi_executor.py # Power BI 刷新执行器
-│       ├── powerbi_rest.py     # Power BI Service REST 刷新客户端（无人值守）
+│       ├── bat_executor.py     # 批处理脚本执行器
 │       └── sub_workflow_executor.py  # 子工作流执行器
 ├── data/                       # SQLite 数据库（自动创建）
 ├── logs/                       # 运行日志（按工作流/运行批次/步骤分级）

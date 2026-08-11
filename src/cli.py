@@ -445,7 +445,7 @@ class CLIEngine:
         self.engine.dry_run(workflow_id)
 
     def close(self):
-        self.engine.stop_watch()
+        pass
 
 
 # ============== 命令处理 ==============

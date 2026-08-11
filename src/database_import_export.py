@@ -96,10 +96,6 @@ def import_from_json_impl(
                 masked_skipped_names=masked_skipped_names,
                 warnings=result.warnings,
             )
-            if "watch" in wf_data:
-                folders = wf_data.get("watch", {}).get("folders", [])
-                if folders:
-                    workflow.set_watch_folders(folders)
 
             session.add(workflow)
             session.flush()
@@ -329,10 +325,6 @@ def _build_workflow(wf_data: dict, workflow_uid: str) -> Workflow:
         chart_theme=wf_data.get("chart_theme", "default"),
         parallel_enabled=wf_data.get("parallel", {}).get("enabled", False),
         max_workers=wf_data.get("parallel", {}).get("max_workers", 2),
-        watch_enabled=wf_data.get("watch", {}).get("enabled", False),
-        watch_mode=wf_data.get("watch", {}).get("mode", "any_change"),
-        cooldown_seconds=wf_data.get("watch", {}).get("cooldown_seconds", 8),
-        settle_seconds=wf_data.get("watch", {}).get("settle_seconds", 15),
         single_script_enabled=wf_data.get("single_script", {}).get("enabled", False),
         single_script_type=wf_data.get("single_script", {}).get("type", "python"),
         single_script_path=wf_data.get("single_script", {}).get("path"),
@@ -469,7 +461,7 @@ def _import_steps(
         deps = step_data.get("depends_on", [])
         if deps:
             step.set_depends_on(deps)
-        # ROI-2: 显式输出声明；缺省（旧 JSON）保持 NULL，监听冲突检测回退到推断
+        # ROI-2: 显式输出声明；缺省（旧 JSON）保持 NULL
         output_paths = step_data.get("output_paths", [])
         if output_paths:
             step.set_output_paths(output_paths)
@@ -497,13 +489,6 @@ def serialize_workflow_payload(workflow: Workflow, webhook_map: Optional[dict[in
             "max_workers": workflow.max_workers,
         },
         "notify": notify,
-        "watch": {
-            "enabled": workflow.watch_enabled,
-            "mode": workflow.watch_mode,
-            "folders": workflow.get_watch_folders(),
-            "cooldown_seconds": workflow.cooldown_seconds,
-            "settle_seconds": workflow.settle_seconds,
-        },
         "single_script": {
             "enabled": workflow.single_script_enabled,
             "type": workflow.single_script_type,

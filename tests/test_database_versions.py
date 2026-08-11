@@ -37,11 +37,6 @@ def test_save_workflow_version_increments_and_snapshots_configuration(monkeypatc
     )
     db.update_workflow(
         workflow.id,
-        watch_enabled=True,
-        watch_mode="all_folders_updated_since_success",
-        watch_folders=json.dumps(["D:/incoming"], ensure_ascii=False),
-        cooldown_seconds=9,
-        settle_seconds=3,
         single_script_enabled=True,
         single_script_type="python",
         single_script_path="main.py",
@@ -90,13 +85,6 @@ def test_save_workflow_version_increments_and_snapshots_configuration(monkeypatc
         "webhook_id": webhook.id,
         "webhook_name": "版本机器人",
     }
-    assert snapshot["watch"] == {
-        "enabled": True,
-        "mode": "all_folders_updated_since_success",
-        "folders": ["D:/incoming"],
-        "cooldown_seconds": 9,
-        "settle_seconds": 3,
-    }
     assert snapshot["single_script"] == {
         "enabled": True,
         "type": "python",
@@ -141,11 +129,6 @@ def test_snapshot_schema_contract_matches_export_payload_keys(monkeypatch, tmp_p
         workflow.id,
         parallel_enabled=True,
         max_workers=4,
-        watch_enabled=True,
-        watch_mode="all_folders_updated_since_success",
-        watch_folders=json.dumps(["D:/watch"], ensure_ascii=False),
-        cooldown_seconds=10,
-        settle_seconds=6,
         single_script_enabled=True,
         single_script_type="python",
         single_script_path="contract.py",
@@ -174,7 +157,6 @@ def test_snapshot_schema_contract_matches_export_payload_keys(monkeypatch, tmp_p
         "chart_theme",
         "parallel",
         "notify",
-        "watch",
         "single_script",
         "stages",
         "steps",
@@ -183,7 +165,6 @@ def test_snapshot_schema_contract_matches_export_payload_keys(monkeypatch, tmp_p
     assert snapshot["snapshot_schema_version"] == database_import_export.WORKFLOW_PAYLOAD_SCHEMA_VERSION
     assert snapshot["description"] == "快照契约说明"
     assert set(snapshot["parallel"]) == {"enabled", "max_workers"}
-    assert set(snapshot["watch"]) == {"enabled", "mode", "folders", "cooldown_seconds", "settle_seconds"}
     assert set(snapshot["single_script"]) == {"enabled", "type", "path", "args", "cwd"}
     assert {"uid", "name", "order", "color"} <= set(snapshot["stages"][0])
     assert {

@@ -55,8 +55,6 @@ def _run_self_check(qt_args: list[str]) -> int:
 
     try:
         import requests  # noqa: F401
-        from executors.excel_executor import ExcelExecutor  # noqa: F401
-        from executors.powerbi_executor import PowerBIExecutor  # noqa: F401
         from executors.python_executor import PythonExecutor  # noqa: F401
         from engine import WorkflowEngine  # noqa: F401
 

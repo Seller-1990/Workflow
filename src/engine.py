@@ -22,13 +22,6 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Optional
 
-# CA2: 监听子系统已抽到 engine_core.watcher；本模块仅做薄封装
-from engine_core.watcher import (
-    FileWatcher,
-    validate_watch_folders as _validate_watch_folders,
-)
-# M1: 多 watcher 管理（start/stop/restore）已抽到 engine_core.watch_manager
-from engine_core.watch_manager import WatchManager
 from engine_core.notification import send_run_notification
 from engine_core.lifecycle import (
     begin_run as _begin_run,
@@ -60,7 +53,6 @@ from engine_core import step_execution as _step_execution
 # batch-4: 运行编排（_run 主流程/取消判定/收尾/选步/dry_run/批次推进/日志清理）
 # 下沉到 engine_core.run_orchestration；WorkflowEngine 保留同签名薄委托。
 from engine_core import run_orchestration as _run_orchestration
-from watch_rules import detect_watch_output_conflicts
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -163,9 +155,6 @@ class WorkflowEngine(QObject):
     log_output = Signal(str)  # message
     progress_updated = Signal(int, int)  # current, total
     error_details = Signal(list)  # [{step_name, step_id, error_message}, ...]
-    # R2-#4: 监听状态信号，UI 据此显示持续指示灯
-    watch_started = Signal(int, list)  # workflow_id, folders
-    watch_stopped = Signal(int)        # workflow_id（最近一次开启的；可为 0 表示无）
 
 
     def __init__(self, parent=None):
@@ -183,27 +172,6 @@ class WorkflowEngine(QObject):
         # 动态计算线程池大小：基于 CPU 核心数，上限 32
         max_workers = min(32, (os.cpu_count() or 4) + 4)
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
-        # CA2: 监听器子系统抽到 engine_core.watcher
-        # M1: 多 watcher 管理抽到 engine_core.watch_manager.WatchManager。
-        # 回调用 lambda 在本模块内定义（late-bound）：
-        # get_steps_by_workflow / detect_watch_output_conflicts / _validate_watch_folders
-        # 在调用时才从 engine 模块全局解析，保持模块级 monkeypatch 语义；
-        # watch_started / watch_stopped Qt 信号仍挂在引擎上，经 emit 回调转发。
-        self._watch_manager = WatchManager(
-            log_cb=self._emit_log,
-            trigger_cb=lambda wf_id, reason: self.run_all(wf_id, reason=reason),
-            is_running_cb=lambda: self.is_running,
-            emit_started_cb=lambda wf_id, folders: self.watch_started.emit(wf_id, folders),
-            emit_stopped_cb=lambda wf_id: self.watch_stopped.emit(wf_id),
-            validate_folders_cb=lambda folders: _validate_watch_folders(folders),
-            detect_conflicts_cb=lambda folders, steps: detect_watch_output_conflicts(folders, steps),
-            get_steps_cb=lambda wf_id: get_steps_by_workflow(wf_id),
-        )
-
-    @staticmethod
-    def validate_watch_folders(folders: list[str]) -> list[str]:
-        """校验监听目录（委托给 engine_core.watcher.validate_watch_folders）"""
-        return _validate_watch_folders(folders)
     @property
     def is_running(self) -> bool:
         with self._lock:
@@ -333,39 +301,12 @@ class WorkflowEngine(QObject):
             self, workflow, run_id, status, log_dir, reason, start_time, end_time,
         )
 
-    # ============== 监听触发 ==============
-    # M1: _make_watcher / start_watch / stop_watch / restore_watches（含 _safe_int）
-    # 已整体移至 engine_core.watch_manager.WatchManager；此处仅保留薄委托与
-    # ``_watchers`` 属性契约（测试/调用方按 dict 读取，也可整体赋值替换）。
-
-    @property
-    def _watchers(self) -> dict[int, FileWatcher]:
-        """M1: 按 workflow_id 的监听器字典（实际由 WatchManager 持有）"""
-        return self._watch_manager.watchers
-
-    @_watchers.setter
-    def _watchers(self, value: dict[int, FileWatcher]) -> None:
-        self._watch_manager.watchers = value
-
-    def start_watch(self, workflow: Workflow) -> bool:
-        """启动该工作流的文件监听（M1: 每工作流独立 watcher；委托 WatchManager）"""
-        return self._watch_manager.start_watch(workflow)
-
-    def stop_watch(self, workflow_id: int | None = None, join_timeout: float = 1.0):
-        """停止文件监听（M1: ``workflow_id=None`` 停止全部；委托 WatchManager）"""
-        return self._watch_manager.stop_watch(workflow_id, join_timeout)
-
-    def restore_watches(self) -> list[tuple[str, bool]]:
-        """应用启动时恢复所有 watch_enabled 工作流的监听（M1；委托 WatchManager）"""
-        return self._watch_manager.restore_watches()
-
     def shutdown(self, wait: bool = True):
         """关闭引擎，释放资源
 
         Args:
             wait: 是否等待线程池中的任务完成
         """
-        self.stop_watch()
         with self._lock:
             self._cancelled = True
         if self._executor:

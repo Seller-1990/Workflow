@@ -10,12 +10,8 @@
   "src/engine_core/run_orchestration.py": 12,
   "src/engine_core/scheduler.py": 1,
   "src/engine_core/step_execution.py": 4,
-  "src/engine_core/watch_manager.py": 4,
-  "src/engine_core/watcher.py": 7,
   "src/executors/base.py": 5,
   "src/executors/bat_executor.py": 6,
-  "src/executors/excel_executor.py": 13,
-  "src/executors/powerbi_executor.py": 6,
   "src/executors/python_executor.py": 7,
   "src/executors/sub_workflow_executor.py": 3,
   "src/main.py": 8,
@@ -40,10 +36,8 @@
   "src/ui/step_table/reorderable_table.py": 4,
   "src/ui/step_table/row_cells.py": 1,
   "src/ui/ui_state.py": 4,
-  "src/ui/watch_status_controller.py": 5,
   "src/ui/webhook_manager.py": 4,
   "src/ui/workbench_board.py": 2,
   "src/ui/workflow_config.py": 6,
-  "src/watch_rules.py": 2,
   "src/webhook_url_policy.py": 2
 }

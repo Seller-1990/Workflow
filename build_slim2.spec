@@ -50,14 +50,7 @@ a = Analysis(
         "sqlalchemy",
         "sqlalchemy.orm",
         "sqlalchemy.dialects.sqlite",
-        "win32com.client",
-        "pywintypes",
-        "pythoncom",
-        "pywinauto",
         "requests",
-        "watchdog",
-        "watchdog.observers",
-        "watchdog.events",
         # Required by setuptools/pkg_resources runtime hook on Python < 3.12.
         "backports.tarfile",
         # V9：图标库

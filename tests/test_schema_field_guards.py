@@ -43,22 +43,29 @@ def test_import_rejects_unsupported_step_type(monkeypatch, tmp_path: Path):
         db.import_from_json(payload_path)
 
 
-def test_import_rejects_unsupported_single_script_type(monkeypatch, tmp_path: Path):
+def test_import_ignores_retired_config_fields(monkeypatch, tmp_path: Path):
+    """退役字段(watch / single_script)允许存在于旧 JSON 但被明确忽略,不做形状校验。"""
     db = _use_temp_database(monkeypatch, tmp_path)
-    payload_path = tmp_path / "bad_single_type.json"
+    payload_path = tmp_path / "retired-fields.json"
     payload_path.write_text(
         json.dumps(
             {
                 "version": 1,
                 "workflows": [
                     {
-                        "id": "wf_bad_single_type",
-                        "name": "非法单脚本类型",
+                        "id": "wf_retired",
+                        "name": "退役字段",
+                        "watch": {
+                            "enabled": True,
+                            "mode": "unsupported-mode",
+                            "folders": ["D:/ok", 99],
+                        },
                         "single_script": {
                             "enabled": True,
                             "type": "cmd_shell",
-                            "path": "calc.exe",
+                            "path": 123,
                         },
+                        "steps": [{"name": "A", "step_type": "python", "script": "job.py"}],
                     }
                 ],
             },
@@ -67,8 +74,7 @@ def test_import_rejects_unsupported_single_script_type(monkeypatch, tmp_path: Pa
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=r"\$\.workflows\[0\]\.single_script\.type"):
-        db.import_from_json(payload_path)
+    assert db.import_from_json(payload_path) == 1
 
 
 def test_create_and_update_webhook_reject_non_dingtalk_urls(monkeypatch, tmp_path: Path):
@@ -161,9 +167,6 @@ def test_import_reports_schema_path_for_bad_webhook_field_type(monkeypatch, tmp_
         ("id", 123, r"\$\.workflows\[0\]\.id"),
         ("name", ["坏名字"], r"\$\.workflows\[0\]\.name"),
         ("description", {"bad": "type"}, r"\$\.workflows\[0\]\.description"),
-        ("single_script.type", 99, r"\$\.workflows\[0\]\.single_script\.type"),
-        ("single_script.path", False, r"\$\.workflows\[0\]\.single_script\.path"),
-        ("single_script.cwd", [], r"\$\.workflows\[0\]\.single_script\.cwd"),
         ("steps[0].id", 456, r"\$\.workflows\[0\]\.steps\[0\]\.id"),
         ("steps[0].name", {"bad": "type"}, r"\$\.workflows\[0\]\.steps\[0\]\.name"),
         ("steps[0].stage_uid", 789, r"\$\.workflows\[0\]\.steps\[0\]\.stage_uid"),
@@ -388,15 +391,8 @@ def test_json_import_rejects_legacy_notify_fields(monkeypatch, tmp_path: Path):
         db.import_from_json(payload_path)
 
 
-@pytest.mark.parametrize(
-    ("watch", "expected_path"),
-    [
-        ({"mode": 123}, r"\$\.workflows\[0\]\.watch\.mode"),
-        ({"mode": "unsupported"}, r"\$\.workflows\[0\]\.watch\.mode"),
-        ({"folders": ["D:/ok", 99]}, r"\$\.workflows\[0\]\.watch\.folders\[1\]"),
-    ],
-)
-def test_json_import_rejects_bad_watch_config(monkeypatch, tmp_path: Path, watch, expected_path):
+def test_json_import_ignores_bad_watch_config(monkeypatch, tmp_path: Path):
+    """退役 watch 字段即使形状非法也忽略(旧 JSON 兼容),不报错。"""
     db = _use_temp_database(monkeypatch, tmp_path)
     payload_path = tmp_path / "bad-watch.json"
     payload_path.write_text(
@@ -407,7 +403,8 @@ def test_json_import_rejects_bad_watch_config(monkeypatch, tmp_path: Path, watch
                     {
                         "id": "wf_bad_watch",
                         "name": "坏监听",
-                        "watch": watch,
+                        "watch": {"mode": 123, "folders": ["D:/ok", 99]},
+                        "steps": [{"name": "A", "step_type": "python", "script": "job.py"}],
                     }
                 ],
             },
@@ -416,8 +413,7 @@ def test_json_import_rejects_bad_watch_config(monkeypatch, tmp_path: Path, watch
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=expected_path):
-        db.import_from_json(payload_path)
+    assert db.import_from_json(payload_path) == 1
 
 
 def test_json_import_rejects_unsupported_version(monkeypatch, tmp_path: Path):

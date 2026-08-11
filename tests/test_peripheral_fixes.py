@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""外围缺陷修复回归测试：配置原子写入、解释器缺失提示、关闭按钮路径、COM 探针告警"""
+"""外围缺陷修复回归测试：配置原子写入、解释器缺失提示、关闭按钮路径"""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ sys.path.insert(0, str(SRC_DIR))
 
 import config
 import executors.python_executor as python_executor
-from executors.excel_executor import _wait_for_refresh_completion
 from executors.python_executor import PythonExecutor
 
 
@@ -43,23 +42,3 @@ def test_webhook_close_button_routes_through_close_event():
 
     assert "self.btn_close.clicked.connect(self.close)" in source
     assert "connect(self.accept)" not in source
-
-
-def test_excel_wait_logs_warning_when_com_probes_keep_failing(monkeypatch):
-    class DeadExcel:
-        @property
-        def CalculationState(self):
-            raise RuntimeError("RPC 服务器不可用")
-
-    class DeadWorkbook:
-        @property
-        def Refreshing(self):
-            raise RuntimeError("RPC 服务器不可用")
-
-    monkeypatch.setattr("executors.excel_executor.time.sleep", lambda _seconds: None)
-    log_messages: list[str] = []
-
-    _wait_for_refresh_completion(DeadExcel(), DeadWorkbook(), None, None, log_messages)
-
-    warnings = [m for m in log_messages if "警告：连续无法读取 Excel 刷新状态" in m]
-    assert len(warnings) == 1

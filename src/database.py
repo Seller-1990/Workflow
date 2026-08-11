@@ -42,7 +42,6 @@ from database_versions import (
     save_workflow_version_impl,
 )
 from models import Base, Workflow, WorkflowStage, Step, RunHistory, StepLog, RecentWorkflow, WebhookConfig, WorkflowVersion
-from watch_rules import sanitize_workflow_watch_config
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +191,6 @@ def init_db():
             _write_schema_cache(_engine)
 
         _ensure_stage_data()
-        _repair_legacy_watch_configurations()
         _init_done = True
 
         return _engine
@@ -257,51 +255,6 @@ def _run_pending_migrations(engine):
         except Exception as e:
             logger.exception("schema 迁移 v%s 失败: %s", version, e)
             raise RuntimeError(f"schema 迁移 v{version} 失败，应用已停止启动以避免写入半升级数据库") from e
-
-
-# M7: 启动期监听配置自动修复记录。
-# _repair_legacy_watch_configurations 每次执行都会先清空再追加中文修复摘要；
-# init_db 完成后 UI / 调用方读取 database.LAST_WATCH_CONFIG_REPAIRS 即可向用户展示。
-LAST_WATCH_CONFIG_REPAIRS: list[str] = []
-
-
-def _repair_legacy_watch_configurations() -> None:
-    """修正旧版本遗留的高风险监听配置。
-
-    修复明细会写入模块级 LAST_WATCH_CONFIG_REPAIRS（每个被修复的工作流一条
-    中文摘要），供 init_db 之后的 UI 提示使用；同时以 warning 级别记录日志，
-    避免自动改动用户配置却无人知晓。
-    """
-    LAST_WATCH_CONFIG_REPAIRS.clear()
-    with get_session() as session:
-        workflows = session.query(Workflow).filter(Workflow.watch_enabled.is_(True)).all()
-        changed = False
-        for workflow in workflows:
-            updated, folders, enabled = sanitize_workflow_watch_config(
-                workflow_name=workflow.name,
-                watch_enabled=bool(workflow.watch_enabled),
-                watch_folders=workflow.get_watch_folders(),
-                steps=workflow.steps,
-            )
-            if not updated:
-                continue
-            workflow.watch_enabled = bool(enabled)
-            workflow.set_watch_folders(folders)
-            workflow.updated_at = datetime.now()
-            changed = True
-            if enabled:
-                summary = f"工作流「{workflow.name}」：监听目录与输出目录重叠，已自动改用推荐监听目录"
-            else:
-                summary = f"工作流「{workflow.name}」：监听目录与输出目录重叠，已自动停用监听"
-            LAST_WATCH_CONFIG_REPAIRS.append(summary)
-            logger.warning(
-                "已自动修正旧监听配置: workflow=%s, watch_enabled=%s, watch_folders=%s",
-                workflow.name,
-                workflow.watch_enabled,
-                folders,
-            )
-        if changed:
-            session.commit()
 
 
 def _migrate_v1_workflow_step_runhistory_columns(engine):

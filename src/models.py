@@ -180,7 +180,7 @@ class Step(Base):
     )
     
     # 脚本配置
-    step_type: Mapped[str] = mapped_column(String(32), default="python")  # python, excel_powerquery, powerbi_refresh
+    step_type: Mapped[str] = mapped_column(String(32), default="python")  # python, bat, sub_workflow
     script_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     args: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON 数组
     saved_run_args: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON 数组；运行时默认层

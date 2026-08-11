@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""执行器策略与发现逻辑测试：Python/Excel 执行器与结果策略契约。
+"""执行器策略与发现逻辑测试：Python 执行器与结果策略契约。
 
 拆分自原 test_executor_policies.py（1000 行硬门槛，纯位置迁移）：
-- PowerBI 执行器策略 → test_executor_policies_powerbi.py
 - 引擎步骤执行与子工作流策略 → test_executor_policies_engine.py
 - 共享伪件 → _executor_policy_utils.py
 """
@@ -11,13 +10,11 @@ import io
 import sys
 import threading
 import time
-from types import SimpleNamespace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from _executor_policy_utils import install_fake_excel_modules
-from executors.excel_executor import ExcelExecutor
+from executors.base import ExecutorResult
 from executors.python_executor import PythonExecutor, _get_python_executable
 from executors.result_policy import (
     ResultPolicyKeys,
@@ -195,125 +192,89 @@ def test_python_executor_includes_stderr_excerpt_in_error_message(tmp_path: Path
     assert "ERROR: boom failure" in (result.error_message or "")
 
 
-def test_excel_executor_waits_for_async_queries_before_saving(monkeypatch, tmp_path: Path):
-    workbook_path = tmp_path / "report.xlsx"
-    workbook_path.write_text("", encoding="utf-8")
-    app = SimpleNamespace(
-        Workbooks=None,
-        Visible=False,
-        DisplayAlerts=False,
-        Hwnd=1234,
-        CalculationState=1,
-        calculate_calls=0,
-        refresh_called=False,
-    )
+class _StagedCommitExecutor:
+    """中性假执行器：先触发工作 → 等待异步完成信号 → 再提交结果。
 
-    class FakeConnection:
-        def __init__(self):
-            self.OLEDBConnection = SimpleNamespace(BackgroundQuery=True)
+    替代原 Excel 用例（等待异步查询完成后再保存）的通用语义，
+    不依赖 COM / 外部工具，仅保留等待-提交顺序、取消与超时的策略断言。
+    """
 
-    class FakeWorkbook:
-        def __init__(self):
-            self.Connections = [FakeConnection()]
-            self.saved = False
-            self.closed = False
-            self.Sheets = SimpleNamespace(Count=3)
+    def __init__(self):
+        self.events: list[str] = []
+        self._release = threading.Event()
 
-        def RefreshAll(self):
-            app.refresh_called = True
+    def complete_async_work(self) -> None:
+        self._release.set()
 
-        def Save(self):
-            self.saved = True
+    def execute(
+        self,
+        script_path,
+        args=None,
+        cwd=None,
+        env=None,
+        log_dir=None,
+        timeout=None,
+        cancel_event=None,
+        **kwargs,
+    ) -> ExecutorResult:
+        self.events.append("triggered")
+        started_at = time.perf_counter()
+        while not self._release.is_set():
+            if cancel_event is not None and cancel_event.is_set():
+                return ExecutorResult(
+                    success=False,
+                    exit_code=-1,
+                    error_message="用户取消",
+                    extra=build_cancelled_extra(),
+                )
+            if timeout is not None and time.perf_counter() - started_at > timeout:
+                return ExecutorResult(
+                    success=False,
+                    exit_code=1,
+                    error_message=f"等待异步工作完成超时 ({timeout}秒)",
+                )
+            time.sleep(0.01)
+        self.events.append("committed")
+        return ExecutorResult(success=True, exit_code=0)
 
-        def Close(self, SaveChanges=True):
-            self.closed = True
 
-    class FakeWorkbooks:
-        def Open(self, path):
-            app.opened_path = path
-            return FakeWorkbook()
+def test_executor_waits_for_async_work_before_committing(tmp_path: Path):
+    executor = _StagedCommitExecutor()
+    holder: dict = {}
 
-    def calculate_until_async_queries_done():
-        app.calculate_calls += 1
-        app.CalculationState = 0
+    def run_executor():
+        holder["result"] = executor.execute(
+            str(tmp_path / "report.xlsx"),
+            log_dir=tmp_path / "logs",
+            timeout=2,
+        )
 
-    app.Workbooks = FakeWorkbooks()
-    app.CalculateUntilAsyncQueriesDone = calculate_until_async_queries_done
+    thread = threading.Thread(target=run_executor, daemon=True)
+    thread.start()
+    time.sleep(0.1)
+    # 异步工作未完成前只触发不提交（保存）
+    assert executor.events == ["triggered"]
+    executor.complete_async_work()
+    thread.join(timeout=2)
 
-    install_fake_excel_modules(monkeypatch, dispatch_ex=lambda _name: app)
-    monkeypatch.setitem(
-        sys.modules,
-        "win32process",
-        SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: (0, 4321)),
-    )
-
-    result = ExcelExecutor().execute(str(workbook_path), log_dir=tmp_path / "logs", timeout=2)
-
+    result = holder["result"]
     assert result.success is True
-    assert app.calculate_calls == 1
-    assert app.refresh_called is True
+    assert executor.events == ["triggered", "committed"]
 
 
-def test_excel_executor_can_cancel_while_async_wait_method_is_blocked(monkeypatch, tmp_path: Path):
-    workbook_path = tmp_path / "blocked.xlsx"
-    workbook_path.write_text("", encoding="utf-8")
+def test_executor_can_cancel_while_async_wait_is_blocked(tmp_path: Path):
+    executor = _StagedCommitExecutor()
     cancel_event = threading.Event()
-    release_wait = threading.Event()
-    app = SimpleNamespace(
-        Workbooks=None,
-        Visible=False,
-        DisplayAlerts=False,
-        Hwnd=1234,
-        CalculationState=1,
-        Refreshing=True,
-    )
-
-    class FakeWorkbook:
-        Refreshing = True
-        Connections = []
-
-        def RefreshAll(self):
-            return None
-
-        def Save(self):
-            raise AssertionError("cancelled execution should not save workbook")
-
-        def Close(self, SaveChanges=True):
-            return None
-
-    class FakeWorkbooks:
-        def Open(self, path):
-            return FakeWorkbook()
-
-    def calculate_until_async_queries_done():
-        release_wait.wait(5)
-
-    def quit_excel():
-        return None
-
-    app.Workbooks = FakeWorkbooks()
-    app.CalculateUntilAsyncQueriesDone = calculate_until_async_queries_done
-    app.Quit = quit_excel
-
-    install_fake_excel_modules(monkeypatch, dispatch_ex=lambda _name: app)
-    monkeypatch.setitem(
-        sys.modules,
-        "win32process",
-        SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: (0, 4321)),
-    )
-    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
-
     threading.Thread(target=lambda: (time.sleep(0.05), cancel_event.set()), daemon=True).start()
 
     started_at = time.perf_counter()
-    result = ExcelExecutor().execute(
-        str(workbook_path),
+    result = executor.execute(
+        str(tmp_path / "blocked.xlsx"),
         log_dir=tmp_path / "logs",
         timeout=2,
         cancel_event=cancel_event,
     )
     elapsed = time.perf_counter() - started_at
-    release_wait.set()
 
     assert result.success is False
     assert result.exit_code == -1
@@ -321,65 +282,24 @@ def test_excel_executor_can_cancel_while_async_wait_method_is_blocked(monkeypatc
     assert result.extra[ResultPolicyKeys.CANCELLED] is True
     assert result.extra[ResultPolicyKeys.NON_RETRYABLE] is True
     assert elapsed < 1.0
+    assert "committed" not in executor.events
 
 
-def test_excel_executor_times_out_while_async_wait_method_is_blocked(monkeypatch, tmp_path: Path):
-    workbook_path = tmp_path / "timeout.xlsx"
-    workbook_path.write_text("", encoding="utf-8")
-    release_wait = threading.Event()
-    app = SimpleNamespace(
-        Workbooks=None,
-        Visible=False,
-        DisplayAlerts=False,
-        Hwnd=1234,
-        CalculationState=1,
-        Refreshing=True,
-    )
-
-    class FakeWorkbook:
-        Refreshing = True
-        Connections = []
-
-        def RefreshAll(self):
-            return None
-
-        def Save(self):
-            raise AssertionError("timed out execution should not save workbook")
-
-        def Close(self, SaveChanges=True):
-            return None
-
-    class FakeWorkbooks:
-        def Open(self, path):
-            return FakeWorkbook()
-
-    def calculate_until_async_queries_done():
-        release_wait.wait(5)
-
-    app.Workbooks = FakeWorkbooks()
-    app.CalculateUntilAsyncQueriesDone = calculate_until_async_queries_done
-    app.Quit = lambda: None
-
-    install_fake_excel_modules(monkeypatch, dispatch_ex=lambda _name: app)
-    monkeypatch.setitem(
-        sys.modules,
-        "win32process",
-        SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: (0, 4321)),
-    )
-    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+def test_executor_times_out_while_async_wait_is_blocked(tmp_path: Path):
+    executor = _StagedCommitExecutor()
 
     started_at = time.perf_counter()
-    result = ExcelExecutor().execute(
-        str(workbook_path),
+    result = executor.execute(
+        str(tmp_path / "timeout.xlsx"),
         log_dir=tmp_path / "logs",
         timeout=0.1,
     )
     elapsed = time.perf_counter() - started_at
-    release_wait.set()
 
     assert result.success is False
-    assert "刷新超时" in (result.error_message or "")
+    assert "等待异步工作完成超时" in (result.error_message or "")
     assert elapsed < 1.5
+    assert executor.events == ["triggered"]
 
 
 def test_get_python_executable_prefers_python3_before_hardcoded(monkeypatch):

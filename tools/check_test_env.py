@@ -27,10 +27,8 @@ REQUIRED_MODULES = [
     RequiredModule("pytest", "pytest", "test runner"),
     RequiredModule("sqlalchemy", "SQLAlchemy", "models and database tests"),
     RequiredModule("PySide6", "PySide6", "engine Qt signals and UI tests"),
-    RequiredModule("requests", "requests", "notifier and Power BI REST tests"),
+    RequiredModule("requests", "requests", "notifier and webhook tests"),
     RequiredModule("certifi", "certifi", "self-check and TLS diagnostics tests"),
-    RequiredModule("watchdog", "watchdog", "file watcher tests"),
-    RequiredModule("psutil", "psutil", "Power BI process cleanup tests"),
 ]
 
 

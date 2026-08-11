@@ -23,7 +23,7 @@ from engine import WorkflowEngine
 from ui.theme import msg_information, msg_warning, msg_critical, msg_question
 from ui.webhook_manager import WebhookManagerDialog
 from ui.json_actions import export_json_action, import_json_action
-from ui import dirty_guard, main_window_setup, main_window_steps, panel_controller, run_dispatch, run_lifecycle_controller, watch_status_controller
+from ui import dirty_guard, main_window_setup, main_window_steps, panel_controller, run_dispatch, run_lifecycle_controller
 
 
 class MainWindow(QMainWindow):
@@ -49,7 +49,6 @@ class MainWindow(QMainWindow):
         self._running_workflow_id = None  # R5-#1: 正在运行的工作流（与显示分离）
         self._running_workflow_name = None  # R6-#1: 缓存的运行工作流名，避免重复查 DB
         self._pending_retry_cb = None  # R8-#1: F5「停止并运行新的」的待重试回调
-        self._watching_workflows: dict[int, list] = {}  # M1: workflow_id -> 监听目录（指示器聚合）
         self._edit_mode = False
 
         settings = QSettings(APP_NAME, "ui")  # U-P3-2: 统一 QSettings 节点
@@ -70,9 +69,6 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(500, self._show_edit_mode_guide)
 
         self.workflow_list.load_workflows()
-
-        # M1: 启动后恢复所有 watch_enabled 工作流的监听（事件循环就绪后执行）
-        QTimer.singleShot(0, self._restore_watches_on_startup)
     
     def _update_border_widget_positions(self):
         """更新浮动折叠按钮位置（实现在 ui.panel_controller）。"""
@@ -258,9 +254,6 @@ class MainWindow(QMainWindow):
             # 任务4：选中工作流后填充 Inspector 空白状态
             self.step_editor.show_empty_state(workflow_id)
 
-        # #1: 切换工作流时同步监听状态——engine.start_watch 内部会先 stop，再按 watch_enabled 决定是否启动
-        self._sync_engine_watch(workflow)
-
     def _async_load_history(self, workflow_id: int) -> None:
         if workflow_id != self._current_workflow_id:
             return
@@ -376,32 +369,6 @@ class MainWindow(QMainWindow):
             logger.warning("回滚选中失败: %s", e)
             return False
 
-    def _sync_engine_watch(self, workflow) -> None:
-        """根据 workflow.watch_enabled 启停该工作流的监听（实现在 ui.watch_status_controller）。"""
-        watch_status_controller.sync_engine_watch(self, workflow)
-
-    def _restore_watches_on_startup(self) -> None:
-        """M1 启动恢复监听 + M7 修复展示（实现在 ui.watch_status_controller）。"""
-        watch_status_controller.restore_watches_on_startup(self)
-
-    def _update_watch_indicator(self) -> None:
-        """M1: 按当前监听集合刷新指示器（实现在 ui.watch_status_controller）。"""
-        watch_status_controller.update_watch_indicator(self)
-
-    @Slot(int, list)
-    def _on_watch_started(self, workflow_id: int, folders: list) -> None:
-        """R2-#4 / M1: 监听启动 → 聚合到指示器"""
-        watch_status_controller.on_watch_started(self, workflow_id, folders)
-
-    @Slot(int)
-    def _on_watch_stopped(self, workflow_id: int) -> None:
-        """R2-#4 / M1: 监听停止 → 从聚合中移除"""
-        watch_status_controller.on_watch_stopped(self, workflow_id)
-
-    def _refresh_watch_indicator_theme(self, running: bool) -> None:
-        """R3-#6 / R4-#8: 指示器主题色（实现在 ui.watch_status_controller）。"""
-        watch_status_controller.refresh_watch_indicator_theme(self, running)
-
     def _refresh_bg_running_label_theme(self) -> None:
         """R7-#2 / R8-#2: 后台运行标签主题刷新（实现在 ui.run_lifecycle_controller）。"""
         run_lifecycle_controller.refresh_bg_running_label_theme(self)
@@ -417,11 +384,6 @@ class MainWindow(QMainWindow):
     @Slot(int)
     def _on_workflow_deleted(self, workflow_id: int):
         """工作流被删除"""
-        # M1: 精确停掉被删工作流的监听（不影响其它工作流）
-        try:
-            self.engine.stop_watch(workflow_id)
-        except Exception as e:
-            logger.warning("停止被删工作流监听失败: %s", e)
         if self._current_workflow_id == workflow_id:
             self._current_workflow_id = None
             self.workflow_config.clear()
@@ -807,8 +769,6 @@ class MainWindow(QMainWindow):
             self._refresh_workbench_header(wid)
             # R3-#9 / #15: 把较重的 history 异步刷新，避免一次性触发 DB 查询阻塞主线程
             QTimer.singleShot(0, lambda w=wid: self._async_load_history(w))
-            # #1: 配置变更后重启监听以应用新的 watch_enabled / 目录 / 模式
-            self._sync_engine_watch(workflow)
 
     @Slot(bool)
     def _on_run_requested(self, mode: str, param):

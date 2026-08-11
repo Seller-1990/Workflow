@@ -704,12 +704,6 @@ def apply_theme(window):
         window.action_dark_mode.blockSignals(True)
         window.action_dark_mode.setChecked(window._dark_mode)
         window.action_dark_mode.blockSignals(False)
-    # R3-#6: 主题切换同步刷新监听指示器对比度
-    try:
-        running = "监听中" in window._watch_indicator.text()
-        window._refresh_watch_indicator_theme(running=running)
-    except Exception:
-        pass
     try:
         window._shortcut_hint.setStyleSheet(
             f"color: {C['text_tertiary']}; padding-left: 8px;"
@@ -751,19 +745,6 @@ def setup_statusbar(window):
     window._refresh_bg_running_label_theme()
     window._bg_running_label.mousePressEvent = window._on_bg_running_label_clicked
     window.statusbar.addPermanentWidget(window._bg_running_label)
-    # R2-#4 / R3-#6 / R3-#7: 持久化的监听状态指示器
-    # - 用 ▶ / ⏸ 不同字符区分（不仅靠颜色）→ 色盲友好
-    # - 暗色主题下用 #AEAEB2 提升对比度（>4.5:1 AA）
-    window._watch_indicator = QLabel("⏸ 未监听")
-    # R4-#8: 显式用 Segoe UI Symbol 字体，避免 ⏸ U+23F8 在精简版 Windows 字体回退异常
-    try:
-        from PySide6.QtGui import QFont
-        window._watch_indicator.setFont(QFont("Segoe UI Symbol"))
-    except Exception:
-        pass
-    window._refresh_watch_indicator_theme(running=False)
-    window._watch_indicator.setToolTip("文件监听状态")
-    window.statusbar.addPermanentWidget(window._watch_indicator)
     window._shortcut_hint = QLabel("快捷键: Ctrl+S 保存 | F5 运行/停止 | Shift+F5 停止")
     window._shortcut_hint.setToolTip("常用快捷键")
     window.statusbar.addPermanentWidget(window._shortcut_hint)
@@ -802,9 +783,6 @@ def connect_signals(window):
     window.engine.log_output.connect(window.log_panel.append_log)
     window.engine.progress_updated.connect(window._on_progress_updated)
     window.engine.error_details.connect(window._on_error_details)
-    # R2-#4: 监听状态信号 → 持久指示器
-    window.engine.watch_started.connect(window._on_watch_started)
-    window.engine.watch_stopped.connect(window._on_watch_stopped)
 
     window.log_panel.stop_clicked.connect(window._stop_workflow)
 

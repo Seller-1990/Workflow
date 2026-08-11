@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""超时默认值回归测试（M9 默认超时 / L3 常量统一 / M5 Power BI 超时文案）"""
+"""超时默认值回归测试（M9 默认超时）"""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import config
 import constants
 import executors.python_executor as python_executor
 from executors.python_executor import PythonExecutor
@@ -37,20 +36,3 @@ def test_python_executor_applies_default_timeout_when_none(monkeypatch, tmp_path
 
 def test_python_step_timeout_constant_is_two_hours():
     assert constants.PYTHON_STEP_TIMEOUT == 7200
-
-
-def test_default_config_watch_values_come_from_constants():
-    """L3：DEFAULT_CONFIG 的监听冷却/稳定窗口必须与 constants 单一来源一致。"""
-    assert config.DEFAULT_CONFIG["cooldown_seconds"] == constants.WATCH_COOLDOWN_DEFAULT
-    assert config.DEFAULT_CONFIG["settle_seconds"] == constants.WATCH_SETTLE_DEFAULT
-
-
-def test_powerbi_timeout_message_explains_manual_completion_requirement():
-    """M5：Power BI 超时日志必须解释半自动本质（需人工刷新、保存并关闭），无需 COM 环境。"""
-    source = (
-        Path(__file__).resolve().parent.parent / "src" / "executors" / "powerbi_executor.py"
-    ).read_text(encoding="utf-8")
-
-    assert "Power BI Desktop 需要人工完成刷新、" in source
-    assert "保存并关闭后该步骤才能成功；" in source
-    assert "如无人值守请改用其它刷新方案" in source

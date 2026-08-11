@@ -7,8 +7,6 @@ import json
 import logging
 from pathlib import Path
 
-from constants import WATCH_COOLDOWN_DEFAULT, WATCH_SETTLE_DEFAULT
-
 logger = logging.getLogger(__name__)
 APP_DATA_DIR_ENV_VAR = "WORKFLOW_APP_DATA_DIR"
 
@@ -62,10 +60,8 @@ DATABASE_PATH = DATA_DIR / "workflows.db"
 APP_NAME = "工作流管理"
 APP_VERSION = "5.0.7"
 
-# 默认配置（L3：监听冷却/稳定窗口默认值统一来自 constants.py，避免双源漂移）
+# 默认配置
 DEFAULT_CONFIG = {
-    "cooldown_seconds": WATCH_COOLDOWN_DEFAULT,
-    "settle_seconds": WATCH_SETTLE_DEFAULT,
     "chart_theme": "default",
     "parallel": {
         "enabled": False,
@@ -116,11 +112,7 @@ class StepType:
     def choices(cls):
         choices = [(cls.PYTHON, "Python")]
         if sys.platform.startswith("win"):
-            choices.extend([
-                (cls.BAT, "批处理脚本"),
-                (cls.EXCEL_POWERQUERY, "Power Query"),
-                (cls.POWERBI_REFRESH, "Power BI"),
-            ])
+            choices.append((cls.BAT, "批处理脚本"))
         choices.append((cls.SUB_WORKFLOW, "子工作流"))
         return choices
     

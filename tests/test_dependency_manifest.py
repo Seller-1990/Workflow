@@ -26,10 +26,6 @@ def test_runtime_requirements_cover_all_direct_dependencies():
     assert names == {
         "pyside6",
         "sqlalchemy",
-        "pywin32",
-        "pywinauto",
-        "watchdog",
-        "psutil",
         "requests",
         "certifi",
         "qtawesome",
@@ -104,12 +100,8 @@ def test_runtime_dependency_import_smoke():
     modules = [
         "PySide6",
         "sqlalchemy",
-        "pywinauto",
-        "watchdog",
-        "psutil",
         "requests",
         "certifi",
-        "pythoncom",
     ]
 
     for module in modules:

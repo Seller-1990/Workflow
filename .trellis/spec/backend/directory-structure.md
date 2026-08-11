@@ -18,7 +18,7 @@ helpers where possible.
 src/
 ├── engine.py                  # WorkflowEngine facade and compatibility surface
 ├── engine_core/               # workflow lifecycle, scheduling, execution helpers
-├── executors/                 # step executors and executor result policy
+├── executors/                 # step executors (python/bat/sub_workflow) and executor result policy
 ├── database.py                # DB initialization, migrations, facade exports
 ├── database_*.py              # focused database domains
 ├── ui/                        # Qt widgets/controllers and pure UI state helpers

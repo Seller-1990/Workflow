@@ -3,7 +3,6 @@
 
 import json
 import logging
-from engine import WorkflowEngine
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -15,19 +14,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QGridLayout,
     QLabel,
-    QFileDialog,
-    QListWidget,
-    QListWidgetItem,
-    QToolButton,
     QSizePolicy,
 )
 from PySide6.QtCore import Signal, Qt
 
-from database import get_steps_by_workflow, get_workflow_by_id, update_workflow, list_webhooks
+from database import get_workflow_by_id, update_workflow, list_webhooks
 from notifier import get_template_variables_help
 from ui.collapsible_section import CollapsibleSection
 from ui.theme import get_colors, msg_warning, msg_critical
-from watch_rules import detect_watch_output_conflicts
 
 logger = logging.getLogger(__name__)
 
@@ -150,73 +144,6 @@ class WorkflowConfigPanel(QWidget):
         grid.addWidget(self._template_hint, row, 1, 1, 3)
         row += 1
 
-        grid.addWidget(_section_title("文件夹监听"), row, 0, 1, 4)
-        row += 1
-
-        self.check_watch = QCheckBox("启用")
-        self.check_watch.setToolTip("监听目录变化并自动触发当前工作流")
-        grid.addWidget(_form_label("监听"), row, 0)
-        grid.addWidget(self.check_watch, row, 1)
-
-        self.combo_watch_mode = QComboBox()
-        self.combo_watch_mode.setFixedHeight(30)
-        self.combo_watch_mode.addItem("任意变动触发", "any_change")
-        self.combo_watch_mode.addItem("全部目录更新后触发", "all_folders_updated_since_success")
-        self.combo_watch_mode.setToolTip("选择目录变化触发工作流的规则")
-        grid.addWidget(_form_label("模式"), row, 2)
-        grid.addWidget(self.combo_watch_mode, row, 3)
-        row += 1
-
-        # 监听目录（U-P2-6: QListWidget + 行内 ✕ + 存在性图标）
-        watch_layout = QHBoxLayout()
-        watch_layout.setContentsMargins(0, 0, 0, 0)
-        watch_layout.setSpacing(8)
-        self.list_watch_folders = QListWidget()
-        self.list_watch_folders.setMinimumHeight(72)
-        self.list_watch_folders.setMaximumHeight(112)
-        self.list_watch_folders.setToolTip("当前工作流监听的目录列表")
-        self.list_watch_folders.setSelectionMode(QListWidget.NoSelection)
-        self.list_watch_folders.setFocusPolicy(Qt.NoFocus)
-        self.list_watch_folders.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        watch_layout.addWidget(self.list_watch_folders)
-
-        watch_btn_layout = QVBoxLayout()
-        watch_btn_layout.setContentsMargins(0, 0, 0, 0)
-        watch_btn_layout.setSpacing(4)
-        self.btn_add_watch_folder = QPushButton("添加")
-        self.btn_add_watch_folder.setFixedSize(56, 30)
-        self.btn_add_watch_folder.setToolTip("添加一个监听目录")
-        self.btn_add_watch_folder.setAccessibleName("添加监听目录")
-        self.btn_add_watch_folder.clicked.connect(self._browse_watch_folder)
-        watch_btn_layout.addWidget(self.btn_add_watch_folder)
-        watch_btn_layout.addStretch()
-        watch_layout.addLayout(watch_btn_layout)
-
-        watch_widget = QWidget()
-        watch_widget.setLayout(watch_layout)
-        grid.addWidget(_form_label("目录"), row, 0)
-        grid.addWidget(watch_widget, row, 1, 1, 3)
-        row += 1
-
-        self.spin_cooldown = QSpinBox()
-        self.spin_cooldown.setFixedHeight(30)
-        self.spin_cooldown.setRange(1, 3600)
-        self.spin_cooldown.setValue(8)
-        self.spin_cooldown.setSuffix(" 秒")
-        self.spin_cooldown.setToolTip("两次扫描之间的间隔")
-        grid.addWidget(_form_label("扫描间隔"), row, 0)
-        grid.addWidget(self.spin_cooldown, row, 1)
-
-        self.spin_settle = QSpinBox()
-        self.spin_settle.setFixedHeight(30)
-        self.spin_settle.setRange(0, 3600)
-        self.spin_settle.setValue(15)
-        self.spin_settle.setSuffix(" 秒")
-        self.spin_settle.setToolTip("检测到变动后等待文件稳定的时间")
-        grid.addWidget(_form_label("延迟触发"), row, 2)
-        grid.addWidget(self.spin_settle, row, 3)
-        row += 1
-
         content_layout.addLayout(grid)
 
         btn_layout = QHBoxLayout()
@@ -258,7 +185,6 @@ class WorkflowConfigPanel(QWidget):
         self.group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self.btn_save.setEnabled(self._edit_enabled)
         self.btn_save.setToolTip("保存当前工作流配置" if self._edit_enabled else "保存配置（需要先开启编辑）")
-        self.btn_add_watch_folder.setToolTip("添加一个监听目录" if self._edit_enabled else "添加监听目录（需要先开启编辑）")
 
     def _load_webhook_list(self):
         """加载 Webhook 列表"""
@@ -338,13 +264,6 @@ class WorkflowConfigPanel(QWidget):
             # 保持步骤编排始终启用
             self.check_use_steps.setChecked(True)
 
-            self.check_watch.setChecked(bool(wf.watch_enabled))
-            mode_index = self.combo_watch_mode.findData(wf.watch_mode or "any_change")
-            if mode_index >= 0:
-                self.combo_watch_mode.setCurrentIndex(mode_index)
-            self._set_watch_folders(wf.get_watch_folders())
-            self.spin_cooldown.setValue(int(wf.cooldown_seconds or 8))
-            self.spin_settle.setValue(int(wf.settle_seconds or 15))
             self._apply_enabled_state()
         finally:
             self._suppress_dirty = False
@@ -366,11 +285,6 @@ class WorkflowConfigPanel(QWidget):
                 self.webhook_list.setCurrentIndex(-1)
             self.edit_template.clear()
             self.check_use_steps.setChecked(True)
-            self.check_watch.setChecked(False)
-            self.combo_watch_mode.setCurrentIndex(0)
-            self.list_watch_folders.clear()
-            self.spin_cooldown.setValue(8)
-            self.spin_settle.setValue(15)
             self._apply_enabled_state()
         finally:
             self._suppress_dirty = False
@@ -391,27 +305,6 @@ class WorkflowConfigPanel(QWidget):
             "message_template": self.edit_template.text().strip() or "{工作流名称} - {状态} - 编号={运行编号}"
         }
 
-        watch_folders = self._get_watch_folders()
-        if self.check_watch.isChecked():
-            try:
-                watch_folders = WorkflowEngine.validate_watch_folders(watch_folders)
-            except ValueError as e:
-                msg_warning(self, self._dark, "监听目录无效", str(e))
-                return False
-            conflicts = detect_watch_output_conflicts(
-                watch_folders,
-                get_steps_by_workflow(self._workflow_id),
-            )
-            if conflicts:
-                joined = "\n".join(conflicts)
-                msg_warning(
-                    self,
-                    self._dark,
-                    "监听目录高风险",
-                    f"以下监听目录与当前工作流输出目录重叠，保存已阻止：\n{joined}",
-                )
-                return False
-
         try:
             update_workflow(
                 self._workflow_id,
@@ -420,11 +313,6 @@ class WorkflowConfigPanel(QWidget):
                 parallel_enabled=self.check_parallel.isChecked(),
                 max_workers=self.spin_workers.value(),
                 notify_config=json.dumps(notify_config, ensure_ascii=False),
-                watch_enabled=self.check_watch.isChecked(),
-                watch_mode=self.combo_watch_mode.currentData(),
-                watch_folders=json.dumps(watch_folders, ensure_ascii=False) if watch_folders else None,
-                cooldown_seconds=self.spin_cooldown.value(),
-                settle_seconds=self.spin_settle.value(),
                 # 单脚本模式始终禁用
                 single_script_enabled=False
             )
@@ -443,83 +331,6 @@ class WorkflowConfigPanel(QWidget):
             logger.exception("保存工作流配置失败: workflow_id=%s", self._workflow_id)
             msg_critical(self, self._dark, "保存失败", str(e))
             return False
-
-    def _browse_watch_folder(self):
-        """浏览并添加监听文件夹"""
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "选择监听目录"
-        )
-
-        if dir_path:
-            # U-P2-6: 去重，避免同一路径多次添加
-            existing = set(self._get_watch_folders())
-            if dir_path not in existing:
-                self._add_watch_folder_item(dir_path)
-
-    # ── U-P2-6: 监听目录列表项辅助 ──
-    def _add_watch_folder_item(self, path: str) -> None:
-        """以行内 ✕ + 存在性图标的形式追加一行监听目录"""
-        import os
-        item = QListWidgetItem()
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(8, 4, 4, 4)
-        layout.setSpacing(8)
-
-        icon_label = QLabel("✓" if os.path.isdir(path) else "✕")
-        icon_label.setFixedWidth(16)
-        # V9.2：路径状态图标色从主题模板取（success/danger）
-        _colors = get_colors(self._dark)
-        icon_color = _colors["success"] if os.path.isdir(path) else _colors["danger"]
-        icon_label.setStyleSheet(f"color: {icon_color}; font-weight: 700;")
-        icon_label.setToolTip("目录存在" if os.path.isdir(path) else "目录不存在")
-        layout.addWidget(icon_label)
-
-        path_label = QLabel(path)
-        path_label.setToolTip(path)
-        path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        path_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        layout.addWidget(path_label, stretch=1)
-
-        btn_delete = QToolButton()
-        btn_delete.setText("✕")
-        btn_delete.setToolTip("删除该监听目录")
-        btn_delete.setFixedSize(24, 24)
-        btn_delete.setCursor(Qt.PointingHandCursor)
-        btn_delete.setAutoRaise(True)
-        btn_delete.clicked.connect(lambda _=False, p=path: self._remove_watch_folder(p))
-        layout.addWidget(btn_delete)
-
-        # 记录路径到 item.data，方便取/删
-        item.setData(Qt.UserRole, path)
-        item.setSizeHint(row.sizeHint())
-        self.list_watch_folders.addItem(item)
-        self.list_watch_folders.setItemWidget(item, row)
-        self._mark_dirty()
-
-    def _remove_watch_folder(self, path: str) -> None:
-        for i in range(self.list_watch_folders.count() - 1, -1, -1):
-            it = self.list_watch_folders.item(i)
-            if it and it.data(Qt.UserRole) == path:
-                self.list_watch_folders.takeItem(i)
-                self._mark_dirty()
-                break
-
-    def _get_watch_folders(self) -> list:
-        result = []
-        for i in range(self.list_watch_folders.count()):
-            it = self.list_watch_folders.item(i)
-            if it:
-                p = it.data(Qt.UserRole)
-                if isinstance(p, str) and p.strip():
-                    result.append(p.strip())
-        return result
-
-    def _set_watch_folders(self, folders) -> None:
-        self.list_watch_folders.clear()
-        for path in folders or []:
-            if path and isinstance(path, str):
-                self._add_watch_folder_item(path.strip())
 
     def is_dirty(self) -> bool:
         return bool(self._is_dirty and self._workflow_id is not None)
@@ -544,17 +355,17 @@ class WorkflowConfigPanel(QWidget):
                 widget.textChanged.connect(self._mark_dirty)
             except Exception:
                 pass
-        for widget in (self.check_parallel, self.check_notify, self.check_watch):
+        for widget in (self.check_parallel, self.check_notify):
             try:
                 widget.stateChanged.connect(self._mark_dirty)
             except Exception:
                 pass
-        for widget in (self.spin_workers, self.spin_cooldown, self.spin_settle):
+        for widget in (self.spin_workers,):
             try:
                 widget.valueChanged.connect(self._mark_dirty)
             except Exception:
                 pass
-        for widget in (self.combo_theme, self.webhook_list, self.combo_watch_mode):
+        for widget in (self.combo_theme, self.webhook_list):
             try:
                 widget.currentIndexChanged.connect(self._mark_dirty)
             except Exception:

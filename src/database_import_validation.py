@@ -12,8 +12,7 @@ from models import Workflow
 logger = logging.getLogger(__name__)
 
 EXPORT_SCHEMA_VERSION = 1
-_WATCH_MODES = {"any_change", "all_folders_updated_since_success"}
-_EXECUTABLE_TYPES = {"python", "bat", "excel_powerquery", "powerbi_refresh", "sub_workflow"}
+_EXECUTABLE_TYPES = {"python", "bat", "sub_workflow"}
 _IMPORTED_PATH_WARNING = "[导入提示] 此工作流包含绝对路径或上级目录引用，首次运行前请确认脚本和工作目录来源可信。"
 _IMPORTED_PATH_CONFIRMED = "[已确认] 用户已确认导入路径安全。"
 _NOTIFY_SCHEMA_FIELDS = {
@@ -164,16 +163,6 @@ def _expect_supported_executable_type_if_present(parent: dict, key: str, path: s
         raise _json_error(f"{path}.{key}", f"不支持的执行类型: {value!r}（支持: {supported}）")
 
 
-def _expect_watch_mode_if_present(parent: dict, key: str, path: str) -> None:
-    if key not in parent:
-        return
-    value = parent.get(key)
-    if not isinstance(value, str):
-        raise _json_error(f"{path}.{key}", "必须是字符串")
-    if value not in _WATCH_MODES:
-        raise _json_error(f"{path}.{key}", f"不支持的监听模式: {value!r}")
-
-
 def _validate_webhooks(webhooks: list) -> None:
     for index, webhook in enumerate(webhooks):
         webhook_path = f"$.webhooks[{index}]"
@@ -199,19 +188,10 @@ def _validate_workflows(workflows: list) -> None:
 
 def _validate_workflow_config(workflow: dict, wf_path: str) -> None:
     parallel = _expect_optional_mapping(workflow, "parallel", wf_path)
-    watch = _expect_optional_mapping(workflow, "watch", wf_path)
-    single_script = _expect_optional_mapping(workflow, "single_script", wf_path)
     _expect_bool_if_present(parallel, "enabled", f"{wf_path}.parallel")
     _expect_int_if_present(parallel, "max_workers", f"{wf_path}.parallel")
-    _expect_bool_if_present(watch, "enabled", f"{wf_path}.watch")
-    _expect_watch_mode_if_present(watch, "mode", f"{wf_path}.watch")
-    _expect_int_if_present(watch, "cooldown_seconds", f"{wf_path}.watch")
-    _expect_int_if_present(watch, "settle_seconds", f"{wf_path}.watch")
-    _expect_str_list_if_present(watch, "folders", f"{wf_path}.watch")
-    _expect_bool_if_present(single_script, "enabled", f"{wf_path}.single_script")
-    _expect_supported_executable_type_if_present(single_script, "type", f"{wf_path}.single_script")
-    _expect_str_if_present(single_script, "path", f"{wf_path}.single_script")
-    _expect_str_if_present(single_script, "cwd", f"{wf_path}.single_script")
+    # 退役字段(watch / single_script):旧 JSON 允许存在但明确忽略,
+    # 不做形状强校验、不重新导出、其路径不参与风险路径计算。
     if "notify" in workflow:
         _validate_notify_value(workflow.get("notify"), f"{wf_path}.notify")
 

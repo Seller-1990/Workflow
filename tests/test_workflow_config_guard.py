@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-"""工作流监听配置防呆测试"""
+"""工作流配置防呆测试"""
 
 from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -16,51 +15,6 @@ from PySide6.QtWidgets import QApplication
 
 import ui.workflow_config as workflow_config_module
 from ui.workflow_config import WorkflowConfigPanel
-from watch_rules import detect_watch_output_conflicts
-
-
-@dataclass
-class MockStep:
-    script_path: str | None = None
-
-    def get_args(self) -> list[str]:
-        return []
-
-
-def test_detect_watch_output_conflicts_flags_monthly_workflow_output_dirs():
-    conflicts = detect_watch_output_conflicts(
-        [
-            "D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/基础文件/收入成本表",
-            "D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/月度接收/1账务信息/2026",
-        ],
-        [
-            MockStep(
-                script_path=(
-                    "D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/计算脚本/"
-                    "01_月度数据处理/00_月度接收/00_月度接收__月度基础数据刷新.py"
-                )
-            )
-        ],
-    )
-
-    assert "D:\\OneDrive - PowerBI学谦\\Data Analysis\\经营分析\\基础文件\\收入成本表" in conflicts
-    assert all("月度接收" not in item for item in conflicts)
-
-
-def test_detect_watch_output_conflicts_allows_monthly_workflow_input_dir():
-    conflicts = detect_watch_output_conflicts(
-        ["D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/月度接收/1账务信息/2026"],
-        [
-            MockStep(
-                script_path=(
-                    "D:/OneDrive - PowerBI学谦/Data Analysis/经营分析/计算脚本/"
-                    "01_月度数据处理/00_月度接收/00_月度接收__月度基础数据刷新.py"
-                )
-            )
-        ],
-    )
-
-    assert conflicts == []
 
 
 def test_workflow_config_dirty_state_tracks_user_edits_and_save(monkeypatch):
@@ -74,12 +28,7 @@ def test_workflow_config_dirty_state_tracks_user_edits_and_save(monkeypatch):
             "chart_theme": "default",
             "parallel_enabled": True,
             "max_workers": 3,
-            "watch_enabled": False,
-            "watch_mode": "any_change",
-            "cooldown_seconds": 8,
-            "settle_seconds": 15,
             "get_notify_config": lambda self: {"enabled": False, "webhook_id": None, "message_template": "tpl"},
-            "get_watch_folders": lambda self: [],
         },
     )()
     monkeypatch.setattr(workflow_config_module, "get_workflow_by_id", lambda workflow_id: workflow)
