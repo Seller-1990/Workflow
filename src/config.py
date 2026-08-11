@@ -58,7 +58,7 @@ DATABASE_PATH = DATA_DIR / "workflows.db"
 
 # 应用信息
 APP_NAME = "工作流管理"
-APP_VERSION = "5.0.7"
+APP_VERSION = "6.0.0"
 
 # 默认配置
 DEFAULT_CONFIG = {

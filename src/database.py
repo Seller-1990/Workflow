@@ -207,6 +207,7 @@ SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
     (8, "_migrate_v8_run_history_step_log_perf_indexes"),
     (9, "_migrate_v9_step_saved_run_args"),
     (10, "_migrate_v10_risky_paths_review"),
+    (11, "_migrate_v11_clamp_workflow_max_workers"),
 ]
 
 
@@ -347,6 +348,39 @@ def _migrate_v10_risky_paths_review(engine):
             "WHERE description IS NOT NULL "
             "AND instr(description, :marker) > 0"
         ), {"marker": _LEGACY_IMPORTED_PATH_WARNING})
+
+
+def _migrate_v11_clamp_workflow_max_workers(engine):
+    """v11 (R5): 旧库 max_workers 越界值(<1 或 >8)归一到边界并记录数量(幂等)。
+
+    资源保护而非死锁证明:执行期另有夹紧兜底;此处只在升级时归一历史数据。
+    max_workers 列由 ORM create_all 建表提供,手工构造的旧表可能没有该列,
+    探测缺失时跳过(该列不存在即无需归一)。
+    """
+    from constants import WORKFLOW_MAX_WORKERS_MIN, WORKFLOW_MAX_WORKERS_MAX
+    with engine.begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(workflows)")).fetchall()}
+        if "max_workers" not in columns:
+            return
+        low = conn.execute(text(
+            "SELECT COUNT(*) FROM workflows WHERE max_workers < :min"
+        ), {"min": WORKFLOW_MAX_WORKERS_MIN}).scalar()
+        high = conn.execute(text(
+            "SELECT COUNT(*) FROM workflows WHERE max_workers > :max"
+        ), {"max": WORKFLOW_MAX_WORKERS_MAX}).scalar()
+        if low:
+            conn.execute(text(
+                "UPDATE workflows SET max_workers=:min WHERE max_workers < :min"
+            ), {"min": WORKFLOW_MAX_WORKERS_MIN})
+        if high:
+            conn.execute(text(
+                "UPDATE workflows SET max_workers=:max WHERE max_workers > :max"
+            ), {"max": WORKFLOW_MAX_WORKERS_MAX})
+        if low or high:
+            logger.warning(
+                "v11 迁移: 归一化 max_workers 越界值 %d 个(<1) / %d 个(>8)",
+                low, high,
+            )
 
 
 def _migrate_v2_version_table_and_step_uid_unique(engine):

@@ -326,6 +326,53 @@ def test_migrate_v10_idempotent(monkeypatch, tmp_path):
     assert {"risky_paths_review_required", "risky_paths_revision", "risky_paths_confirmed_digest"} <= columns
 
 
+# ============== 迁移 v11 ==============
+
+def test_migrate_v11_clamps_max_workers_idempotent(monkeypatch, tmp_path):
+    """v11: 越界 max_workers(<1/>8)归一到边界,幂等,正常值不动。"""
+    db = _use_temp_database(monkeypatch, tmp_path)
+    from sqlalchemy import text
+
+    with db.get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO workflows (uid, name, description, chart_theme, "
+            "parallel_enabled, max_workers, watch_enabled, watch_mode, "
+            "cooldown_seconds, settle_seconds, log_retention_days, "
+            "single_script_enabled, single_script_type, created_at, updated_at, "
+            "risky_paths_review_required, risky_paths_revision, risky_paths_confirmed_digest) "
+            "VALUES ('mw_low', '过低', NULL, 'default', 1, 0, 0, 'any_change', "
+            "8, 15, 30, 0, 'python', datetime('now'), datetime('now'), 0, 0, NULL), "
+            "('mw_high', '过高', NULL, 'default', 1, 99, 0, 'any_change', "
+            "8, 15, 30, 0, 'python', datetime('now'), datetime('now'), 0, 0, NULL), "
+            "('mw_ok', '正常', NULL, 'default', 1, 4, 0, 'any_change', "
+            "8, 15, 30, 0, 'python', datetime('now'), datetime('now'), 0, 0, NULL)"
+        ))
+
+    db._migrate_v11_clamp_workflow_max_workers(db.get_engine())
+    db._migrate_v11_clamp_workflow_max_workers(db.get_engine())  # 幂等
+
+    with db.get_engine().connect() as conn:
+        rows = conn.execute(text(
+            "SELECT uid, max_workers FROM workflows WHERE uid LIKE 'mw_%' ORDER BY uid"
+        )).fetchall()
+    assert rows == [("mw_high", 8), ("mw_low", 1), ("mw_ok", 4)]
+
+
+def test_migrate_v11_registered_and_skips_when_column_missing(monkeypatch, tmp_path):
+    assert (11, "_migrate_v11_clamp_workflow_max_workers") in database.SCHEMA_MIGRATIONS
+    db = _use_temp_database(monkeypatch, tmp_path)
+    from sqlalchemy import text
+
+    # 手工构造无 max_workers 列的表(v11 应跳过不报错)
+    with db.get_engine().begin() as conn:
+        conn.execute(text("DROP TABLE workflows"))
+        conn.execute(text(
+            "CREATE TABLE workflows (id INTEGER PRIMARY KEY, uid VARCHAR(64) NOT NULL UNIQUE, "
+            "name VARCHAR(255) NOT NULL)"
+        ))
+    db._migrate_v11_clamp_workflow_max_workers(db.get_engine())  # 不抛异常
+
+
 # ============== 状态机 ==============
 
 def _import_risky_workflow(db, tmp_path, *, uid="wf_risky", name="风险路径工作流", script="../outside.py"):
