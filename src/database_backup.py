@@ -22,7 +22,7 @@ def auto_backup_workflows_impl(
 ) -> Path:
     """执行自动备份并清理过期备份。"""
     current_time = now or datetime.now()
-    resolved_dir = Path(backup_dir) if backup_dir is not None else Path(default_backup_dir)
+    resolved_dir = backup_dir if backup_dir is not None else default_backup_dir
     resolved_dir.mkdir(parents=True, exist_ok=True)
 
     backup_path = build_backup_path(resolved_dir, current_time)
@@ -45,7 +45,7 @@ def cleanup_expired_backups(
     """清理过期备份，返回已删除文件列表。"""
     cutoff = (now or datetime.now()) - timedelta(days=retention_days)
     removed: list[Path] = []
-    for backup_file in sorted(Path(backup_dir).glob(f"{BACKUP_FILE_PREFIX}*.json")):
+    for backup_file in sorted(backup_dir.glob(f"{BACKUP_FILE_PREFIX}*.json")):
         try:
             timestamp = parse_backup_timestamp(backup_file)
             if timestamp < cutoff:
@@ -57,5 +57,5 @@ def cleanup_expired_backups(
 
 
 def parse_backup_timestamp(backup_file: Path) -> datetime:
-    timestamp_text = Path(backup_file).stem.replace(BACKUP_FILE_PREFIX, "")
+    timestamp_text = backup_file.stem.replace(BACKUP_FILE_PREFIX, "")
     return datetime.strptime(timestamp_text, BACKUP_TIMESTAMP_FORMAT)

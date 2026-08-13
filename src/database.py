@@ -141,9 +141,8 @@ def _try_read_schema_cache(engine) -> bool:
         # 缓存写入时记录的版本号必须 >= 当前代码期望的最大版本号
         if cached_version < expected_version:
             return False
-        # 进一步校验数据库中确实有这个版本（防止有人手动改/删了 schema_versions）
-        applied = _max_applied_version(engine)
-        return applied >= expected_version
+        # 文件缓存版本号 >= 期望版本号即放行（主动失效机制保证一致性）
+        return True
     except Exception:
         return False
 

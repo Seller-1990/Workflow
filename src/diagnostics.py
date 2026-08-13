@@ -32,24 +32,6 @@ class ErrorDiagnostician:
             "执行超时",
             "脚本执行时间超过设定超时限制，可在步骤设置中增大超时时间，或优化脚本性能"
         ),
-        # COM/Excel 问题
-        (
-            ["pywintypes.com_error", "COMError", "OLE error", "pythoncom"],
-            "COM 调用失败",
-            "Excel/PowerBI COM 接口调用失败，请确认 Office 已正确安装，且没有其他 Excel 实例占用文件"
-        ),
-        # Excel 特定
-        (
-            ["RefreshAll", "刷新超时", "数据连接"],
-            "数据刷新失败",
-            "Excel 数据连接刷新失败，请检查网络连接和数据源可用性"
-        ),
-        # PowerBI 特定
-        (
-            ["Power BI", "PBIX"],
-            "PowerBI 操作失败",
-            "请确认 Power BI Desktop 已安装，且文件路径正确。如正在刷新，请等待刷新完成后再试"
-        ),
         # 编码问题
         (
             ["UnicodeDecodeError", "编码", "encoding", "codec"],
@@ -132,8 +114,6 @@ class ErrorDiagnostician:
         # 根据步骤类型给出通用建议
         type_hints = {
             "python": "请检查 Python 脚本语法和逻辑是否正确",
-            "excel_powerquery": "请确认 Excel 文件可正常打开且数据连接配置正确",
-            "powerbi_refresh": "请确认 Power BI 文件可正常打开",
             "sub_workflow": "请检查子工作流配置是否正确",
         }
         hint = type_hints.get(step_type, "请查看步骤日志获取详细错误信息")

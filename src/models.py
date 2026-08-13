@@ -37,11 +37,6 @@ class Workflow(Base):
     chart_theme: Mapped[str] = mapped_column(String(64), default="default")
     parallel_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     max_workers: Mapped[int] = mapped_column(Integer, default=2)
-    watch_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    watch_mode: Mapped[str] = mapped_column(String(64), default="any_change")
-    watch_folders: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    cooldown_seconds: Mapped[int] = mapped_column(Integer, default=8)
-    settle_seconds: Mapped[int] = mapped_column(Integer, default=15)
     log_retention_days: Mapped[int] = mapped_column(Integer, default=30)  # 日志保留天数
 
     # R1: 导入风险路径确认机制（仅「从外部 JSON 导入且含风险路径」的工作流参与；
@@ -50,13 +45,6 @@ class Workflow(Base):
     risky_paths_revision: Mapped[int] = mapped_column(Integer, default=0)
     risky_paths_confirmed_digest: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # 单脚本模式
-    single_script_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    single_script_type: Mapped[str] = mapped_column(String(32), default="python")
-    single_script_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    single_script_args: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    single_script_cwd: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    
     # 通知配置（JSON）
     notify_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
@@ -102,27 +90,6 @@ class Workflow(Base):
         """设置通知配置"""
         self.notify_config = json.dumps(config, ensure_ascii=False)
 
-    def get_watch_folders(self) -> list:
-        """获取监听目录列表"""
-        if self.watch_folders:
-            try:
-                return json.loads(self.watch_folders)
-            except json.JSONDecodeError as e:
-                logger.warning("监听目录 JSON 解析失败: %s", e)
-        return []
-
-    def set_watch_folders(self, folders: list):
-        """设置监听目录列表"""
-        self.watch_folders = json.dumps(folders, ensure_ascii=False)
-
-    def get_single_args(self) -> list:
-        """获取单脚本参数列表"""
-        if self.single_script_args:
-            try:
-                return json.loads(self.single_script_args)
-            except json.JSONDecodeError as e:
-                logger.warning("单脚本参数 JSON 解析失败: %s", e)
-        return []
 
 
 class WorkflowVersion(Base):

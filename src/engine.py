@@ -370,14 +370,6 @@ class WorkflowEngine(QObject):
         except Exception:
             logger.warning("关闭 run 步骤池失败", exc_info=True)
 
-    def __del__(self):
-        """析构函数，确保资源释放"""
-        try:
-            if hasattr(self, '_executor') and self._executor:
-                self._executor.shutdown(wait=False)
-        except Exception:
-            pass
-
     # ============== 四种运行模式 ==============
     
     def run_all(self, workflow_id: int, reason: str = "manual", run_arg_overrides=None) -> bool:

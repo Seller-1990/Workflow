@@ -268,28 +268,25 @@ def compute_digest(revision: object, records: Iterable[RiskRecord]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _as_int(value, default: int = 0) -> int:
-    """宽容转 int（None / 非数字 → default），快照构建不因脏数据抛错。"""
-    try:
-        return int(value) if value is not None else default
-    except (TypeError, ValueError):
-        return default
 
 
 def _build_step_snapshot(step) -> StepSnapshot:
-    """由 ORM Step（或同构对象）物化不可变 StepSnapshot（构建 lenient）。"""
+    """由 ORM Step（或同构对象）物化不可变 StepSnapshot（构建 lenient）。
+
+    使用 getattr 兼容测试中的 SimpleNamespace 替身。
+    """
     return StepSnapshot(
-        id=_as_int(getattr(step, "id", 0)),
-        workflow_id=_as_int(getattr(step, "workflow_id", 0)),
+        id=getattr(step, "id", 0) or 0,
+        workflow_id=getattr(step, "workflow_id", 0) or 0,
         uid=str(getattr(step, "uid", "") or ""),
-        order=_as_int(getattr(step, "order", 0)),
+        order=getattr(step, "order", 0) or 0,
         name=str(getattr(step, "name", "") or ""),
         stage_uid=getattr(step, "stage_uid", None),
         step_type=str(getattr(step, "step_type", "python") or "python"),
         script_path=getattr(step, "script_path", None),
         cwd=getattr(step, "cwd", None),
         timeout_seconds=getattr(step, "timeout_seconds", None),
-        retry_count=_as_int(getattr(step, "retry_count", 0)),
+        retry_count=getattr(step, "retry_count", 0) or 0,
         chart_theme=getattr(step, "chart_theme", None),
         is_gate=bool(getattr(step, "is_gate", False)),
         skip_on_success=bool(getattr(step, "skip_on_success", False)),
@@ -304,11 +301,11 @@ def _build_workflow_view(workflow) -> Optional[WorkflowView]:
     if workflow is None:
         return None
     return WorkflowView(
-        id=_as_int(getattr(workflow, "id", 0)),
+        id=getattr(workflow, "id", 0) or 0,
         uid=str(getattr(workflow, "uid", "") or ""),
         name=str(getattr(workflow, "name", "") or ""),
         parallel_enabled=bool(getattr(workflow, "parallel_enabled", False)),
-        max_workers=_as_int(getattr(workflow, "max_workers", 0)),
+        max_workers=getattr(workflow, "max_workers", 0) or 0,
         chart_theme=str(getattr(workflow, "chart_theme", "") or ""),
     )
 

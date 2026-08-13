@@ -3,7 +3,6 @@
 
 import os
 import sys
-import json
 import logging
 from pathlib import Path
 
@@ -60,51 +59,9 @@ DATABASE_PATH = DATA_DIR / "workflows.db"
 APP_NAME = "工作流管理"
 APP_VERSION = "6.0.0"
 
-# 默认配置
-DEFAULT_CONFIG = {
-    "chart_theme": "default",
-    "parallel": {
-        "enabled": False,
-        "max_workers": 2
-    },
-    "notify": {
-        "enabled": False,
-        "message_template": "{工作流名称} | {状态} | 编号={运行编号}"
-    }
-}
-
-# 配置文件路径
-CONFIG_PATH = APP_DATA_DIR / "config.json"
-
-
-def load_user_config() -> dict:
-    """加载用户配置"""
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning("加载用户配置失败，已使用默认配置: path=%s, error=%s", CONFIG_PATH, e)
-    return {}
-
-
-def save_user_config(config: dict):
-    """保存用户配置"""
-    # 原子写入：先写临时文件再替换，避免写入中途崩溃损坏 config.json
-    tmp_path = CONFIG_PATH.with_suffix(".json.tmp")
-    with open(tmp_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, CONFIG_PATH)
-
-
-# 合并默认配置和用户配置
-USER_CONFIG = {**DEFAULT_CONFIG, **load_user_config()}
-
 # 步骤类型
 class StepType:
     PYTHON = "python"
-    EXCEL_POWERQUERY = "excel_powerquery"
-    POWERBI_REFRESH = "powerbi_refresh"
     SUB_WORKFLOW = "sub_workflow"
     BAT = "bat"
 

@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """钉钉消息通知模块"""
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 try:
     import requests
 except ImportError:
@@ -230,6 +234,7 @@ def send_dingtalk_message(
     except Exception as e:
         if _is_ca_bundle_error(e):
             return False, _format_ca_bundle_error(e)
+        logger.exception("钉钉通知发送异常（非网络错误）: %s", type(e).__name__)
         return False, f"未知错误: {_redact_access_tokens(e)}"
 
 

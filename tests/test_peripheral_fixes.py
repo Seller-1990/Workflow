@@ -15,16 +15,6 @@ import executors.python_executor as python_executor
 from executors.python_executor import PythonExecutor
 
 
-def test_save_user_config_atomic(monkeypatch, tmp_path: Path):
-    config_path = tmp_path / "config.json"
-    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
-
-    config.save_user_config({"a": 1})
-
-    assert json.loads(config_path.read_text(encoding="utf-8")) == {"a": 1}
-    assert not list(tmp_path.glob("*.tmp"))
-
-
 def test_python_executor_missing_interpreter(monkeypatch, tmp_path: Path):
     script = tmp_path / "job.py"
     script.write_text("print('ok')\n", encoding="utf-8")

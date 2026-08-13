@@ -256,11 +256,10 @@ def _insert_legacy_workflow(db, uid: str, name: str, description: str) -> None:
         conn.execute(
             text(
                 "INSERT INTO workflows (uid, name, description, chart_theme, "
-                "parallel_enabled, max_workers, watch_enabled, watch_mode, "
-                "cooldown_seconds, settle_seconds, log_retention_days, "
-                "single_script_enabled, single_script_type, created_at, updated_at) "
-                "VALUES (:uid, :name, :description, 'default', 0, 2, 0, 'any_change', "
-                "8, 15, 30, 0, 'python', datetime('now'), datetime('now'))"
+                "parallel_enabled, max_workers, log_retention_days, "
+                "created_at, updated_at) "
+                "VALUES (:uid, :name, :description, 'default', 0, 2, "
+                "30, datetime('now'), datetime('now'))"
             ),
             {"uid": uid, "name": name, "description": description},
         )
@@ -336,16 +335,15 @@ def test_migrate_v11_clamps_max_workers_idempotent(monkeypatch, tmp_path):
     with db.get_engine().begin() as conn:
         conn.execute(text(
             "INSERT INTO workflows (uid, name, description, chart_theme, "
-            "parallel_enabled, max_workers, watch_enabled, watch_mode, "
-            "cooldown_seconds, settle_seconds, log_retention_days, "
-            "single_script_enabled, single_script_type, created_at, updated_at, "
+            "parallel_enabled, max_workers, log_retention_days, "
+            "created_at, updated_at, "
             "risky_paths_review_required, risky_paths_revision, risky_paths_confirmed_digest) "
-            "VALUES ('mw_low', '过低', NULL, 'default', 1, 0, 0, 'any_change', "
-            "8, 15, 30, 0, 'python', datetime('now'), datetime('now'), 0, 0, NULL), "
-            "('mw_high', '过高', NULL, 'default', 1, 99, 0, 'any_change', "
-            "8, 15, 30, 0, 'python', datetime('now'), datetime('now'), 0, 0, NULL), "
-            "('mw_ok', '正常', NULL, 'default', 1, 4, 0, 'any_change', "
-            "8, 15, 30, 0, 'python', datetime('now'), datetime('now'), 0, 0, NULL)"
+            "VALUES ('mw_low', '过低', NULL, 'default', 1, 0, "
+            "30, datetime('now'), datetime('now'), 0, 0, NULL), "
+            "('mw_high', '过高', NULL, 'default', 1, 99, "
+            "30, datetime('now'), datetime('now'), 0, 0, NULL), "
+            "('mw_ok', '正常', NULL, 'default', 1, 4, "
+            "30, datetime('now'), datetime('now'), 0, 0, NULL)"
         ))
 
     db._migrate_v11_clamp_workflow_max_workers(db.get_engine())

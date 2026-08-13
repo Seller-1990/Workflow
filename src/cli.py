@@ -37,7 +37,6 @@ if str(src_dir) not in sys.path:
 # MA6（部分）：仅在真正实例化 WorkflowEngine 的命令路径里调用 _ensure_qapp。
 # list / history / steps / stages / export / import / backup / clone / delete 这些
 # 纯查询命令不再启动 QApplication，冷启动从 ~700ms 降到 ~150ms。
-from PySide6.QtWidgets import QApplication
 from duration_utils import format_duration_short
 from cli_formatting import format_step_finished_line
 from cli_notifications import send_cli_notification
@@ -49,6 +48,7 @@ _app = None
 def _ensure_qapp():
     global _app
     if _app is None:
+        from PySide6.QtWidgets import QApplication
         _app = QApplication.instance() or QApplication(sys.argv)
 
 
@@ -62,7 +62,12 @@ from database import (
     get_run_histories_by_workflow, get_step_logs_by_run,
     get_steps_by_workflow, auto_backup_workflows,
 )
-from engine import WorkflowEngine, RunStatus, RunMode, RunSignalPolicy
+
+
+def _import_engine():
+    """延迟导入 engine 模块（避免纯查询命令加载 PySide6/SQLAlchemy 全栈）。"""
+    from engine import WorkflowEngine, RunStatus, RunMode, RunSignalPolicy
+    return WorkflowEngine, RunStatus, RunMode, RunSignalPolicy
 
 
 # 打包后 main.py 通过判断 argv[1] 是否在此集合中决定是否转发到 CLI 子命令处理器
@@ -271,6 +276,7 @@ class CLIEngine:
     def __init__(self):
         _ensure_qapp()
         init_db()
+        WorkflowEngine, _, _, _ = _import_engine()
         self.engine = WorkflowEngine()
         self._cancelled = False
         self._last_run_id = None
@@ -357,6 +363,7 @@ class CLIEngine:
 
         try:
             # MA4: 使用公开 run() 入口，禁用引擎自动发送通知（由 CLI 控制）
+            _, _, RunMode, RunSignalPolicy = _import_engine()
             policy = RunSignalPolicy(send_notification=False)
             if mode == "full":
                 result = self.engine.run(workflow_id, RunMode.FULL, reason="cli", signal_policy=policy)
@@ -577,6 +584,7 @@ def cmd_history(args):
 
     print(f"\n{'Run ID':<22} {'状态':<10} {'触发原因':<10} {'开始时间':<20} {'耗时'}")
     print("-" * 80)
+    _, RunStatus, _, _ = _import_engine()
     for h in histories:
         status_map = {
             RunStatus.RUNNING.value: "运行中",

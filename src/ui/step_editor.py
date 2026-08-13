@@ -325,10 +325,6 @@ class StepEditorPanel(QWidget):
         detected = None
         if path.endswith(".py"):
             detected = "python"
-        elif path.endswith((".xlsx", ".xlsm", ".xlsb", ".xls")):
-            detected = "excel_powerquery"
-        elif path.endswith(".pbix"):
-            detected = "powerbi_refresh"
 
         if not detected or detected == current:
             return
