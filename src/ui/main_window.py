@@ -63,6 +63,8 @@ class MainWindow(QMainWindow):
         self._apply_theme()
 
         self._set_edit_mode(False)
+        # V9.3：_set_edit_mode 对初值短路，这里显式初始化保存按钮置灰（与切换编辑开关后的表现一致）
+        self.btn_save.setEnabled(False)
 
         # 任务2：首次启动弹一次性引导气泡，指向 command bar 的编辑开关
         if not settings.value("edit_mode_guide_shown", False, type=bool):

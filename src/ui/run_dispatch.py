@@ -83,23 +83,24 @@ def on_run_requested(window, mode: str, param):
             f"#{running_id}" if running_id is not None else "(未知)"
         )
         from PySide6.QtWidgets import QMessageBox
-        box = QMessageBox(window)
-        box.setIcon(QMessageBox.Warning)
-        box.setWindowTitle("已有运行中")
-        box.setText(
-            f"工作流「{running_name}」正在运行中。\n请选择一项操作："
+
+        # V9.3：改走 msg_custom_buttons——原手工 QMessageBox 无主题样式，暗色下是裸系统样式
+        from ui.theme import msg_custom_buttons
+
+        choice = msg_custom_buttons(
+            window, getattr(window, "_dark_mode", False), "已有运行中",
+            f"工作流「{running_name}」正在运行中。\n请选择一项操作：",
+            [
+                ("停止当前并运行新的", QMessageBox.DestructiveRole),
+                ("切回当前运行", QMessageBox.AcceptRole),
+                ("取消", QMessageBox.RejectRole),
+            ],
+            icon="warning",
+            default=2,
         )
-        stop_run_new_btn = box.addButton(
-            "停止当前并运行新的", QMessageBox.DestructiveRole
-        )
-        goto_running_btn = box.addButton("切回当前运行", QMessageBox.AcceptRole)
-        cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
-        box.setDefaultButton(cancel_btn)
-        box.exec_()
-        clicked = box.clickedButton()
-        if clicked is cancel_btn:
+        if choice != 0 and choice != 1:
             return
-        if clicked is goto_running_btn:
+        if choice == 1:
             # 复用切回逻辑
             window._on_bg_running_label_clicked(None)
             return

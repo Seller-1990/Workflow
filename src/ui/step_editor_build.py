@@ -359,7 +359,7 @@ def setup_ui(panel):
     panel.btn_delete.setFixedSize(84, 30)
     panel.btn_delete.setAccessibleName("删除当前步骤")
     panel.btn_delete.setToolTip("删除当前步骤")
-    panel.btn_delete.setStyleSheet(get_danger_button_stylesheet(False, radius=10, padding="0px 14px"))
+    panel.btn_delete.setStyleSheet(get_danger_button_stylesheet(getattr(panel, "_dark", False), radius=10, padding="0px 14px"))
     panel.btn_delete.clicked.connect(panel._request_delete_step)
     save_row_layout.addWidget(panel.btn_delete)
     panel.btn_save = QPushButton("保存")

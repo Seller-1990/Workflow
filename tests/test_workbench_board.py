@@ -113,6 +113,26 @@ def test_stage_progress_tracks_step_statuses(monkeypatch):
         assert app is not None
 
 
+def test_theme_refresh_recolors_step_card_type_icons(monkeypatch):
+    """V9.3 回归：卡片类型图标颜色在创建时烘焙，refresh_theme 必须重设 pixmap。"""
+    app = QApplication.instance() or QApplication([])
+    panel = _panel_with_dummy_workflow(monkeypatch)
+    try:
+        card = panel._cards[1]
+        assert not card.type_icon_label.pixmap().isNull()
+        before = card.type_icon_label.pixmap().toImage()
+
+        panel.refresh_theme(dark=True)
+
+        after = card.type_icon_label.pixmap().toImage()
+        assert not after.isNull()
+        # 亮暗 token 色不同（python：#4338CA vs #A5ACED），重设后位图必须变化
+        assert after != before
+    finally:
+        panel.deleteLater()
+        assert app is not None
+
+
 def test_repeated_highlight_does_not_resync_board(monkeypatch):
     app = QApplication.instance() or QApplication([])
     panel = _panel_with_dummy_workflow(monkeypatch)

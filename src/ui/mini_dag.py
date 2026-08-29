@@ -129,9 +129,10 @@ class MiniDagWidget(QWidget):
         it = QListWidgetItem(text)
         if step_id:
             it.setData(Qt.UserRole, step_id)
-        # 类型色条用 background 区分
+        # 类型色条用 background 区分；type_key 存入 UserRole+1 供 refresh_theme 重涂
         tokens = get_type_tokens(self._dark)
         type_key = step_type if step_type in tokens else "python"
+        it.setData(Qt.UserRole + 1, type_key)
         bg = tokens.get(type_key, {}).get("bg", get_colors(self._dark)["default_type_bg"])
         it.setBackground(_qcolor_from_hex(bg))
         return it
@@ -171,6 +172,17 @@ class MiniDagWidget(QWidget):
             }}
             """
         )
+        # V9.3：节点背景色在 _make_item 时烘焙，仅刷 QSS 无法更新，按新主题 token 重涂
+        tokens = get_type_tokens(dark)
+        default_bg = colors["default_type_bg"]
+        for list_widget in self.findChildren(QListWidget):
+            for row in range(list_widget.count()):
+                it = list_widget.item(row)
+                type_key = it.data(Qt.UserRole + 1)
+                if type_key is None:
+                    continue
+                bg = tokens.get(type_key, {}).get("bg", default_bg)
+                it.setBackground(_qcolor_from_hex(bg))
 
 
 def _qcolor_from_hex(hex_str: str):

@@ -42,7 +42,7 @@ a = Analysis(
     pathex=[str(src_path)],
     binaries=[],
     datas=[
-        ("图标.png", "."),
+        ("图标.ico", "."),
     ] + collect_data_files("certifi"),
     hiddenimports=[
         "PySide6.QtCore",
@@ -58,7 +58,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["tools/qtawesome_fa5_runtime_hook.py"],
     excludes=[
         "PyQt5",
         "PyQt6",

@@ -126,6 +126,14 @@ def refresh_theme(panel, dark: bool):
     panel.stage_context_label.setStyleSheet(f"color:{colors['text_secondary']}; font-size:11px;")
     panel.hint_label.setStyleSheet(f"color:{colors['text_tertiary']}; font-size:11px;")
     panel._update_stage_context_ui()
+    # V9.3：行内 QColor（类型格前景/背景、删除按钮 palette、阶段头）在行创建时烘焙，
+    # 仅刷 QSS 无法更新，需重建行；选中步骤在重建后静默恢复。
+    # 运行中的实时状态高亮由 main_window_setup.apply_theme 在全部面板刷新后统一回放。
+    if panel._workflow_id:
+        prev_step_id = panel._selected_step_id
+        panel.load_steps(panel._workflow_id)
+        if prev_step_id is not None:
+            panel.select_step(prev_step_id, emit_signal=False)
 
 
 def default_column_widths(panel) -> list[int]:

@@ -587,44 +587,14 @@ def test_step_table_dependency_error_locator_reports_select_failure(monkeypatch)
     panel._workflow_id = 7
     statuses = []
 
-    class DummyMessageBox:
-        Warning = QMessageBox.Warning
-        AcceptRole = QMessageBox.AcceptRole
-        Ok = QMessageBox.Ok
-
-        def __init__(self, parent):
-            self._clicked = None
-
-        def setWindowTitle(self, title):
-            pass
-
-        def setText(self, text):
-            pass
-
-        def setIcon(self, icon):
-            pass
-
-        def addButton(self, *args):
-            button = object()
-            if args and args[0] == "定位问题步骤":
-                self._clicked = button
-            return button
-
-        def setStyleSheet(self, style):
-            pass
-
-        def exec(self):
-            pass
-
-        def clickedButton(self):
-            return self._clicked
+    # V9.3：对话框创建移入 ui.theme.msg_custom_buttons——桩掉助手，返回 0 = 点击「定位问题步骤」
+    monkeypatch.setattr("ui.theme.msg_custom_buttons", lambda *args, **kwargs: 0)
 
     from exceptions import DependencyError
 
     monkeypatch.setattr(panel, "_find_step_id_referenced_by_dependency_error", lambda error: 42)
     monkeypatch.setattr(panel, "select_step", lambda step_id: (_ for _ in ()).throw(RuntimeError("row missing")))
     monkeypatch.setattr(panel, "_notify_status", statuses.append)
-    monkeypatch.setattr("ui.step_table.panel.QMessageBox", DummyMessageBox)
 
     panel._show_dependency_mutation_error("操作无效", DependencyError("bad dependency"), "请先调整依赖")
 

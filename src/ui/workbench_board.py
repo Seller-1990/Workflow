@@ -82,11 +82,13 @@ class StepCard(QFrame):
         top.addWidget(order)
 
         # V9：步骤类型图标 + 文字徽章
+        # V9.3：图标颜色在创建时烘焙，保存引用供 refresh_theme 按当前主题重设
         from ui.icons import type_icon
-        type_icon_label = QLabel()
-        type_icon_label.setPixmap(type_icon(step.step_type).pixmap(14, 14))
-        type_icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        top.addWidget(type_icon_label)
+        self._step_type = step.step_type
+        self.type_icon_label = QLabel()
+        self.type_icon_label.setPixmap(type_icon(step.step_type, dark=False).pixmap(14, 14))
+        self.type_icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        top.addWidget(self.type_icon_label)
 
         step_type = QLabel(TYPE_LABELS.get(step.step_type, "Python"))
         step_type.setObjectName("TypePill")
@@ -210,6 +212,11 @@ class StepCard(QFrame):
         mime.setData(MIME_STEP_ID, str(self.step_id).encode("utf-8"))
         drag.setMimeData(mime)
         drag.exec(Qt.MoveAction)
+
+    def refresh_theme(self, dark: bool):
+        """主题切换后按新主题重设类型图标颜色（颜色创建时烘焙，无法靠 QSS 更新）。"""
+        from ui.icons import type_icon
+        self.type_icon_label.setPixmap(type_icon(self._step_type, dark=dark).pixmap(14, 14))
 
     @staticmethod
     def _subtitle(step, dep_text: str) -> str:
@@ -503,6 +510,8 @@ class WorkbenchBoardPanel(QWidget):
     def refresh_theme(self, dark: bool):
         self._dark = bool(dark)
         self.setStyleSheet(build_board_stylesheet(board_tokens(self._dark)))
+        for card in self._cards.values():
+            card.refresh_theme(self._dark)
         self._refresh_button_state()
 
     def set_edit_enabled(self, enabled: bool):
@@ -551,6 +560,7 @@ class WorkbenchBoardPanel(QWidget):
                 dep_text = self._dep_summary(step)
                 order_label = f"B{batch_map.get(int(step.id), within_idx)}"
                 card = StepCard(step, order_label, dep_text)
+                card.refresh_theme(self._dark)
                 card.selected.connect(self._on_card_selected)
                 lane.add_card(card)
                 self._cards[int(step.id)] = card

@@ -646,32 +646,32 @@ class WebhookManagerDialog(QDialog):
         if not self.is_dirty():
             return True
 
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Question)
+        # V9.3：改走 msg_custom_buttons——原手工 QMessageBox 无主题样式，暗色下是裸系统样式
+        from ui.theme import msg_custom_buttons
+
         if action == "switch":
-            box.setWindowTitle("切换 Webhook 前是否保存？")
-            box.setText("当前 Webhook 有未保存的修改。\n切换条目前要先保存吗？")
-            save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
-            discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
-            cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
+            title = "切换 Webhook 前是否保存？"
+            text = "当前 Webhook 有未保存的修改。\n切换条目前要先保存吗？"
+            save_label, discard_label = "保存并切换", "不保存直接切换"
         elif action == "add":
-            box.setWindowTitle("新增 Webhook 前是否保存？")
-            box.setText("当前 Webhook 有未保存的修改。\n新增条目前要先保存吗？")
-            save_btn = box.addButton("保存并新增", QMessageBox.AcceptRole)
-            discard_btn = box.addButton("不保存直接新增", QMessageBox.DestructiveRole)
-            cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
+            title = "新增 Webhook 前是否保存？"
+            text = "当前 Webhook 有未保存的修改。\n新增条目前要先保存吗？"
+            save_label, discard_label = "保存并新增", "不保存直接新增"
         else:
-            box.setWindowTitle("关闭前是否保存？")
-            box.setText("当前 Webhook 有未保存的修改。\n关闭前要先保存吗？")
-            save_btn = box.addButton("保存并关闭", QMessageBox.AcceptRole)
-            discard_btn = box.addButton("不保存直接关闭", QMessageBox.DestructiveRole)
-            cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
-        box.setDefaultButton(save_btn)
-        box.exec_()
-        clicked = box.clickedButton()
-        if clicked is save_btn:
+            title = "关闭前是否保存？"
+            text = "当前 Webhook 有未保存的修改。\n关闭前要先保存吗？"
+            save_label, discard_label = "保存并关闭", "不保存直接关闭"
+        choice = msg_custom_buttons(
+            self, self._dark, title, text,
+            [
+                (save_label, QMessageBox.AcceptRole),
+                (discard_label, QMessageBox.DestructiveRole),
+                ("留在当前", QMessageBox.RejectRole),
+            ],
+        )
+        if choice == 0:
             return self._save_current_webhook(show_success=False)
-        if clicked is discard_btn:
+        if choice == 1:
             self.reset_dirty_state()
             return True
         return False

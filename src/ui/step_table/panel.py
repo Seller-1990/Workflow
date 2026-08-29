@@ -39,7 +39,6 @@ from ui.theme import (
     get_status_tokens,
     msg_warning,
 )
-from ui.step_table.reorderable_table import STAGE_COLORS
 
 
 class StepTablePanel(QWidget):
@@ -663,20 +662,18 @@ class StepTablePanel(QWidget):
             msg_warning(self, self._dark, title, text)
             return
 
-        msg = QMessageBox(self)
-        msg.setWindowTitle(title)
-        msg.setText(text)
-        msg.setIcon(QMessageBox.Warning)
-        locate_button = msg.addButton("定位问题步骤", QMessageBox.AcceptRole)
-        msg.addButton(QMessageBox.Ok)
-        try:
-            from ui.theme import _style_colors, _MSG_BOX_STYLE
+        # V9.3：改走 msg_custom_buttons——原手工 QMessageBox 耦合 theme 私有符号
+        from ui.theme import msg_custom_buttons
 
-            msg.setStyleSheet(_MSG_BOX_STYLE.format(**_style_colors(self._dark)))
-        except (ImportError, KeyError, ValueError):
-            pass
-        msg.exec()
-        if msg.clickedButton() is locate_button:
+        choice = msg_custom_buttons(
+            self, self._dark, title, text,
+            [
+                ("定位问题步骤", QMessageBox.AcceptRole),
+                ("确定", QMessageBox.AcceptRole),
+            ],
+            icon="warning",
+        )
+        if choice == 0:
             try:
                 self.select_step(focus_step_id)
             except (RuntimeError, ValueError, TypeError) as exc:

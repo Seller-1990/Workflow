@@ -65,9 +65,9 @@ class RunControlPanel(QWidget):
         self.btn_run_all.setFixedHeight(36)
         self.btn_run_all.setToolTip("从第一阶段开始运行整个工作流")
         self.btn_run_all.setAccessibleName("全流程运行")
-        # V9：图标化
+        # V9：图标化（V9.3：图标色与 text_inverse 文字一致，原默认暗灰压靛蓝底）
         from ui.icons import set_icon_button
-        set_icon_button(self.btn_run_all, "run.all")
+        set_icon_button(self.btn_run_all, "run.all", color=COLORS["text_inverse"])
         self.btn_run_all.clicked.connect(lambda: self._run("full"))
         layout.addWidget(self.btn_run_all)
 
@@ -82,7 +82,7 @@ class RunControlPanel(QWidget):
         self.btn_run_from.setFixedHeight(32)
         self.btn_run_from.setToolTip("从当前选中的步骤开始运行后续步骤")
         self.btn_run_from.setAccessibleName("从选中步骤开始")
-        set_icon_button(self.btn_run_from, "run.from")
+        set_icon_button(self.btn_run_from, "run.from", color=COLORS["primary"])
         self.btn_run_from.clicked.connect(lambda: self._run("from_step"))
         ghost_layout.addWidget(self.btn_run_from)
 
@@ -91,7 +91,7 @@ class RunControlPanel(QWidget):
         self.btn_run_only.setFixedHeight(32)
         self.btn_run_only.setToolTip("只运行当前选中的单个步骤")
         self.btn_run_only.setAccessibleName("只运行选中步骤")
-        set_icon_button(self.btn_run_only, "run.only")
+        set_icon_button(self.btn_run_only, "run.only", color=COLORS["primary"])
         self.btn_run_only.clicked.connect(lambda: self._run("only_step"))
         ghost_layout.addWidget(self.btn_run_only)
 
@@ -100,7 +100,7 @@ class RunControlPanel(QWidget):
         self.btn_run_stage.setFixedHeight(32)
         self.btn_run_stage.setToolTip("只运行当前选中步骤所属的阶段")
         self.btn_run_stage.setAccessibleName("只运行该阶段")
-        set_icon_button(self.btn_run_stage, "run.only")
+        set_icon_button(self.btn_run_stage, "run.only", color=COLORS["primary"])
         self.btn_run_stage.clicked.connect(lambda: self._run("only_stage"))
         ghost_layout.addWidget(self.btn_run_stage)
 
@@ -109,7 +109,7 @@ class RunControlPanel(QWidget):
         self.btn_run_from_stage.setFixedHeight(32)
         self.btn_run_from_stage.setToolTip("从当前阶段开始运行后续阶段")
         self.btn_run_from_stage.setAccessibleName("从该阶段开始")
-        set_icon_button(self.btn_run_from_stage, "run.from")
+        set_icon_button(self.btn_run_from_stage, "run.from", color=COLORS["primary"])
         self.btn_run_from_stage.clicked.connect(lambda: self._run("from_stage"))
         ghost_layout.addWidget(self.btn_run_from_stage)
 
@@ -118,7 +118,7 @@ class RunControlPanel(QWidget):
         self.btn_retry.setFixedHeight(32)
         self.btn_retry.setToolTip("重试最近一次运行失败的步骤")
         self.btn_retry.setAccessibleName("重试失败步骤")
-        set_icon_button(self.btn_retry, "run.retry")
+        set_icon_button(self.btn_retry, "run.retry", color=COLORS["primary"])
         self.btn_retry.clicked.connect(lambda: self._run("retry_failed"))
         ghost_layout.addWidget(self.btn_retry)
 
@@ -128,7 +128,7 @@ class RunControlPanel(QWidget):
         self.btn_dry_run.setFixedHeight(28)
         self.btn_dry_run.setToolTip("预览执行计划，不实际执行")
         self.btn_dry_run.setAccessibleName("工作流预演")
-        set_icon_button(self.btn_dry_run, "run.dry")
+        set_icon_button(self.btn_dry_run, "run.dry", color=COLORS["primary"])
         self.btn_dry_run.clicked.connect(self.dry_run_clicked.emit)
         ghost_layout.addWidget(self.btn_dry_run)
 
@@ -144,6 +144,19 @@ class RunControlPanel(QWidget):
                 padding: 2px 0px;
             }}
         """)
+        # V9.3：重建按钮图标（颜色创建时烘焙）；图标色与按钮文字色一致
+        from ui.icons import set_icon_button
+
+        set_icon_button(self.btn_run_all, "run.all", color=colors["text_inverse"])
+        for btn, key in (
+            (self.btn_run_from, "run.from"),
+            (self.btn_run_only, "run.only"),
+            (self.btn_run_stage, "run.only"),
+            (self.btn_run_from_stage, "run.from"),
+            (self.btn_retry, "run.retry"),
+            (self.btn_dry_run, "run.dry"),
+        ):
+            set_icon_button(btn, key, color=colors["primary"])
 
     def set_running(self, running: bool):
         """设置运行状态（用于避免重复触发运行）"""

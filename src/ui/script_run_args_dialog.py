@@ -31,7 +31,7 @@ from script_arg_utils import (
     merge_step_args,
     parse_cli_args_text,
 )
-from ui.theme import get_colors
+from ui.theme import get_colors, msg_warning
 
 
 @dataclass
@@ -52,11 +52,13 @@ class _StepArgEditor(QGroupBox):
         *,
         allow_save_defaults: bool = True,
         parent: QWidget | None = None,
+        dark: bool = False,
     ) -> None:
         heading_text = f"[{target.order}] {target.name}"
         super().__init__("", parent)
         self.target = target
         self.spec = spec
+        self._dark = dark
         self._form_widgets: dict[str, QWidget] = {}
         self._manual_edit: QLineEdit | None = None
         self._extra_edit: QLineEdit | None = None
@@ -305,7 +307,7 @@ class _StepArgEditor(QGroupBox):
             self._preview.setStyleSheet("")
         except CliArgsParseError as exc:
             self._preview.setText(f"参数错误: {exc}")
-            self._preview.setStyleSheet("color: #c0392b;")
+            self._preview.setStyleSheet(f"color: {get_colors(self._dark)['danger_aa']};")
 
 
 class ScriptRunArgsDialog(QDialog):
@@ -321,6 +323,7 @@ class ScriptRunArgsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("ScriptRunArgsDialog")
+        self._dark = bool(dark)
         self.setStyleSheet(_dialog_stylesheet(dark))
         self.setWindowTitle("本次运行参数")
         self.resize(640, 520)
@@ -352,6 +355,7 @@ class ScriptRunArgsDialog(QDialog):
                 target,
                 spec,
                 allow_save_defaults=allow_save_defaults,
+                dark=self._dark,
             )
             self._editors.append(editor)
             body_layout.addWidget(editor)
@@ -376,7 +380,7 @@ class ScriptRunArgsDialog(QDialog):
                 if editor.should_save():
                     saved_updates[editor.target.uid] = list(temporary)
         except CliArgsParseError as exc:
-            QMessageBox.warning(self, "参数错误", str(exc))
+            msg_warning(self, self._dark, "参数错误", str(exc))
             return
         self._result = result
         self._saved_updates = saved_updates

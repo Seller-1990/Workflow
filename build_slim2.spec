@@ -60,7 +60,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["tools/qtawesome_fa5_runtime_hook.py"],
     excludes=[
         "PyQt5",
         "PyQt6",

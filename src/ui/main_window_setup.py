@@ -655,11 +655,23 @@ def apply_theme(window):
 
     app = QApplication.instance()
     if app:
+        # V9.3：QPalette 与 QSS 同步切换——QSS 覆盖不到的原生元素跟随主题
+        from ui.theme import get_app_palette
+        app.setPalette(get_app_palette(window._dark_mode))
         app.setStyleSheet(get_stylesheet(dark=window._dark_mode))
 
     # V9：同步刷新图标主题色缓存
     from ui.icons import apply_icon_theme, set_icon_button
     apply_icon_theme(window._dark_mode)
+    # V9.3：侧栏资产按钮图标在构建期烘焙颜色，主题切换后必须重设
+    for attr, icon_key in (
+        ("btn_asset_import", "sidebar.import"),
+        ("btn_asset_export", "sidebar.export"),
+        ("btn_asset_webhook", "sidebar.webhook"),
+    ):
+        btn = getattr(window, attr, None)
+        if btn is not None:
+            set_icon_button(btn, icon_key)
     # V9.2：btn_save 仍是深色背景，图标用 on_primary 白色
     on_primary = C["on_primary"]
     if hasattr(window, "btn_save"):
@@ -691,6 +703,29 @@ def apply_theme(window):
     window.step_editor.refresh_theme(window._dark_mode)
     window.workflow_config.refresh_theme(window._dark_mode)
     window.step_table.table.refresh_theme(window._dark_mode)
+    # V9.3：主题切换会重建步骤表行（行内颜色创建时烘焙），已呈现的运行状态高亮需重建后回放：
+    # 运行中回放当前 run；非运行中回放该工作流最近一次 run（对齐旧行为"行未重建、高亮保留"）。
+    current_workflow_id = getattr(window, "_current_workflow_id", None)
+    engine = getattr(window, "engine", None)
+    if current_workflow_id is not None and engine is not None:
+        from database import get_latest_run_history, get_step_logs_by_run
+
+        running_here = bool(
+            getattr(engine, "is_running", False)
+            and getattr(window, "_running_workflow_id", None) == current_workflow_id
+        )
+        if running_here:
+            run_history_id = getattr(engine, "current_run_history_id", None)
+        else:
+            latest = get_latest_run_history(current_workflow_id)
+            run_history_id = latest.id if latest is not None else None
+        if run_history_id:
+            for log in get_step_logs_by_run(run_history_id):
+                # pending 是"尚未开始"的初始态，实时路径从不为其涂色，回放时跳过；
+                # 非运行中分支里的 running 属崩溃残留日志（无 finalize），同样不涂
+                if log.status == "pending" or (not running_here and log.status == "running"):
+                    continue
+                window.step_table.highlight_step(log.step_id, log.status)
     # 任务11：IosSwitch 纳入刷新链（check_edit_mode 是当前唯一的 IosSwitch 实例）
     sw = getattr(window, "check_edit_mode", None)
     if sw is not None and hasattr(sw, "refresh_theme"):
@@ -783,8 +818,6 @@ def connect_signals(window):
     window.engine.log_output.connect(window.log_panel.append_log)
     window.engine.progress_updated.connect(window._on_progress_updated)
     window.engine.error_details.connect(window._on_error_details)
-
-    window.log_panel.stop_clicked.connect(window._stop_workflow)
 
     window.run_control.dry_run_clicked.connect(window._on_dry_run)
 

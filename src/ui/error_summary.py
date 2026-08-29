@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
-from ui.theme import COLORS, get_colors, get_status_tokens, msg_information
+from ui.theme import get_colors, get_status_tokens, msg_information
 
 
 class ErrorSummaryDialog(QDialog):
@@ -39,7 +39,7 @@ class ErrorSummaryDialog(QDialog):
         
         # 标题
         header = QLabel(f"共 {len(error_list)} 个步骤失败：")
-        header.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {COLORS['danger']};")
+        header.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {get_colors(self._dark)['danger_aa']};")
         layout.addWidget(header)
         
         # 失败步骤表格（3列：步骤名称、错误信息、修复建议）
@@ -198,7 +198,7 @@ class ErrorSummaryDialog(QDialog):
         colors = get_colors(dark)
         header = self.layout().itemAt(0).widget()
         if isinstance(header, QLabel):
-            header.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {colors['danger']};")
+            header.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {colors['danger_aa']};")
         # V9.2：同步刷新 btn_retry 样式（原 init 用 color:white，主题切换后不刷新）
         primary = colors["primary"]
         primary_hover = colors["primary_hover"]

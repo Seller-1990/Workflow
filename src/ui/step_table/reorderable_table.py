@@ -30,14 +30,8 @@ from database import (
     get_workflow_by_id,
     get_session,
 )
-from ui.theme import COLORS, CORNER_RADIUS, get_colors
+from ui.theme import CORNER_RADIUS, get_colors
 from ui.collapsible_section import CollapsibleSection
-
-
-# ── 阶段背景色（交替色带区分不同阶段） ──
-# V9.2：从 stage_band_palette 取（原硬编码 #FFFFFF/#F8FAFC/#FFF8F0/#F0FFF4/#2C2C2E/#3A3A3C/#2A2430/#1A2A2E）
-STAGE_COLORS = [QColor(c) for c in COLORS["stage_band_palette"]]
-DARK_STAGE_COLORS = [QColor(c) for c in get_colors(True)["stage_band_palette"]]
 
 
 class ReorderableTable(QTableWidget):

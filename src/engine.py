@@ -228,6 +228,12 @@ class WorkflowEngine(QObject):
     def is_running(self) -> bool:
         with self._lock:
             return self._running
+
+    @property
+    def current_run_history_id(self):
+        """最外层运行的 run_history 主键（无运行时 None）；供 UI 重建后回放步骤状态。"""
+        with self._lock:
+            return self._current_run_history_id
     
     def cancel(self):
         """取消当前运行"""

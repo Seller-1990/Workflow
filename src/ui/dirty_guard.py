@@ -33,49 +33,35 @@ def confirm_discard_unsaved(window, *, reason: str, new_target) -> bool:
         return True
 
     from PySide6.QtWidgets import QMessageBox
-    box = QMessageBox(window)
-    box.setIcon(QMessageBox.Question)
+
+    from ui.theme import msg_custom_buttons
+
     # R3-#7 / R4-#8: 文案明确「取消」具体取消什么；标题区分工作流/步骤
-    if reason == "switch_workflow":
-        box.setWindowTitle("切换工作流前是否保存？")
-        box.setText(window._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-        save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
-        discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
-        cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
-    elif reason == "switch_step":
-        box.setWindowTitle("切换步骤前是否保存？")
-        box.setText(window._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-        save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
-        discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
-        cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
-    elif reason == "switch_stage":
-        box.setWindowTitle("切换阶段前是否保存？")
-        box.setText(window._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-        save_btn = box.addButton("保存并切换", QMessageBox.AcceptRole)
-        discard_btn = box.addButton("不保存直接切换", QMessageBox.DestructiveRole)
-        cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
-    elif reason == "close":
-        box.setWindowTitle("关闭前是否保存？")
-        box.setText(window._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-        save_btn = box.addButton("保存并关闭", QMessageBox.AcceptRole)
-        discard_btn = box.addButton("不保存直接关闭", QMessageBox.DestructiveRole)
-        cancel_btn = box.addButton("留在当前", QMessageBox.RejectRole)
-    else:
-        box.setWindowTitle("未保存的修改")
-        box.setText(window._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty))
-        save_btn = box.addButton("保存", QMessageBox.AcceptRole)
-        discard_btn = box.addButton("不保存", QMessageBox.DestructiveRole)
-        cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
-    box.setDefaultButton(save_btn)
-    # Qt 同步对话框：阻塞直到用户做出选择
-    box.exec_()
-    clicked = box.clickedButton()
-    if clicked is save_btn:
+    presets = {
+        "switch_workflow": ("切换工作流前是否保存？", "保存并切换", "不保存直接切换", "留在当前"),
+        "switch_step": ("切换步骤前是否保存？", "保存并切换", "不保存直接切换", "留在当前"),
+        "switch_stage": ("切换阶段前是否保存？", "保存并切换", "不保存直接切换", "留在当前"),
+        "close": ("关闭前是否保存？", "保存并关闭", "不保存直接关闭", "留在当前"),
+    }
+    title, save_label, discard_label, cancel_label = presets.get(
+        reason, ("未保存的修改", "保存", "不保存", "取消")
+    )
+    # V9.3：改走 msg_custom_buttons——原手工 QMessageBox 无主题样式，暗色下是裸系统样式
+    choice = msg_custom_buttons(
+        window, getattr(window, "_dark_mode", False), title,
+        window._build_dirty_message(reason, config_dirty=config_dirty, step_dirty=step_dirty),
+        [
+            (save_label, QMessageBox.AcceptRole),
+            (discard_label, QMessageBox.DestructiveRole),
+            (cancel_label, QMessageBox.RejectRole),
+        ],
+    )
+    if choice == 0:
         if not window._save_dirty_panels(config_dirty=config_dirty, step_dirty=step_dirty):
             window._restore_selection_silently(reason)
             return False
         return True
-    if clicked is discard_btn:
+    if choice == 1:
         if not window._discard_dirty_panels(config_dirty=config_dirty, step_dirty=step_dirty):
             window._restore_selection_silently(reason)
             return False

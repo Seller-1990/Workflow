@@ -39,25 +39,29 @@ def confirm_switch_while_running(window, target) -> str:
             running_wf_name = wf.name
     except Exception:
         pass
-    box = QMessageBox(window)
-    box.setIcon(QMessageBox.Warning)
-    box.setWindowTitle("运行进行中")
-    box.setText(
+    # V9.3：改走 msg_custom_buttons——原手工 QMessageBox 无主题样式，暗色下是裸系统样式
+    from ui.theme import msg_custom_buttons
+
+    choice = msg_custom_buttons(
+        window, getattr(window, "_dark_mode", False), "运行进行中",
         f"工作流「{running_wf_name}」正在运行中。\n\n"
         "• 停止运行并切换：终止当前运行后再切换\n"
         "• 后台继续运行并切换：切换到新工作流，原运行继续，"
         "但将失去对它的进度可见性与停止入口（需返回原工作流才能查看/停止）\n"
-        "• 留在当前：不切换"
+        "• 留在当前：不切换",
+        [
+            ("停止运行并切换", QMessageBox.DestructiveRole),
+            ("后台继续运行并切换", QMessageBox.AcceptRole),
+            ("留在当前", QMessageBox.RejectRole),
+        ],
+        icon="warning",
+        default=2,
     )
-    stop_and_switch = box.addButton("停止运行并切换", QMessageBox.DestructiveRole)
-    keep_running_switch = box.addButton("后台继续运行并切换", QMessageBox.AcceptRole)
-    cancel = box.addButton("留在当前", QMessageBox.RejectRole)
-    box.setDefaultButton(cancel)
-    box.exec_()
-    clicked = box.clickedButton()
-    if clicked is cancel:
+    if choice in (-1, 2):
+        # -1 = Esc/X 关闭弹窗（未命中任何按钮）：按「留在当前」安全处理，
+        # 不得落入 keep_running 导致用户丢掉运行可见性
         return "cancel"
-    if clicked is stop_and_switch:
+    if choice == 0:
         return "stop"
     return "keep_running"
 

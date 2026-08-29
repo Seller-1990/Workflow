@@ -41,7 +41,9 @@ _ICON_MAP = {
     "run.from": "fa5s.step-forward",
     "run.only": "fa5s.dot-circle",
     # 步骤类型
-    "type.python": "fa5s.python",
+    # V9.3：Python logo 属 brands 族（fa5b），solid 里没有该字形——原 fa5s.python
+    # 一直在 icons() 的兜底 except 下静默渲染为空
+    "type.python": "fa5b.python",
     "type.excel": "fa5s.file-excel",
     "type.powerbi": "fa5s.chart-bar",
     "type.subworkflow": "fa5s.project-diagram",
@@ -115,12 +117,15 @@ def icon(name: str, color: str | None = None) -> QIcon:
 def type_icon(step_type: str, dark: bool = False) -> QIcon:
     """获取步骤类型图标，按类型着色。
 
+    亮/暗均取 TYPE_TOKENS 对应族的 fg——它与类型徽章（TypePill）文字同源，
+    保证同屏一色（V9.3：原暗色 color_map 用基础色，与徽章的 *_aa 变体两套色值）。
+
     Args:
         step_type: python/excel_powerquery/powerbi_refresh/sub_workflow
         dark: 是否暗色主题（影响颜色）
     """
     from ui.theme import TYPE_TOKENS_LIGHT, TYPE_TOKENS_DARK
-    c = get_colors(dark)
+
     tokens = TYPE_TOKENS_DARK if dark else TYPE_TOKENS_LIGHT
     type_key = step_type if step_type in tokens else "python"
     icon_name = {
@@ -129,17 +134,7 @@ def type_icon(step_type: str, dark: bool = False) -> QIcon:
         "powerbi_refresh": "type.powerbi",
         "sub_workflow": "type.subworkflow",
     }.get(type_key, "type.python")
-    color = tokens[type_key]["fg"]
-    # 暗色用 c 中 AA-safe 变体
-    if dark:
-        color_map = {
-            "python": c["primary"],
-            "excel_powerquery": c["success"],
-            "powerbi_refresh": c["warning"],
-            "sub_workflow": c["violet"],
-        }
-        color = color_map.get(type_key, c["primary"])
-    return icon(icon_name, color=color)
+    return icon(icon_name, color=tokens[type_key]["fg"])
 
 
 def set_icon_button(button, name: str, color: str | None = None) -> None:

@@ -209,7 +209,6 @@ def main(argv=None):
     configure_ca_bundle_environment()
 
     from ui import MainWindow
-    from ui.theme import get_stylesheet
 
     # 启用高 DPI 支持
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -232,9 +231,9 @@ def main(argv=None):
     font = QFont("Inter", 10)
     app.setFont(font)
     
-    # 设置样式
+    # 设置样式（全局样式由 MainWindow._apply_theme 按恢复的主题统一应用，
+    # 这里不再预刷一次亮色样式，避免启动时全树 repolish 两次）
     app.setStyle("Fusion")
-    app.setStyleSheet(get_stylesheet())
     
     # 创建主窗口
     window = MainWindow()

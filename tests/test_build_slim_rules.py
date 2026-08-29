@@ -58,3 +58,43 @@ def test_slim2_drops_icon_png_pythonwin_and_qtsvg():
     assert should_keep_artifact("PySide6\\Qt6Svg.dll", profile="slim2") is False
     assert should_keep_artifact("PySide6\\plugins\\iconengines\\qsvgicon.dll", profile="slim2") is False
     assert should_keep_artifact("PySide6\\plugins\\imageformats\\qsvg.dll", profile="slim2") is False
+
+
+def test_qtawesome_fonts_trimmed_to_fa5_only():
+    """V9.3：项目只用 fa5s（solid）与 fa5b（brands，Python logo），其余字体丢弃。"""
+    keep = [
+        "qtawesome\\fonts\\fontawesome5-solid-webfont-5.15.4.ttf",
+        "qtawesome\\fonts\\fontawesome5-solid-webfont-charmap-5.15.4.json",
+        "qtawesome\\fonts\\fontawesome5-brands-webfont-5.15.4.ttf",
+        "qtawesome\\fonts\\fontawesome5-brands-webfont-charmap-5.15.4.json",
+    ]
+    drop = [
+        "qtawesome\\fonts\\fontawesome5-regular-webfont-5.15.4.ttf",
+        "qtawesome\\fonts\\fontawesome6-solid-webfont-6.7.2.ttf",
+        "qtawesome\\fonts\\materialdesignicons5-webfont-5.9.55.ttf",
+        "qtawesome\\fonts\\materialdesignicons6-webfont-6.9.96.ttf",
+        "qtawesome\\fonts\\phosphor-1.3.0.ttf",
+        "qtawesome\\fonts\\remixicon-2.5.0.ttf",
+        "qtawesome\\fonts\\codicon-0.0.36.ttf",
+    ]
+    for profile in ("slim1", "slim2"):
+        for name in keep:
+            assert should_keep_artifact(name, profile=profile) is True, (profile, name)
+        for name in drop:
+            assert should_keep_artifact(name, profile=profile) is False, (profile, name)
+
+
+def test_slim_specs_wire_qtawesome_fa5_runtime_hook():
+    """slim 包丢弃了非 FA5 字体，必须配套 runtime hook 收窄 _BUNDLED_FONTS，
+    否则 qtawesome 急切加载缺失字体会被 ui.icons 吞掉导致图标全空白。"""
+    root = Path(__file__).resolve().parent.parent
+    hook = root / "tools" / "qtawesome_fa5_runtime_hook.py"
+    assert hook.is_file()
+    hook_source = hook.read_text(encoding="utf-8")
+    assert "_BUNDLED_FONTS" in hook_source
+    assert '"fa5s"' in hook_source or "'fa5s'" in hook_source
+    assert '"fa5b"' in hook_source or "'fa5b'" in hook_source
+
+    for spec_name in ("build_slim.spec", "build_slim2.spec"):
+        content = (root / spec_name).read_text(encoding="utf-8")
+        assert "qtawesome_fa5_runtime_hook.py" in content, spec_name

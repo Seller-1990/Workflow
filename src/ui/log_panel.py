@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QLineEdit, QToolButton, QMenu, QCheckBox,
     QWidgetAction, QFileDialog,
 )
-from PySide6.QtCore import Slot, Signal, QTimer, Qt
+from PySide6.QtCore import Slot, QTimer, Qt
 from PySide6.QtGui import QTextCursor, QFont, QAction
 
 from ui.collapsible_section import CollapsibleSection
@@ -22,8 +22,6 @@ _LEVELS = ("ERROR", "WARNING", "INFO", "DEBUG")
 
 class LogPanel(QWidget):
     """实时日志面板（U-P2-8: 支持级别过滤 + 防抖搜索 + 导出）"""
-
-    stop_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,6 +95,7 @@ class LogPanel(QWidget):
         self.btn_clear = QPushButton("清空")
         self.btn_clear.setObjectName("headerLink")
         self.btn_clear.setFixedHeight(22)
+        self.btn_clear.setToolTip("清空当前可见日志")
         self.btn_clear.clicked.connect(self.clear)
         self.section.header_actions_layout.addWidget(self.btn_clear)
 

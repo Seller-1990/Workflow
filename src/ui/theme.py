@@ -329,34 +329,6 @@ def get_stylesheet(dark=False):
         border: none;
     }}
 
-    /* --- 滚动条美化（V8：统一 8px 半透明） --- */
-    QScrollBar:vertical {{
-        background: transparent;
-        width: 8px;
-        margin: 0;
-    }}
-    QScrollBar:horizontal {{
-        background: transparent;
-        height: 8px;
-        margin: 0;
-    }}
-    QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
-        background: {C["text_tertiary"]};
-        border-radius: 4px;
-        min-height: 24px;
-        min-width: 24px;
-    }}
-    QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{
-        background: {C["text_secondary"]};
-    }}
-    QScrollBar::add-line, QScrollBar::sub-line {{
-        height: 0;
-        width: 0;
-    }}
-    QScrollBar::add-page, QScrollBar::sub-page {{
-        background: transparent;
-    }}
-
     /* --- Toolbar --- */
     QToolBar {{
         background: {C["background"]};
@@ -880,6 +852,79 @@ def get_menu_stylesheet(dark: bool = False) -> str:
         muted=C["text_tertiary"],
         divider=C["divider"],
     )
+
+
+def get_app_palette(dark: bool = False):
+    """按主题构造应用级 QPalette。
+
+    QSS 覆盖不到的原生元素（菜单、tooltip 缺省色、禁用态文字、未样式化控件的
+    底色/文字）跟随主题，避免暗色模式下出现系统亮色残留。
+    """
+    from PySide6.QtGui import QColor, QPalette
+
+    C = get_colors(dark)
+    p = QPalette()
+    p.setColor(QPalette.Window, QColor(C["surface_primary"]))
+    p.setColor(QPalette.WindowText, QColor(C["text_primary"]))
+    p.setColor(QPalette.Base, QColor(C["background"]))
+    p.setColor(QPalette.AlternateBase, QColor(C["surface_secondary"]))
+    p.setColor(QPalette.Text, QColor(C["text_primary"]))
+    p.setColor(QPalette.Button, QColor(C["surface_secondary"]))
+    p.setColor(QPalette.ButtonText, QColor(C["text_primary"]))
+    p.setColor(QPalette.ToolTipBase, QColor(C["surface_card"]))
+    p.setColor(QPalette.ToolTipText, QColor(C["text_primary"]))
+    # 选区用与 QSS 相同的 selected_bg/selected_text 对（暗色下 primary+白字对比度仅 3.8:1）
+    p.setColor(QPalette.Highlight, QColor(C["selected_bg"]))
+    p.setColor(QPalette.HighlightedText, QColor(C["selected_text"]))
+    p.setColor(QPalette.PlaceholderText, QColor(C["text_tertiary"]))
+    p.setColor(QPalette.Link, QColor(C["primary"]))
+    p.setColor(QPalette.Disabled, QPalette.WindowText, QColor(C["text_tertiary"]))
+    p.setColor(QPalette.Disabled, QPalette.Text, QColor(C["text_tertiary"]))
+    p.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(C["text_tertiary"]))
+    return p
+
+
+_MSG_ICON_MAP = None
+
+
+def msg_custom_buttons(
+    parent, dark: bool, title: str, text: str,
+    buttons: list, *, icon: str = "question", default: int = 0,
+) -> int:
+    """弹出已主题化的自定义按钮消息框，返回被点击按钮的下标。
+
+    Args:
+        buttons: [(label, QMessageBox.ButtonRole), ...]，按显示顺序添加
+        icon: question / warning / critical / information
+        default: 默认按钮下标（buttons 内）
+
+    Returns:
+        被点击按钮的下标；用户按 Esc/关闭窗口且未命中任何按钮时为 -1（调用方按取消处理）。
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    global _MSG_ICON_MAP
+    if _MSG_ICON_MAP is None:
+        _MSG_ICON_MAP = {
+            "question": QMessageBox.Question,
+            "warning": QMessageBox.Warning,
+            "critical": QMessageBox.Critical,
+            "information": QMessageBox.Information,
+        }
+    msg = QMessageBox(parent)
+    msg.setWindowTitle(title)
+    msg.setText(text)
+    msg.setIcon(_MSG_ICON_MAP.get(icon, QMessageBox.Question))
+    added = [msg.addButton(label, role) for label, role in buttons]
+    if added and 0 <= default < len(added):
+        msg.setDefaultButton(added[default])
+    msg.setStyleSheet(_MSG_BOX_STYLE.format(**_style_colors(dark)))
+    # exec_ 与 exec 等价；用 exec_ 以兼容既有测试对 QMessageBox.exec_ 的补丁约定
+    msg.exec_()
+    clicked = msg.clickedButton()
+    if clicked in added:
+        return added.index(clicked)
+    return -1
 
 
 def msg_information(parent, dark: bool, title: str, text: str):
