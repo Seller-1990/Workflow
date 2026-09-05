@@ -530,7 +530,16 @@ def execute_parallel_steps(
         pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="run-steps")
         ctx.step_pool = pool
 
+    # F-18: 步骤池 worker 线程需要知道所属 run 的 run_id（threading.local 不随
+    # task 提交继承）——启动本 run 步骤的线程此刻的 ctx.run_id 即本 run 的
+    # run_id；worker 在任务开始时回写自己的 ctx，孙代 run_sub_workflow 才能取到
+    # 直接父 run。finally 恢复 None，防 worker 复用时向后续任务泄漏。
+    parent_run_run_id = ctx.run_id
+
     def _step_runner(step):
+        task_ctx = get_run_thread_context()
+        prev_task_run_id = task_ctx.run_id
+        task_ctx.run_id = parent_run_run_id
         try:
             return engine._execute_single_step(
                 workflow, step, run_history_id, log_dir, signal_policy,
@@ -540,6 +549,7 @@ def execute_parallel_steps(
                 subworkflow_depth=subworkflow_depth,
             )
         finally:
+            task_ctx.run_id = prev_task_run_id
             eng.cleanup_session()
 
     def _on_exception(step, e):

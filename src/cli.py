@@ -365,30 +365,63 @@ class CLIEngine:
             # MA4: 使用公开 run() 入口，禁用引擎自动发送通知（由 CLI 控制）
             _, _, RunMode, RunSignalPolicy = _import_engine()
             policy = RunSignalPolicy(send_notification=False)
-            if mode == "full":
-                result = self.engine.run(workflow_id, RunMode.FULL, reason="cli", signal_policy=policy)
-            elif mode == "from_step" and step_id:
-                result = self.engine.run(
-                    workflow_id, RunMode.FROM_STEP, step_id=step_id, reason="cli", signal_policy=policy
-                )
-            elif mode == "only_step" and step_id:
-                result = self.engine.run(
-                    workflow_id, RunMode.ONLY_STEP, step_id=step_id, reason="cli", signal_policy=policy
-                )
-            elif mode == "only_stage" and stage_uid:
-                result = self.engine.run(
-                    workflow_id, RunMode.ONLY_STAGE, stage_uid=stage_uid, reason="cli", signal_policy=policy
-                )
-            elif mode == "from_stage" and stage_uid:
-                result = self.engine.run(
-                    workflow_id, RunMode.FROM_STAGE, stage_uid=stage_uid, reason="cli", signal_policy=policy
-                )
-            elif mode == "retry":
-                result = self.engine.run(
-                    workflow_id, RunMode.RETRY_FAILED, reason="cli", signal_policy=policy
-                )
-            else:
-                print(f"未知运行模式: {mode}")
+
+            # F-03: 安装 SIGINT handler——engine.run() 同步跑在本线程，Ctrl+C 产生的
+            # KeyboardInterrupt 会绕过 run_workflow 的全部 except Exception 收尾，
+            # 导致 RunHistory 误记 "failure" + 发出矛盾通知，而 executor 的 kill 分支
+            # （except Exception 内）也不会进入。改为把 SIGINT 翻译成 engine.cancel()：
+            # 取消沿既有协作链路传播（cancel_event → wait_with_cancel → kill 进程树 →
+            # 状态记 cancelled），handler 抛 SystemExit 不再打断 run_workflow。
+            import signal
+            import threading
+
+            def _sigint_to_cancel(signum, frame):
+                self.engine.cancel()
+                # 主线程此时阻塞在 engine.run() 内部（proc.poll/sleep 轮询），
+                # 不能用 raise SystemExit 硬退（会绕过收尾）；run 返回后由下方的
+                # cancelled 检查负责打印与退出。
+                print("\n收到取消信号，正在停止...", flush=True)
+
+            prev_sigint = signal.getsignal(signal.SIGINT)
+            main_thread = threading.current_thread()
+            if main_thread is threading.main_thread():
+                signal.signal(signal.SIGINT, _sigint_to_cancel)
+
+            try:
+                if mode == "full":
+                    result = self.engine.run(workflow_id, RunMode.FULL, reason="cli", signal_policy=policy)
+                elif mode == "from_step" and step_id:
+                    result = self.engine.run(
+                        workflow_id, RunMode.FROM_STEP, step_id=step_id, reason="cli", signal_policy=policy
+                    )
+                elif mode == "only_step" and step_id:
+                    result = self.engine.run(
+                        workflow_id, RunMode.ONLY_STEP, step_id=step_id, reason="cli", signal_policy=policy
+                    )
+                elif mode == "only_stage" and stage_uid:
+                    result = self.engine.run(
+                        workflow_id, RunMode.ONLY_STAGE, stage_uid=stage_uid, reason="cli", signal_policy=policy
+                    )
+                elif mode == "from_stage" and stage_uid:
+                    result = self.engine.run(
+                        workflow_id, RunMode.FROM_STAGE, stage_uid=stage_uid, reason="cli", signal_policy=policy
+                    )
+                elif mode == "retry":
+                    result = self.engine.run(
+                        workflow_id, RunMode.RETRY_FAILED, reason="cli", signal_policy=policy
+                    )
+                else:
+                    print(f"未知运行模式: {mode}")
+                    return False
+            finally:
+                if main_thread is threading.main_thread():
+                    signal.signal(signal.SIGINT, prev_sigint)
+
+            # F-03: run 收尾后若因取消结束（SIGINT handler 已置 cancel），按取消语义
+            # 打印并走通知链路；run 本身返回 False（cancelled 不是 success）。
+            if self.engine.is_cancelled:
+                print("运行已取消")
+                self._send_cli_notification(workflow, False, notify_on_complete, notify_on_error, cancelled=True)
                 return False
 
             # MA4: 退出前刷一次事件队列，把 finished/error_details 等队列信号兑现给本地 slot
@@ -398,13 +431,16 @@ class CLIEngine:
                     if not self.engine.is_running:
                         break
             self._refresh_last_run_metadata(workflow_id)
-            
+
             # 根据运行结果发送通知
             self._send_cli_notification(workflow, result, notify_on_complete, notify_on_error)
             
             return result
             
         except KeyboardInterrupt:
+            # F-03: SIGINT handler 已把取消翻译为 engine.cancel() 协作链路；
+            # 这里兜底捕获（如 run 尚未开始的极窄窗口）——只做通知与退出码，
+            # cancel() 对已结束 run 的调用是无害 no-op（下次 run 前会复位）。
             print("\n收到取消信号，正在停止...")
             self.engine.cancel()
             self._send_cli_notification(workflow, False, notify_on_complete, notify_on_error, cancelled=True)

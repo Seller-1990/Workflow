@@ -64,6 +64,12 @@ def build_subprocess_kwargs(
         built["env"] = dict(env)
     if creationflags:
         built["creationflags"] = creationflags
+    # F-05: POSIX 子进程放入独立会话/进程组，取消时 kill_process_tree 可对整组
+    # 发信号（os.killpg）；Windows 用 taskkill /T 已覆盖，start_new_session 参数
+    # 在 win32 上不可用，故按平台注入。调用方显式传值时不覆盖。
+    import sys
+    if sys.platform != "win32":
+        built.setdefault("start_new_session", True)
     built.setdefault("stdin", subprocess.DEVNULL)
     return built
 

@@ -143,3 +143,19 @@ def test_redact_token_equals_form():
 
 def test_redact_password_equals_form():
     assert redact_cli_args(["--password=secret"]) == ["--password=****"]
+
+
+def test_redact_api_key_forms():
+    # 复核补充：--api-key/-k 等命名敏感参数的值同样必须脱敏
+    assert redact_cli_args(["--api-key", "sk-123", "--year", "2025"]) == [
+        "--api-key", "****", "--year", "2025"
+    ]
+    assert redact_cli_args(["--apikey=x", "--verbose"]) == ["--apikey=****", "--verbose"]
+    assert redact_cli_args(["--api_key", "abc"]) == ["--api_key", "****"]
+    assert redact_cli_args(["--private-key", "pem-content"]) == ["--private-key", "****"]
+
+
+def test_redact_does_not_touch_non_sensitive_flags():
+    assert redact_cli_args(["--year", "2025", "--model", "gpt"]) == [
+        "--year", "2025", "--model", "gpt"
+    ]

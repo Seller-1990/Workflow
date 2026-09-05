@@ -90,18 +90,6 @@ _init_lock = threading.RLock()  # R9-#1: 必须 RLock——init_db 持锁时会�
 _init_done = False  # P-16: 进程内幂等：多次 init_db 只跑一次
 
 
-def _schema_cache_file() -> Path:
-    """P-16: 跨进程 schema 缓存文件路径，写在 LOG_DIR 下避免污染源码目录"""
-    from config import LOG_DIR
-    return LOG_DIR / ".schema_version"
-
-
-def _expected_schema_signature() -> str:
-    """当前代码期望的 schema 签名。任何 SCHEMA_MIGRATIONS 变化都会让签名变。"""
-    parts = [f"{v}:{name}" for v, name in SCHEMA_MIGRATIONS]
-    return "|".join(parts)
-
-
 def _max_applied_version(engine) -> int:
     """R2-#6: 读取 schema_versions 中已应用的最大版本号；表/数据不存在返回 0"""
     try:
@@ -114,55 +102,13 @@ def _max_applied_version(engine) -> int:
         return 0
 
 
-def _try_read_schema_cache(engine) -> bool:
-    """R2-#6: 若缓存签名一致 + 缓存版本号 >= 当前期望最大版本号，则跳过 migration 检查。
-
-    旧版用 DB 文件 mtime 做指纹，但写一次业务数据 mtime 就变了，缓存几乎永远失效。
-    现在改用 schema_versions 表中的 MAX(version)：只有真正跑过新迁移才会让版本号增长。
-    """
-    try:
-        cache_file = _schema_cache_file()
-        if not cache_file.exists():
-            return False
-        content = cache_file.read_text(encoding="utf-8").strip().splitlines()
-        if len(content) < 2:
-            return False
-        cached_sig, cached_token = content[0], content[1]
-        if cached_sig != _expected_schema_signature():
-            return False
-        # 兼容旧格式：旧值是 mtime 字符串。新格式是 "v<int>"。
-        if not cached_token.startswith("v"):
-            return False
-        try:
-            cached_version = int(cached_token[1:])
-        except ValueError:
-            return False
-        expected_version = SCHEMA_MIGRATIONS[-1][0] if SCHEMA_MIGRATIONS else 0
-        # 缓存写入时记录的版本号必须 >= 当前代码期望的最大版本号
-        if cached_version < expected_version:
-            return False
-        # 文件缓存版本号 >= 期望版本号即放行（主动失效机制保证一致性）
-        return True
-    except Exception:
-        return False
-
-
-def _write_schema_cache(engine) -> None:
-    """R2-#6: 写入当前 schema_versions 中已应用的最大版本号作为缓存指纹"""
-    try:
-        cache_file = _schema_cache_file()
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        applied_version = _max_applied_version(engine)
-        cache_file.write_text(
-            f"{_expected_schema_signature()}\nv{applied_version}\n",
-            encoding="utf-8",
-        )
-    except Exception as e:
-        logger.debug("写 schema 缓存失败（不影响功能）: %s", e)
-
-
 def init_db():
-    """初始化数据库（进程内 + 跨进程双层幂等）"""
+    """初始化数据库（进程内幂等）
+
+    迁移检查直接以库内 schema_versions MAX(version) 为准（F-02：不依赖任何
+    外部缓存文件——缓存与 DB 脱钩会导致还原旧库后迁移被跳过）。
+    每次启动多付一次小表 SELECT + PRAGMA 探测，成本可忽略。
+    """
     global _engine, _SessionFactory, _scoped_session, _init_done
 
     with _init_lock:
@@ -171,20 +117,20 @@ def init_db():
             return _engine
 
         _engine = get_engine()
-        _SessionFactory = sessionmaker(bind=_engine)
+        # F-01: expire_on_commit=False——commit 不再过期线程 identity map 中的
+        # ORM 对象，get_session 退出时统一 close（连接归还池、identity map 清空），
+        # 返回对象为 detached 且列属性已加载。据此删除 H4 re-fetch / fallback
+        # 复制对象 / PF2 expire 循环等复杂度补偿（同一改动集）。
+        _SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False)
         # 使用scoped_session支持多线程安全
         _scoped_session = scoped_session(_SessionFactory)
 
         # 创建所有表（IF NOT EXISTS，已存在时仅做轻量 PRAGMA）
         Base.metadata.create_all(_engine)
 
-        # P-16: 若缓存命中说明 schema 已经是最新版，可以跳过版本表 + migration 查询
-        # R2-#6: 缓存指纹改用 schema_versions MAX(version)
         _ensure_schema_version_table(_engine)
-        if not _try_read_schema_cache(_engine):
-            # HA2 修复：用 schema_version 跳过已完成的迁移，避免每次启动重跑 PRAGMA table_info + ALTER
-            _run_pending_migrations(_engine)
-            _write_schema_cache(_engine)
+        # HA2 修复：用 schema_version 跳过已完成的迁移，避免每次启动重跑 PRAGMA table_info + ALTER
+        _run_pending_migrations(_engine)
 
         _ensure_stage_data()
         _init_done = True
@@ -678,12 +624,20 @@ def _ensure_stage_data():
 def get_session() -> Generator[Session, None, None]:
     """获取数据库会话（上下文管理器）- 线程安全
 
-    注意：不在此处调用 scoped_session.remove()，
-    因为 database.py 中的函数经常返回 ORM 对象供调用方使用，
-    remove() 会使 session 关闭导致返回对象变成 detached 状态。
-    scoped_session 会在同一线程中复用同一 session，保证线程安全。
+    F-01 修复后的契约：
+    - ``expire_on_commit=False``（见 init_db）：commit 不再使已加载 ORM 对象过期，
+      H4 re-fetch / fallback 复制 / 快照物化等复杂度补偿不再需要。
+    - with 块退出时 ``close()`` 当前线程的 session（不 ``remove()`` 整个注册表）：
+      连接归还池、identity map 清空，返回的对象成为 detached（列属性已加载可读）。
+      约束 1：调用方不得在块外访问 relationship（当前全库审计仅在块内访问，
+      database_clone.py / database_import_export.py 均在 session 存活期消费）。
+      约束 2：本上下文不可嵌套使用（同线程 scoped_session 复用同一 session，
+      内层 close 会影响外层）；AST 全库审计确认当前无嵌套调用点。
+    - 异常路径仍 ``remove()``，丢弃受污染的 session。
 
-    异常路径会调用 remove() 以避免污染的 session 在线程中残留。
+    嵌套注意：同线程嵌套调用 get_session 时，内层 close 会一并关闭外层仍在
+    使用的 session（scoped_session 复用同一线程 session）——AST 全库审计确认
+    当前无嵌套调用点，此为隐性契约而非运行时强制检测。
     """
     global _scoped_session
 
@@ -702,6 +656,8 @@ def get_session() -> Generator[Session, None, None]:
         except Exception:
             pass
         raise
+    else:
+        session.close()
 
 
 def cleanup_session():
@@ -945,8 +901,15 @@ def clone_workflow(workflow_id: int, new_name: str = None) -> Optional[Workflow]
         generate_uid=generate_uid,
     )
     if cloned is not None:
-        # R1: 仍含风险路径的克隆强制重新确认（包装层二次事务，不继承原确认）
+        # R1: 仍含风险路径的克隆强制重新确认（包装层二次事务，不继承原确认）。
+        # F-01: get_session 现在在块退出时 close——clone_workflow_impl 返回的
+        # cloned 是 detached 对象，其快照值不含此重置。重置后按 id 重读最新
+        # 状态返回，保证调用方拿到的对象与库内一致。
         _reset_risky_review_after_clone(cloned.id)
+        try:
+            return get_workflow_by_id(cloned.id)
+        except Exception:
+            return cloned
     return cloned
 
 
@@ -975,7 +938,6 @@ def auto_backup_workflows(backup_dir: Path = None, include_secrets: bool = False
 # 运行历史/StepLog、Webhook、工作流/阶段/步骤 CRUD 已拆分到 database_runs / database_webhooks / database_workflows；
 # 此处再导出以保持既有 `from database import X` 调用方与测试完全不变。
 from database_runs import (  # noqa: E402
-    _wal_checkpoint,
     create_run_history,
     get_run_histories_by_workflow,
     get_latest_run_history,

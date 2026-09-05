@@ -269,8 +269,7 @@ class WorkflowEngine(QObject):
         try:
             from database import cancel_pending_step_logs
 
-            # R5-#3: 先批量取消 step_logs，再写 run_history 终态。
-            # update_run_history 终态时会 wal_checkpoint，能一次性把 step_logs 一起落主库，
+            # R5-#3: 先批量取消 step_logs，再写 run_history 终态，
             # 避免跨进程读到 "run cancelled 但 step pending" 的窗口。
             _force_cancel_run_record(
                 run_history_id,
@@ -457,10 +456,17 @@ class WorkflowEngine(QObject):
         R5: ``subworkflow_depth`` 为子工作流自身的嵌套深度（根 run 的子工作流为 1），
         由 SubWorkflowExecutor 沿执行链显式透传；深度预算超限在 executor 与
         ``_run`` 双层 fail-fast。
+
+        F-18: parent_run_id 优先取 run 线程局部上下文的 run_id（每个子工作流
+        跑在自己的线程上，天然隔离，depth≥2 的孙代记录直接父 run）；线程上下文
+        无值（如测试直调）时回退实例属性（仅 outermost 会写入）。
         """
+        parent_run_id = getattr(_get_run_thread_context(), "run_id", None)
         with self._lock:
-            parent_run_id = self._current_run_id
             trace_id = self._current_trace_id
+        if parent_run_id is None:
+            with self._lock:
+                parent_run_id = self._current_run_id
 
         return self._run(
             workflow_id,

@@ -201,8 +201,10 @@ class BatExecutor(BaseExecutor):
                     ),
                 )
 
-                t_out = threading.Thread(target=_stream_pipe, args=(proc.stdout, f_out, sys.stdout))
-                t_err = threading.Thread(target=_stream_pipe, args=(proc.stderr, f_err, sys.stderr))
+                # F-04: daemon=True——同 python_executor，防止孙进程持管道
+                # 导致解释器退出时 threading._shutdown 无限等待。
+                t_out = threading.Thread(target=_stream_pipe, args=(proc.stdout, f_out, sys.stdout), daemon=True)
+                t_err = threading.Thread(target=_stream_pipe, args=(proc.stderr, f_err, sys.stderr), daemon=True)
                 try:
                     t_out.start()
                     t_err.start()

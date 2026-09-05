@@ -54,6 +54,15 @@ class RunWorker:
             )
         except RuntimeError as exc:
             self._emit_log(f"运行异常: {exc}")
+        except Exception as exc:
+            # F-07/F-01: run_engine_mode 内部已兜 except Exception，此处捕获的是
+            # 预检/生命周期漏出的非 RuntimeError（如 SQLAlchemyError 族）。吞掉会让
+            # threading.excepthook 在 windowed 构建下静默杀线程（UI 卡 "running"），
+            # 至少记日志并把终态信息送回 UI。
+            import logging
+
+            logging.getLogger(__name__).warning("运行线程异常: %s", exc, exc_info=True)
+            self._emit_log(f"运行异常: {exc}")
 
     def _emit_log(self, message: str) -> None:
         QMetaObject.invokeMethod(

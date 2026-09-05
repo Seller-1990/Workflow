@@ -311,13 +311,19 @@ class PythonExecutor(BaseExecutor):
                 )
                 
                 # 启动输出线程
+                # F-04: daemon=True——子进程退出后若孙进程仍持有管道写端，
+                # readline 会阻塞到孙进程退出；非 daemon 线程会让解释器
+                # 退出时 threading._shutdown 无限等待（窗口已关、进程不退）。
+                # daemon 线程在极端场景最多丢失日志尾部（进程即将退出，可接受）。
                 t_out = threading.Thread(
                     target=_stream_pipe,
-                    args=(proc.stdout, f_out, sys.stdout)
+                    args=(proc.stdout, f_out, sys.stdout),
+                    daemon=True,
                 )
                 t_err = threading.Thread(
                     target=_stream_pipe,
-                    args=(proc.stderr, f_err, sys.stderr)
+                    args=(proc.stderr, f_err, sys.stderr),
+                    daemon=True,
                 )
                 try:
                     t_out.start()

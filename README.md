@@ -1,6 +1,16 @@
 # 工作流管理系统 (Workflow Manager)
 
-基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、批处理、子工作流等任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：6.0.1。
+基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、批处理、子工作流等任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：6.0.2。
+
+## 6.0.2 更新日志
+
+- **会话模型重构**：SQLAlchemy `expire_on_commit=False` + 会话块退出统一 `close()`，运行对象生命周期语义明确化（detached 只读）；删除会话过期补偿代码（fallback 复制对象 ×2、identity-map 手工 expire 循环），数据库层净减约 30 行
+- **进程收尾修复**：CLI Ctrl+C 不再绕过收尾（SIGINT → 协作取消链路，运行历史正确记为 cancelled 而非 failure）；脚本输出读取线程改 daemon，孙进程持管道不再挂死应用退出；POSIX 取消改用进程组 kill（`start_new_session` + `os.killpg`），macOS/Linux 不再残留孤儿脚本进程
+- **等待与超时语义**：步骤等待改用 `time.monotonic()`（系统时钟调整不再影响超时）+ 取消事件即时唤醒（取消感知延迟 0.7s → 0.2s）
+- **缓存正确性**：删除与数据库脱钩的 schema 迁移缓存（还原旧库后迁移不再被跳过）；删除误解为"跨会话一致性"的 WAL checkpoint；工作流删除路径补环检测缓存失效
+- **数据正确性**：并行批次结果按 `step_id` 配对（重复 order 时失败详情不再归因错位）；嵌套子工作流 `parent_run_id` 记录直接父运行（threading.local 链路透传，depth≥2 不再指向根运行）
+- **安全与健壮性**：命令行参数脱敏扩展覆盖 `--api-key`/`apikey`/`auth`/`credential`/`private-key` 等命名敏感值；运行线程非 RuntimeError 异常不再静默（windowed 构建下 UI 不再卡 running）
+- **质量验证**：本地全量测试 541 passed, 1 skipped；broad-except/risky-calls/hotspot 门禁全绿
 
 ## 6.0.1 更新日志
 

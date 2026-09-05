@@ -14,7 +14,7 @@ class CliArgsParseError(ValueError):
     """用户输入的临时参数无法解析。"""
 
 
-_SENSITIVE_NAME_RE = re.compile(r"(token|secret|password)", re.IGNORECASE)
+_SENSITIVE_NAME_RE = re.compile(r"(token|secret|password|api[-_]?key|apikey|auth|credential|private[-_]?key|passwd|pwd)", re.IGNORECASE)
 _SENSITIVE_VALUE_RE = re.compile(r"(access_token=)", re.IGNORECASE)
 _KEY_EQ_VALUE_RE = re.compile(r"^(?P<prefix>--?[^=\s]+)=(?P<value>.*)$")
 

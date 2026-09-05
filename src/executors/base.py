@@ -52,7 +52,8 @@ class BaseExecutor(ABC):
         Args:
             proc: subprocess.Popen 进程对象
             timeout: 超时时间（秒）
-            cancel_event: 取消事件，设置后应尽早中断
+            cancel_event: 取消事件，设置后应尽早中断（在等待间隔上阻塞，
+                set 后立即唤醒，取消感知延迟不再受 check_interval 限制）
             check_interval: 检查间隔（秒）
 
         Returns:
@@ -61,13 +62,12 @@ class BaseExecutor(ABC):
             - (True, True): 进程被取消中断
             - (False, False): 进程超时
         """
-        start = time.time()
+        start = time.monotonic()
         while proc.poll() is None:
-            if cancel_event and cancel_event.is_set():
-                return (True, True)  # 被取消
-            if timeout and time.time() - start > timeout:
+            if cancel_event and cancel_event.wait(check_interval):
+                return (True, True)  # 被取消（wait 返回 True = 事件已 set）
+            if timeout and time.monotonic() - start > timeout:
                 return (False, False)  # 超时
-            time.sleep(check_interval)
         return (True, False)  # 进程正常结束
 
     @staticmethod
@@ -96,9 +96,13 @@ class BaseExecutor(ABC):
 
     @staticmethod
     def kill_process_tree(proc, taskkill_timeout: int = 10, wait_timeout: int = 5) -> None:
-        """MA1: 统一的进程树终止逻辑（Windows: taskkill /F /T，其它: proc.kill）
+        """MA1: 统一的进程树终止逻辑（Windows: taskkill /F /T，POSIX: killpg 进程组）
 
         子类如果有更激进的兜底（如 psutil 扫描特定进程名），可以在调用本方法后追加。
+
+        F-05: POSIX 子进程经 build_subprocess_kwargs 的 start_new_session=True
+        启动在自己的进程组中，用 os.killpg 对整组发 SIGKILL；进程组已消失
+        （或老进程未带新会话启动）时回退到 proc.kill() 只杀直接子进程。
         """
         if proc is None:
             return
@@ -115,10 +119,20 @@ class BaseExecutor(ABC):
                 except Exception:
                     pass
         else:
+            killed_group = False
             try:
-                proc.kill()
-            except Exception:
-                pass
+                import os
+                import signal
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                killed_group = True
+            except (PermissionError, ProcessLookupError):
+                # 进程组已消失或无权限：回退 proc.kill() 兜底
+                killed_group = False
+            if not killed_group:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
         try:
             proc.wait(timeout=wait_timeout)
         except (subprocess.TimeoutExpired, Exception):

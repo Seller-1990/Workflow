@@ -61,4 +61,9 @@ def delete_workflow_impl(workflow_id: int, *, get_session: Callable) -> bool:
             synchronize_session=False
         )
         session.commit()
+        # F-06: 删除工作流会移除既有 sub_workflow 边（其它工作流指向本工作流的
+        # 步骤随之失效），环检测缓存按 (parent, target) 键可能仍持有旧判定，
+        # 必须随其它结构变更路径一并全量失效。
+        from database import invalidate_cycle_check_cache
+        invalidate_cycle_check_cache()
         return True

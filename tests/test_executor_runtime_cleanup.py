@@ -143,10 +143,11 @@ def test_python_executor_timeout_cleans_up_process_resources(monkeypatch, tmp_pa
     class DummyThread:
         instances = []
 
-        def __init__(self, target=None, args=(), kwargs=None):
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
             self.target = target
             self.args = args
             self.kwargs = kwargs or {}
+            self.daemon = daemon
             self.started = False
             self.join_calls = []
             self.__class__.instances.append(self)
@@ -183,6 +184,7 @@ def test_python_executor_timeout_cleans_up_process_resources(monkeypatch, tmp_pa
     assert killed["pid"] == 4343
     assert proc.communicate_calls == [PythonExecutor.COMMUNICATE_TIMEOUT_SECONDS]
     assert all(thread.started for thread in DummyThread.instances)
+    assert all(thread.daemon for thread in DummyThread.instances)
     assert [thread.join_calls for thread in DummyThread.instances] == [
         [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
         [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
@@ -217,9 +219,10 @@ def test_python_executor_cleans_process_when_output_thread_start_fails(monkeypat
     class DummyThread:
         instances = []
 
-        def __init__(self, target=None, args=(), kwargs=None):
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
             self.started = False
             self.join_calls = []
+            self.daemon = daemon
             self.__class__.instances.append(self)
 
         def start(self):
@@ -278,10 +281,11 @@ def test_python_executor_cleanup_joins_threads_when_communicate_raises_unexpecte
     class DummyThread:
         instances = []
 
-        def __init__(self, target=None, args=(), kwargs=None):
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
             self.target = target
             self.args = args
             self.kwargs = kwargs or {}
+            self.daemon = daemon
             self.started = False
             self.join_calls = []
             self.__class__.instances.append(self)
@@ -318,6 +322,7 @@ def test_python_executor_cleanup_joins_threads_when_communicate_raises_unexpecte
     assert killed["pid"] == 5454
     assert proc.communicate_calls == [PythonExecutor.COMMUNICATE_TIMEOUT_SECONDS]
     assert all(thread.started for thread in DummyThread.instances)
+    assert all(thread.daemon for thread in DummyThread.instances)
     assert [thread.join_calls for thread in DummyThread.instances] == [
         [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
         [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
@@ -343,8 +348,9 @@ def test_python_executor_sanitizes_subprocess_env(monkeypatch, tmp_path: Path):
             return self.returncode
 
     class DummyThread:
-        def __init__(self, target=None, args=(), kwargs=None):
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
             self.join_calls = []
+            self.daemon = daemon
 
         def start(self):
             pass
