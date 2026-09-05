@@ -365,7 +365,8 @@ def test_risky_gate_blocks_run_on_no(monkeypatch):
     call = ui_theme.msg_question.call_args
     assert call.args[1] is False  # dark 参数
     assert "风险路径" in call.args[2]
-    assert "s1" in call.args[3] and "c:/evil.py" in call.args[3]  # 实际路径明细（规范化后）
+    # normalize_path 仅在 Windows 折叠大小写，POSIX 保留——断言做大小写不敏感匹配
+    assert "s1" in call.args[3] and "c:/evil.py" in call.args[3].lower()  # 实际路径明细（规范化后）
     assert call.kwargs["default_button"] is not None
     rd.RunWorker.assert_not_called()
     database.confirm_risky_paths.assert_not_called()

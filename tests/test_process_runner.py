@@ -97,7 +97,12 @@ def test_run_process_preserves_timeout_cwd_env_contract(monkeypatch, tmp_path):
     )
 
     assert result.returncode == 0
-    assert calls == [(["tool"], {"timeout": 3, "text": True, "cwd": str(tmp_path), "env": env, "stdin": -3})]
+    expected_kwargs = {"timeout": 3, "text": True, "cwd": str(tmp_path), "env": env, "stdin": -3}
+    # F-05: POSIX 注入 start_new_session=True（进程组终止前置）；win32 不注入
+    import sys as _sys
+    if _sys.platform != "win32":
+        expected_kwargs["start_new_session"] = True
+    assert calls == [(["tool"], expected_kwargs)]
     assert calls[0][1]["env"] is not env
 
 

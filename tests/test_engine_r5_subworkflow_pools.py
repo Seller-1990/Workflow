@@ -113,7 +113,10 @@ class _PoolRecorder:
     def __call__(self, *args, **kwargs):
         record = {
             "max_workers": kwargs.get("max_workers"),
-            "creator_thread": threading.get_ident(),
+            # 记线程对象而非 get_ident()：短命线程结束后其 ident 会被新线程
+            # 复用（macOS 上两个先后执行的子工作流线程可拿到相同 ident），
+            # 用对象身份才能保证"不同线程"判定的正确性。
+            "creator_thread": threading.current_thread(),
             "t": time.monotonic(),
         }
         self.created.append(record)
