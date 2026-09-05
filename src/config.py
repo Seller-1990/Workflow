@@ -57,7 +57,7 @@ DATABASE_PATH = DATA_DIR / "workflows.db"
 
 # 应用信息
 APP_NAME = "工作流管理"
-APP_VERSION = "6.0.2"
+APP_VERSION = "6.0.3"
 
 # 步骤类型
 class StepType:
