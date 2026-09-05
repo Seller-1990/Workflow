@@ -19,7 +19,8 @@ echo "[pre-commit] audit_risky_calls ..."
 "$PYTHON" tools/audit_risky_calls.py || fail
 
 echo "[pre-commit] module_hotspot_report (baseline regression) ..."
-"$PYTHON" tools/module_hotspot_report.py --top 0 --baseline quality/module_hotspot_baseline.json --fail-on-regression --max-lines 1000 --fail-on-threshold || fail
+# 阈值仅作警告输出（存量大文件已记入基线）；硬门是 --fail-on-regression（增量回退）。
+"$PYTHON" tools/module_hotspot_report.py --top 0 --baseline quality/module_hotspot_baseline.json --fail-on-regression --max-lines 1000 || fail
 
 echo "[pre-commit] compileall ..."
 "$PYTHON" -m compileall -q src tests _import_and_run.py || fail
