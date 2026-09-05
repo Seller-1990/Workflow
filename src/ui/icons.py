@@ -47,6 +47,8 @@ _ICON_MAP = {
     "type.excel": "fa5s.file-excel",
     "type.powerbi": "fa5s.chart-bar",
     "type.subworkflow": "fa5s.project-diagram",
+    # 步骤卡片标记
+    "step.gate": "fa5s.shield-alt",
     # 主题
     "theme.dark": "fa5s.moon",
     "theme.light": "fa5s.sun",
@@ -117,8 +119,8 @@ def icon(name: str, color: str | None = None) -> QIcon:
 def type_icon(step_type: str, dark: bool = False) -> QIcon:
     """获取步骤类型图标，按类型着色。
 
-    亮/暗均取 TYPE_TOKENS 对应族的 fg——它与类型徽章（TypePill）文字同源，
-    保证同屏一色（V9.3：原暗色 color_map 用基础色，与徽章的 *_aa 变体两套色值）。
+    亮/暗均取 TYPE_TOKENS 对应族的 fg，保证类型图标亮暗两套主题下同屏一色
+    （V9.3：原暗色 color_map 用基础色，与徽章的 *_aa 变体两套色值）。
 
     Args:
         step_type: python/excel_powerquery/powerbi_refresh/sub_workflow

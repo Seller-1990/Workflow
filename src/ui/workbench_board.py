@@ -4,7 +4,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QDrag, QFont
+from PySide6.QtGui import QDrag, QFont, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -42,6 +42,7 @@ class StepCard(QFrame):
     """可点击、可拖拽的步骤卡片。"""
 
     selected = Signal(int)
+    ICON_SIZE_PX = 18
 
     def __init__(self, step, order_label: str, dep_text: str, parent=None):
         super().__init__(parent)
@@ -81,28 +82,26 @@ class StepCard(QFrame):
         order.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         top.addWidget(order)
 
-        # V9：步骤类型图标 + 文字徽章
-        # V9.3：图标颜色在创建时烘焙，保存引用供 refresh_theme 按当前主题重设
+        # 类型图标 + 检查点盾牌图标（检查点卡片）。文字徽章（TypePill/“检查点”）已精简，
+        # 避免 200px 紧凑泳道下顶行溢出截断；类型与检查点全称保留在 tooltip 和 accessibleName。
+        # 图标颜色在创建时烘焙，保存引用供 refresh_theme 按当前主题重设
         from ui.icons import type_icon
         self._step_type = step.step_type
+        self._is_gate = bool(getattr(step, "is_gate", False))
         self.type_icon_label = QLabel()
-        self.type_icon_label.setPixmap(type_icon(step.step_type, dark=False).pixmap(14, 14))
+        self.type_icon_label.setPixmap(
+            type_icon(step.step_type, dark=False).pixmap(self.ICON_SIZE_PX, self.ICON_SIZE_PX)
+        )
+        self.type_icon_label.setAccessibleName(f"类型：{TYPE_LABELS.get(step.step_type, step.step_type)}")
         self.type_icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         top.addWidget(self.type_icon_label)
 
-        step_type = QLabel(TYPE_LABELS.get(step.step_type, "Python"))
-        step_type.setObjectName("TypePill")
-        step_type.setProperty("stepType", TYPE_CLASSES.get(step.step_type, "python"))
-        step_type.setAlignment(Qt.AlignCenter)
-        step_type.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        top.addWidget(step_type)
-
-        if getattr(step, "is_gate", False):
-            gate = QLabel("检查点")
-            gate.setObjectName("CheckpointBadge")
-            gate.setAlignment(Qt.AlignCenter)
-            gate.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            top.addWidget(gate)
+        if self._is_gate:
+            self.gate_icon_label = QLabel()
+            self.gate_icon_label.setPixmap(self._gate_pixmap(dark=False))
+            self.gate_icon_label.setAccessibleName("检查点")
+            self.gate_icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            top.addWidget(self.gate_icon_label)
 
         top.addStretch()
         self.status_badge = QLabel("")
@@ -213,10 +212,23 @@ class StepCard(QFrame):
         drag.setMimeData(mime)
         drag.exec(Qt.MoveAction)
 
+    def _gate_pixmap(self, dark: bool) -> QPixmap:
+        """检查点盾牌图标，按主题取 violet 色（与卡片检查点左侧边框同源）。"""
+        from ui.icons import icon
+        from ui.theme import get_colors
+
+        return icon("step.gate", color=get_colors(dark)["violet"]).pixmap(
+            self.ICON_SIZE_PX, self.ICON_SIZE_PX
+        )
+
     def refresh_theme(self, dark: bool):
-        """主题切换后按新主题重设类型图标颜色（颜色创建时烘焙，无法靠 QSS 更新）。"""
+        """主题切换后按新主题重设图标颜色（颜色创建时烘焙，无法靠 QSS 更新）。"""
         from ui.icons import type_icon
-        self.type_icon_label.setPixmap(type_icon(self._step_type, dark=dark).pixmap(14, 14))
+        self.type_icon_label.setPixmap(
+            type_icon(self._step_type, dark=dark).pixmap(self.ICON_SIZE_PX, self.ICON_SIZE_PX)
+        )
+        if self._is_gate:
+            self.gate_icon_label.setPixmap(self._gate_pixmap(dark))
 
     @staticmethod
     def _subtitle(step, dep_text: str) -> str:

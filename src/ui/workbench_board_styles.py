@@ -146,40 +146,6 @@ def build_board_stylesheet(c: dict) -> str:
             text-align: center;
             qproperty-alignment: AlignCenter;
         }}
-        QLabel#TypePill {{
-            padding: 2px 7px;
-            border-radius: 10px;
-            font-size: 11px;
-            font-weight: 740;
-            text-align: center;
-            qproperty-alignment: AlignCenter;
-        }}
-        QLabel#TypePill[stepType="python"] {{
-            color: {c["blue"]};
-            background: {c["blue_weak"]};
-        }}
-        QLabel#TypePill[stepType="excel"] {{
-            color: {c["green"]};
-            background: {c["green_weak"]};
-        }}
-        QLabel#TypePill[stepType="powerbi"] {{
-            color: {c["amber"]};
-            background: {c["amber_weak"]};
-        }}
-        QLabel#TypePill[stepType="subworkflow"] {{
-            color: {c["violet"]};
-            background: {c["violet_weak"]};
-        }}
-        QLabel#CheckpointBadge {{
-            padding: 2px 7px;
-            color: {c["violet"]};
-            background: {c["violet_weak"]};
-            border-radius: 10px;
-            font-size: 11px;
-            font-weight: 740;
-            text-align: center;
-            qproperty-alignment: AlignCenter;
-        }}
         QLabel#StatusBadge {{
             padding: 2px 7px;
             border-radius: 10px;

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 import ui.workbench_board as board_module
 from ui.workbench_board import (
@@ -130,6 +130,30 @@ def test_theme_refresh_recolors_step_card_type_icons(monkeypatch):
         assert after != before
     finally:
         panel.deleteLater()
+        assert app is not None
+
+
+def test_gate_card_renders_shield_icon_without_text_pill(monkeypatch):
+    """检查点卡片：盾牌图标替代“检查点”文字徽章，TypePill 文字徽章移除，主题切换需重刷图标色。"""
+    app = QApplication.instance() or QApplication([])
+    step = DummyStep(9, "step-9", "门禁校验", "stage-a", 1, is_gate=True)
+    card = board_module.StepCard(step, "B1", "script.py · 检查点")
+    try:
+        assert card.findChild(QLabel, "TypePill") is None
+        assert not card.type_icon_label.pixmap().isNull()
+        assert not card.gate_icon_label.pixmap().isNull()
+        assert card.type_icon_label.accessibleName() == "类型：Python"
+        assert card.gate_icon_label.accessibleName() == "检查点"
+        assert "类型：Python" in card.toolTip()
+
+        before = card.gate_icon_label.pixmap().toImage()
+        card.refresh_theme(dark=True)
+        after = card.gate_icon_label.pixmap().toImage()
+        assert not after.isNull()
+        # 亮暗 violet token 色不同，重设后位图必须变化
+        assert after != before
+    finally:
+        card.deleteLater()
         assert app is not None
 
 
