@@ -89,9 +89,18 @@ def _run_self_check(qt_args: list[str]) -> int:
             app.quit()
 
     failed = False
+    # 发布自检运行在附加控制台/重定向下，stdout 编码可能是 cp1252 等窄字符集；
+    # detail 含中文（如 TLS CA 诊断提示）时 UnicodeEncodeError 会崩掉整个自检，
+    # 反而看不到 FAIL 原因。按 stdout 实际编码清洗不可编码字符。
+    stdout_encoding = (getattr(sys.stdout, "encoding", None) or "utf-8")
     for name, ok, detail in checks:
         status = "OK" if ok else "FAIL"
-        print(f"[self-check] {status} {name}: {detail}", flush=True)
+        line = f"[self-check] {status} {name}: {detail}"
+        try:
+            line.encode(stdout_encoding)
+        except (UnicodeEncodeError, LookupError):
+            line = line.encode(stdout_encoding, errors="replace").decode(stdout_encoding)
+        print(line, flush=True)
         failed = failed or not ok
     return 1 if failed else 0
 

@@ -56,7 +56,7 @@
     "src/ui/step_table/reorderable_table.py": 270,
     "src/ui/run_dispatch.py": 270,
     "tests/test_ui_batch_ops.py": 267,
-    "src/main.py": 254,
+    "src/main.py": 263,
     "tests/test_notify_status.py": 243,
     "tests/test_repo_hygiene.py": 239,
     "src/executors/base.py": 235,
