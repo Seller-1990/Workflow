@@ -23,11 +23,19 @@ def create_migration_snapshot(database_path: Path, target_version: int) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     backup_path = backup_dir / f"{source_path.stem}_before_v{target_version}_{timestamp}.db"
 
-    with sqlite3.connect(source_path) as source, sqlite3.connect(backup_path) as target:
+    source = sqlite3.connect(source_path)
+    target = sqlite3.connect(backup_path)
+    try:
         source.backup(target)
+    finally:
+        target.close()
+        source.close()
 
-    with sqlite3.connect(backup_path) as snapshot:
+    snapshot = sqlite3.connect(backup_path)
+    try:
         result = snapshot.execute("PRAGMA integrity_check").fetchone()
+    finally:
+        snapshot.close()
     if not result or result[0] != "ok":
         backup_path.unlink(missing_ok=True)
         raise RuntimeError(f"Migration snapshot integrity check failed: {backup_path}")

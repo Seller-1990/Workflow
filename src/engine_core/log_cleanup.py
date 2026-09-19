@@ -104,4 +104,8 @@ def cleanup_old_log_dirs(
 
 
 def _remove_tree(path: Path) -> None:
-    shutil.rmtree(path, ignore_errors=True)
+    import logging
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        logging.getLogger(__name__).warning("删除目录失败: %s, %s", path, exc)

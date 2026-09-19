@@ -35,7 +35,7 @@ def is_valid_dingtalk_webhook_url(value: str | None) -> bool:
         result = urlparse(text)
     except Exception:
         return False
-    if result.scheme != "https" or result.netloc.lower() != DINGTALK_WEBHOOK_HOST:
+    if result.scheme != "https" or (result.hostname or "").lower() != DINGTALK_WEBHOOK_HOST:
         return False
     if result.path.rstrip("/") != DINGTALK_WEBHOOK_PATH:
         return False
@@ -52,6 +52,6 @@ def mask_webhook_url_for_log(value: str | None) -> str:
         result = urlparse(text)
     except Exception:
         return "<invalid-url>"
-    host = result.netloc or "<no-host>"
+    host = result.hostname or result.netloc or "<no-host>"
     path = result.path or ""
     return f"{result.scheme}://{host}{path}?access_token=<redacted>"

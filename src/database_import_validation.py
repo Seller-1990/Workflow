@@ -25,7 +25,7 @@ _NOTIFY_SCHEMA_FIELDS = {
 def validate_import_payload(data) -> dict:
     data = _expect_mapping(data, "$")
     version = data.get("version")
-    if version != EXPORT_SCHEMA_VERSION:
+    if not isinstance(version, int) or version != EXPORT_SCHEMA_VERSION:
         raise _json_error(
             "$.version",
             f"不支持的导入版本: {version!r}，当前仅支持 {EXPORT_SCHEMA_VERSION}",

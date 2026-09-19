@@ -190,7 +190,10 @@ class Step(Base):
         """获取参数列表"""
         if self.args:
             try:
-                return json.loads(self.args)
+                value = json.loads(self.args)
+                if isinstance(value, list):
+                    return value
+                logger.warning("步骤参数不是 JSON 数组: step=%s", self.uid)
             except json.JSONDecodeError as e:
                 logger.warning("步骤参数 JSON 解析失败: %s", e)
         return []
@@ -237,7 +240,10 @@ class Step(Base):
         """获取声明的输出路径列表（ROI-2）"""
         if self.output_paths:
             try:
-                return json.loads(self.output_paths)
+                value = json.loads(self.output_paths)
+                if isinstance(value, list):
+                    return value
+                logger.warning("步骤输出路径不是 JSON 数组: step=%s", self.uid)
             except json.JSONDecodeError as e:
                 logger.warning("步骤输出路径 JSON 解析失败: %s", e)
         return []

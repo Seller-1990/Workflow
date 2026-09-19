@@ -36,13 +36,16 @@ def _cleanup_hint() -> str:
     if not bundle_root:
         return ""
     root = Path(bundle_root)
-    if root.exists():
-        missing = not (root / "certifi").exists()
-        if missing:
-            return (
-                "运行时临时目录存在但缺少解压文件(可能被系统磁盘清理删除),"
-                "请关闭并重新启动应用后重试。"
-            )
+    if not root.exists():
+        return (
+            "运行时临时目录已不存在(可能被系统磁盘清理删除),"
+            "请关闭并重新启动应用后重试。"
+        )
+    if not (root / "certifi").exists():
+        return (
+            "运行时临时目录存在但缺少解压文件(可能被系统磁盘清理删除),"
+            "请关闭并重新启动应用后重试。"
+        )
     return ""
 
 

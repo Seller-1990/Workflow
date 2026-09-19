@@ -14,8 +14,8 @@ class CliArgsParseError(ValueError):
     """用户输入的临时参数无法解析。"""
 
 
-_SENSITIVE_NAME_RE = re.compile(r"(token|secret|password|api[-_]?key|apikey|auth|credential|private[-_]?key|passwd|pwd)", re.IGNORECASE)
-_SENSITIVE_VALUE_RE = re.compile(r"(access_token=)", re.IGNORECASE)
+_SENSITIVE_NAME_RE = re.compile(r"(token|secret|password|api[-_]?key|apikey|auth|credential|private[-_]?key|passwd|pwd|bearer)", re.IGNORECASE)
+_SENSITIVE_VALUE_RE = re.compile(r"(token|secret|password|api[-_]?key|apikey|auth|credential|private[-_]?key|passwd|pwd|bearer)[-\s]*=", re.IGNORECASE)
 _KEY_EQ_VALUE_RE = re.compile(r"^(?P<prefix>--?[^=\s]+)=(?P<value>.*)$")
 
 
@@ -67,6 +67,12 @@ def parse_cli_args_text(text: str | None) -> list[str]:
         for part in parts:
             if len(part) >= 2 and part[0] == part[-1] and part[0] in {'"', "'"}:
                 cleaned.append(part[1:-1])
+            elif '=' in part:
+                key, sep, val = part.partition('=')
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in {'"', "'"}:
+                    cleaned.append(f"{key}{sep}{val[1:-1]}")
+                else:
+                    cleaned.append(part)
             else:
                 cleaned.append(part)
         parts = cleaned
@@ -136,7 +142,7 @@ def redact_cli_args(args: Iterable[str] | None) -> list[str]:
         # --token abc
         if token.startswith("-") and _SENSITIVE_NAME_RE.search(token):
             redacted.append(token)
-            if i + 1 < len(items) and not str(items[i + 1]).startswith("-"):
+            if i + 1 < len(items):
                 redacted.append("****")
                 i += 2
             else:

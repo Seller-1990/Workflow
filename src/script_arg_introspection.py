@@ -276,9 +276,12 @@ def _literal(node: ast.AST) -> Any:
     if isinstance(node, ast.Constant):
         return node.value
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        return type(node)([_literal(elt) for elt in node.elts]) if False else [
-            _literal(elt) for elt in node.elts
-        ]
+        elts = [_literal(elt) for elt in node.elts]
+        if isinstance(node, ast.Tuple):
+            return tuple(elts)
+        if isinstance(node, ast.Set):
+            return set(elts)
+        return elts
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
         val = _literal(node.operand)
         if isinstance(val, (int, float)):

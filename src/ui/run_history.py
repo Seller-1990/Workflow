@@ -539,7 +539,9 @@ class RunHistoryPanel(QWidget):
 
     def _open_log_dir(self, log_dir: str):
         """打开日志目录"""
-        os.startfile(log_dir)
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(log_dir))
 
     def _on_row_double_clicked(self, row: int, col: int):
         """双击行打开日志目录"""

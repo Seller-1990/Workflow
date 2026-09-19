@@ -41,7 +41,7 @@ def create_workflow(
             max_workers=max_workers
         )
         session.add(workflow)
-        session.commit()
+        session.flush()
         session.refresh(workflow)
         # 默认用途阶段：避免旧行为变化（只有一个阶段时等价于原执行）
         _ensure_default_stage_in_session(session, workflow.id)

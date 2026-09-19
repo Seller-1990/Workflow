@@ -359,9 +359,10 @@ class PythonExecutor(BaseExecutor):
                             # 超时：与原 subprocess.TimeoutExpired 路径行为一致
                             raise subprocess.TimeoutExpired(cmd=str(script_path), timeout=timeout)
                     else:
-                        if timeout is not None:
+                        if timeout and timeout > 0:
                             proc.wait(timeout=timeout)
                         else:
+                            # timeout=0 沿用历史语义"不限制"
                             proc.wait()
                 except subprocess.TimeoutExpired:
                     self.kill_process_tree(proc)

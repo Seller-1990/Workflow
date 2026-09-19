@@ -245,7 +245,7 @@ def record_skip_on_success(
         start_time=start_time,
         end_time=end_time,
         note=note,
-        order=getattr(step, "order", 0),
+        order=step.order,
     )
     return SkipDecision(
         step_log_id=step_log_id,

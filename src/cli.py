@@ -770,7 +770,10 @@ def cmd_delete(args):
     workflow_id = resolve_workflow_id(args.workflow_id)
     if not args.force:
         workflow = get_workflow_by_id(workflow_id)
-        confirm = input(f"确认删除工作流「{workflow.name if workflow else workflow_id}」? (y/N): ")
+        try:
+            confirm = input(f"确认删除工作流「{workflow.name if workflow else workflow_id}」? (y/N): ")
+        except EOFError:
+            confirm = ""
         if confirm.lower() != 'y':
             print("已取消")
             return

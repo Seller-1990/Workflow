@@ -178,7 +178,7 @@ class RunControlPanel(QWidget):
         """设置选中的步骤和所属阶段"""
         self._selected_step_id = step_id
         self._selected_stage_uid = stage_uid
-        if step_id:
+        if step_id is not None:
             stage_info = f" | 阶段: {stage_uid}" if stage_uid else ""
             self.lbl_selected.setText(f"已选中步骤 ID: {step_id}{stage_info}")
         else:

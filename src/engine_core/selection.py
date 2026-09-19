@@ -59,7 +59,7 @@ def select_steps(
             pending_status_value=pending_status_value,
             log_cb=log_cb,
         )
-    return all_steps
+    raise ConfigurationError(f"未知的运行模式: {mode_value}")
 
 
 def _select_from_step(all_steps: List[object], step_id: int | None) -> List[object]:

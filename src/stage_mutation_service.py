@@ -162,9 +162,11 @@ def move_step_to_stage(workflow_id: int, step_id: int, target_stage_uid: str) ->
 
     step_ids.remove(step_id)
     insert_at = 0
-    for index, step in enumerate(steps_sorted):
+    for step in steps_sorted:
+        if step.id == step_id:
+            continue
         if getattr(step, "stage_uid", None) == target_stage_uid:
-            insert_at = index + 1
+            insert_at = step_ids.index(step.id) + 1
 
     insert_at = max(0, min(insert_at, len(step_ids)))
     step_ids.insert(insert_at, step_id)

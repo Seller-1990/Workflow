@@ -196,7 +196,8 @@ class LogPanel(QWidget):
                 block_count - _MAX_LOG_LINES,
             )
             cursor.removeSelectedText()
-            cursor.deleteChar()
+            # cursor.deleteChar() 已移除：removeSelectedText 已删除选中块，
+            # 额外 deleteChar 会多删一行有效日志
         # 滚动到底部
         cursor = self.log_text.textCursor()
         cursor.movePosition(QTextCursor.End)
@@ -327,6 +328,8 @@ class LogPanel(QWidget):
             return
         try:
             import os
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
             # P-11: 改用单条 IN 查询批量获取最近 20 个 run 的对应 step_log，
             # 替代原"循环 history × 每条查 step_logs"的 N+1 调用
             from database import get_recent_step_logs_for_step
@@ -335,12 +338,12 @@ class LogPanel(QWidget):
             for target in logs:
                 stdout_path = getattr(target, "stdout_path", None)
                 if stdout_path and os.path.isfile(stdout_path):
-                    os.startfile(stdout_path)
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(stdout_path))
                     return
                 if stdout_path:
                     parent = os.path.dirname(stdout_path)
                     if os.path.isdir(parent):
-                        os.startfile(parent)
+                        QDesktopServices.openUrl(QUrl.fromLocalFile(parent))
                         return
         except Exception:
             return
@@ -358,9 +361,10 @@ class LogPanel(QWidget):
             f'<span style="color:{err_color};font-weight:bold;">'
             f'══ {len(error_list)} 个步骤失败 ══</span>'
         )
+        import html as html_mod
         for item in error_list:
-            name = item.get("step_name", "")
-            err = item.get("error_message", "")
+            name = html_mod.escape(str(item.get("step_name", "")))
+            err = html_mod.escape(str(item.get("error_message", "")))
             self.log_text.append(
                 f'<span style="color:{err_color};">  ✖ {name}: {err}</span>'
             )

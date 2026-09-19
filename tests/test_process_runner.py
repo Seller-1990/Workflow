@@ -1,4 +1,5 @@
 import ast
+import subprocess
 from pathlib import Path
 
 from runtime.process_runner import ProcessRunResult, build_subprocess_kwargs, run_process, start_process
@@ -28,7 +29,10 @@ def test_run_process_wraps_completed_process(monkeypatch):
     monkeypatch.setattr("runtime.process_runner.subprocess.run", fake_run)
     result = run_process(("tool", "arg"), check=False)
     assert result == ProcessRunResult(args=["tool", "arg"], returncode=7, stdout="out", stderr="err")
-    assert calls == [(["tool", "arg"], {"check": False})]
+    assert len(calls) == 1
+    assert calls[0][0] == ["tool", "arg"]
+    assert calls[0][1]["check"] is False
+    assert calls[0][1]["stdin"] == subprocess.DEVNULL
 
 
 def test_start_process_uses_argument_list(monkeypatch):
@@ -41,7 +45,10 @@ def test_start_process_uses_argument_list(monkeypatch):
 
     monkeypatch.setattr("runtime.process_runner.subprocess.Popen", fake_popen)
     assert start_process(("tool", "arg"), stdout=-1) is sentinel
-    assert calls == [(["tool", "arg"], {"stdout": -1})]
+    assert len(calls) == 1
+    assert calls[0][0] == ["tool", "arg"]
+    assert calls[0][1]["stdout"] == -1
+    assert calls[0][1]["stdin"] == subprocess.DEVNULL
 
 
 import pytest

@@ -140,19 +140,20 @@ def refresh_target_options(panel, text: str = ""):
         recent_uids = set(list_recent_workflows())
 
     panel.combo_target_workflow.blockSignals(True)  # 防止触发信号
-    panel.combo_target_workflow.clear()
+    try:
+        panel.combo_target_workflow.clear()
 
-    for name, uid in panel._workflow_targets:
-        if scope == "recent" and uid not in recent_uids:
-            continue
-        if keyword and keyword not in name.lower():
-            continue
-        panel.combo_target_workflow.addItem(name, uid)
+        for name, uid in panel._workflow_targets:
+            if scope == "recent" and uid not in recent_uids:
+                continue
+            if keyword and keyword not in name.lower():
+                continue
+            panel.combo_target_workflow.addItem(name, uid)
 
-    # 恢复选中状态
-    if panel._current_target_uid:
-        idx = panel.combo_target_workflow.findData(panel._current_target_uid)
-        if idx >= 0:
-            panel.combo_target_workflow.setCurrentIndex(idx)
-
-    panel.combo_target_workflow.blockSignals(False)
+        # 恢复选中状态
+        if panel._current_target_uid:
+            idx = panel.combo_target_workflow.findData(panel._current_target_uid)
+            if idx >= 0:
+                panel.combo_target_workflow.setCurrentIndex(idx)
+    finally:
+        panel.combo_target_workflow.blockSignals(False)

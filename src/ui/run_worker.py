@@ -33,6 +33,8 @@ class RunWorker:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError("RunWorker already running")
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 

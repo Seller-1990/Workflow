@@ -500,6 +500,9 @@ def insert_stage_before(panel, stage_uid: str):
     stage = next((s for s in panel._stages if s["uid"] == stage_uid), None)
     base_order = int(stage.get("order", 0) if stage else 0)
     new_stage = create_stage(panel._workflow_id, name="新阶段", order=base_order)
+    if new_stage is None:
+        panel._notify_status("新增阶段失败")
+        return
     panel.load_steps(panel._workflow_id)
     panel.steps_changed.emit()
     panel._notify_status(f"已新增阶段：{new_stage.name}")
@@ -619,6 +622,8 @@ def on_rows_dragged(panel, from_row: int, to_row: int):
                 to_idx = step_ids.index(sid)
 
     step_ids.pop(from_idx)
+    if from_idx < to_idx:
+        to_idx -= 1
     if to_idx > len(step_ids):
         to_idx = len(step_ids)
     step_ids.insert(to_idx, moved_step_id)

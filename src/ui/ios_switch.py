@@ -54,7 +54,6 @@ class IosSwitch(QCheckBox):
             new_state = not self.isChecked()
             self.setChecked(new_state)
             self.update()
-            self.stateChanged.emit(2 if new_state else 0)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -65,7 +64,6 @@ class IosSwitch(QCheckBox):
                 new_state = not self.isChecked()
                 self.setChecked(new_state)
                 self.update()
-                self.stateChanged.emit(2 if new_state else 0)
             event.accept()
             return
         super().keyPressEvent(event)

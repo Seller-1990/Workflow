@@ -138,4 +138,7 @@ def get_webhooks_by_ids(webhook_ids: List[int]) -> List[WebhookConfig]:
         return []
     from database import get_session
     with get_session() as session:
-        return session.query(WebhookConfig).filter(WebhookConfig.id.in_(webhook_ids)).all()
+        rows = session.query(WebhookConfig).filter(WebhookConfig.id.in_(webhook_ids)).all()
+        for row in rows:
+            session.expunge(row)
+        return rows

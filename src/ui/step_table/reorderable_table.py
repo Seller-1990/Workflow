@@ -93,7 +93,8 @@ class ReorderableTable(QTableWidget):
 
     def startDrag(self, supportedActions):
         # 任务9：多选时禁用拖拽，避免多选+拖拽语义混乱
-        if len(self.selectedItems()) > 1:
+        selected_rows = self.selectionModel().selectedRows() if self.selectionModel() else []
+        if len(selected_rows) > 1:
             self._notify_status("拖拽：多选时不支持拖拽，请单选后拖拽。")
             return
         self._drag_from_row = self.currentRow()

@@ -175,7 +175,9 @@ class ErrorSummaryDialog(QDialog):
                     if target:
                         for path in [getattr(target, "stdout_path", None), getattr(target, "stderr_path", None)]:
                             if path and os.path.exists(path):
-                                os.startfile(path)
+                                from PySide6.QtGui import QDesktopServices
+                                from PySide6.QtCore import QUrl
+                                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
                                 return
         except Exception:
             pass
