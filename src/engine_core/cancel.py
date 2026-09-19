@@ -36,7 +36,16 @@ def install_cancel_watcher(
         # 注意：cancel_event.wait(poll_interval) 在 event 被 set 时立即返回，
         # 所以这里既轮询 is_cancelled 又能响应 finally 中的 cancel_event.set()
         while not cancel_event.is_set():
-            if is_cancelled_cb():
+            try:
+                cancelled = is_cancelled_cb()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "is_cancelled_cb raised; forcing cancel_event"
+                )
+                cancel_event.set()
+                break
+            if cancelled:
                 cancel_event.set()
                 break
             cancel_event.wait(poll_interval)

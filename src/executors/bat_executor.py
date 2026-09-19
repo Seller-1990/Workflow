@@ -186,7 +186,7 @@ class BatExecutor(BaseExecutor):
                  open(stderr_path, 'w', encoding='utf-8-sig') as f_err:
                 f_out.write(f"[BatExecutor] script: {script}\n")
 
-                creation_flags = subprocess.CREATE_NO_WINDOW
+                creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
                 proc = start_process(
                     cmd,

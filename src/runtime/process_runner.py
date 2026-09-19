@@ -45,6 +45,9 @@ def _validate_kwargs(kwargs: Mapping[str, Any]) -> None:
     shell = kwargs.get("shell")
     if shell:
         raise ValueError("shell=True is forbidden for Workflow runtime processes")
+    executable = kwargs.get("executable")
+    if executable and executable not in ("", None):
+        raise ValueError("executable= is forbidden for Workflow runtime processes")
 
 
 def build_subprocess_kwargs(
@@ -77,8 +80,8 @@ def build_subprocess_kwargs(
 def run_process(args: Sequence[str], **kwargs: Any) -> ProcessRunResult:
     """Run a child process through the reviewed runtime boundary."""
 
-    _validate_kwargs(kwargs)
-    completed = subprocess.run(_normalize_args(args), **kwargs)
+    built = build_subprocess_kwargs(**kwargs)
+    completed = subprocess.run(_normalize_args(args), **built)
     return ProcessRunResult(
         args=list(completed.args) if isinstance(completed.args, (list, tuple)) else [str(completed.args)],
         returncode=completed.returncode,
@@ -90,5 +93,5 @@ def run_process(args: Sequence[str], **kwargs: Any) -> ProcessRunResult:
 def start_process(args: Sequence[str], **kwargs: Any) -> subprocess.Popen:
     """Start a child process through the reviewed runtime boundary."""
 
-    _validate_kwargs(kwargs)
-    return subprocess.Popen(_normalize_args(args), **kwargs)
+    built = build_subprocess_kwargs(**kwargs)
+    return subprocess.Popen(_normalize_args(args), **built)

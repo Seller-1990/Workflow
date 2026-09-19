@@ -30,6 +30,7 @@ def _settings() -> QSettings:
 def save_main_splitter_sizes(sizes: list[int], debounce_timer: QTimer) -> None:
     """防抖保存 splitter sizes（300ms）。"""
     debounce_timer.setProperty("pending_sizes", sizes)
+    debounce_timer.setSingleShot(True)
     debounce_timer.start(300)
 
 

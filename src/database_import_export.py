@@ -420,7 +420,11 @@ def _import_steps(
     default_stage_uid: str,
     generate_uid: Callable[[], str],
 ) -> None:
+    if not isinstance(steps_data, list):
+        return
     for idx, step_data in enumerate(steps_data):
+        if not isinstance(step_data, dict):
+            continue
         stage_uid_in = (step_data.get("stage_uid") or "").strip()
         stage_uid = stage_uid_map.get(stage_uid_in, stage_uid_in) if stage_uid_in else default_stage_uid
         if stage_uid not in stage_uid_set:

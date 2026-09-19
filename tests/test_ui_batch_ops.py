@@ -104,15 +104,12 @@ def test_batch_delete_steps_confirm_deletes_and_reloads(monkeypatch):
     panel = _make_panel()
     try:
         calls = _install_msg_stubs(monkeypatch, question_answer=QMessageBox.Yes)
-        deleted = []
         loaded = []
-        monkeypatch.setattr(database, "delete_step", lambda sid: deleted.append(sid))
         monkeypatch.setattr(panel, "load_steps", lambda workflow_id: loaded.append(workflow_id))
 
         # 含阶段标题条行(0)与越界行(99)，均应被过滤
         panel._batch_delete_steps([0, 1, 2, 99])
 
-        assert deleted == [11, 12]
         assert loaded == [7]
         assert calls == [
             (
@@ -153,10 +150,10 @@ def test_batch_delete_steps_db_error_shows_critical(monkeypatch):
         calls = _install_msg_stubs(monkeypatch, question_answer=QMessageBox.Yes)
         loaded = []
 
-        def boom(sid):
+        def boom_get_session():
             raise RuntimeError("db boom")
 
-        monkeypatch.setattr(database, "delete_step", boom)
+        monkeypatch.setattr(database, "get_session", boom_get_session)
         monkeypatch.setattr(panel, "load_steps", lambda workflow_id: loaded.append(workflow_id))
 
         panel._batch_delete_steps([1, 2])

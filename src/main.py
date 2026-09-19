@@ -161,8 +161,8 @@ def _try_dispatch_cli(argv: list[str]) -> int | None:
     # 转发到 cli.main
     try:
         from cli import main as cli_main
-        cli_main(argv)
-        return 0
+        rc = cli_main(argv)
+        return int(rc) if rc is not None else 0
     except SystemExit as e:
         return int(getattr(e, "code", 0) or 0)
     except Exception as exc:

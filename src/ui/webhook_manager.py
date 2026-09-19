@@ -526,7 +526,12 @@ class WebhookManagerDialog(QDialog):
         send_func = send_dingtalk_message
 
         def _send_in_background():
-            ok, msg = send_func(url, message, keyword)
+            try:
+                ok, msg = send_func(url, message, keyword)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).exception("Webhook 测试发送异常")
+                ok, msg = False, str(exc)
             try:
                 self._test_finished.emit(ok, msg)
             except RuntimeError:

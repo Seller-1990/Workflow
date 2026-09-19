@@ -197,6 +197,7 @@ def run_steps_parallel(
                 metrics.failed += 1
                 metrics.completed += 1
                 if on_exception is None:
+                    _cancel_not_started(futures)
                     raise
                 results.append(on_exception(step, e))
             if _stop_requested():

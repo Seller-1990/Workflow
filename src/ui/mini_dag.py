@@ -72,7 +72,7 @@ class MiniDagWidget(QWidget):
 
     def _on_item_double_clicked(self, item):
         step_id = item.data(Qt.UserRole)
-        if step_id:
+        if step_id is not None:
             self.step_activated.emit(int(step_id))
 
     def set_data(self, current_step, upstream_steps, downstream_steps):
@@ -127,7 +127,7 @@ class MiniDagWidget(QWidget):
         if is_current:
             text = f"▶ {text}"
         it = QListWidgetItem(text)
-        if step_id:
+        if step_id is not None:
             it.setData(Qt.UserRole, step_id)
         # 类型色条用 background 区分；type_key 存入 UserRole+1 供 refresh_theme 重涂
         tokens = get_type_tokens(self._dark)

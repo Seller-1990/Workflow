@@ -123,8 +123,11 @@ class BaseExecutor(ABC):
             try:
                 import os
                 import signal
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                killed_group = True
+                child_pgid = os.getpgid(proc.pid)
+                parent_pgid = os.getpgid(0)
+                if child_pgid != parent_pgid:
+                    os.killpg(child_pgid, signal.SIGKILL)
+                    killed_group = True
             except (PermissionError, ProcessLookupError):
                 # 进程组已消失或无权限：回退 proc.kill() 兜底
                 killed_group = False

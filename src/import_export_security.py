@@ -17,10 +17,18 @@ def assert_no_plain_webhook_secrets(payload: object) -> None:
         raise ValueError(f"导出 payload 包含未脱敏 Webhook access_token: {joined}")
 
 
+_SECRET_PATTERNS = (
+    "access_token=", "refresh_token=", "client_secret=",
+    "bearer ", "authorization=", "password=", "api_key=",
+)
+
+
 def _collect_plain_webhook_secret_paths(value: object, path: str, leaks: list[str]) -> None:
     if isinstance(value, str):
-        if value != MASKED_WEBHOOK_PLACEHOLDER and "access_token=" in value:
-            leaks.append(path)
+        if value != MASKED_WEBHOOK_PLACEHOLDER:
+            lower = value.lower()
+            if any(p in lower for p in _SECRET_PATTERNS):
+                leaks.append(path)
         return
     if isinstance(value, Mapping):
         for key, item in value.items():

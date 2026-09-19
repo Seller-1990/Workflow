@@ -96,11 +96,15 @@ class GlobalProgressBar(QFrame):
         self._bar.setRange(0, 100)
         self._bar.setValue(100)
         self._set_chunk_color(get_colors(self._dark)["success"])
+        self.setFixedHeight(self.VISIBLE_HEIGHT)
         self._hide_timer.start(self._HIDE_DELAY_MS)
 
     def show_failure(self) -> None:
         """运行失败：变红，延迟隐藏。"""
+        self._bar.setRange(0, 100)
+        self._bar.setValue(100)
         self._set_chunk_color(get_colors(self._dark)["danger"])
+        self.setFixedHeight(self.VISIBLE_HEIGHT)
         self._hide_timer.start(self._HIDE_DELAY_MS)
 
     def _set_chunk_color(self, color: str) -> None:

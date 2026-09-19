@@ -105,11 +105,21 @@ def on_run_requested(window, mode: str, param):
             window._on_bg_running_label_clicked(None)
             return
         # stop_run_new_btn：先取消，等 finished 信号到再触发新运行
+        stop_failed = False
         try:
             stop_workflow(window)
             window.statusbar.showMessage("已请求停止当前运行，等待后再启动新运行...", 5000)
         except Exception as e:
             logger.warning("请求停止失败: %s", e)
+            stop_failed = True
+        if stop_failed:
+            msg_warning(
+                window,
+                getattr(window, "_dark_mode", False),
+                "停止失败",
+                "无法停止当前运行，新运行已取消。",
+            )
+            return
 
         target_workflow_id = window._current_workflow_id
         target_mode = mode
@@ -133,16 +143,16 @@ def on_run_requested(window, mode: str, param):
             window._pending_retry_cb = None
             # 异步重新触发请求，让 Qt 完整跑完 finished 逻辑
             from PySide6.QtCore import QTimer as _QTimer
-            if window._current_workflow_id == target_workflow_id:
-                _QTimer.singleShot(
-                    50,
-                    lambda: window._on_run_requested(target_mode, target_param),
-                )
-            else:
-                # R8-#3: 用户在等待期间切了工作流——放弃重试，但显式告知
-                window.statusbar.showMessage(
-                    "已取消待执行的新运行（工作流已切换）", 4000
-                )
+            _QTimer.singleShot(
+                50,
+                lambda: (
+                    window._on_run_requested(target_mode, target_param)
+                    if window._current_workflow_id == target_workflow_id
+                    else window.statusbar.showMessage(
+                        "已取消待执行的新运行（工作流已切换）", 4000
+                    )
+                ),
+            )
 
         try:
             window.engine.workflow_finished.connect(_retry_after_stop)

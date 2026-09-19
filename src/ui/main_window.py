@@ -766,7 +766,7 @@ class MainWindow(QMainWindow):
             # R3-#9 / #15: 把较重的 history 异步刷新，避免一次性触发 DB 查询阻塞主线程
             QTimer.singleShot(0, lambda w=wid: self._async_load_history(w))
 
-    @Slot(bool)
+    @Slot(str, object)
     def _on_run_requested(self, mode: str, param):
         """运行请求（实现在 ui.run_dispatch：含运行中三选弹窗与停止重试链）"""
         run_dispatch.on_run_requested(self, mode, param)

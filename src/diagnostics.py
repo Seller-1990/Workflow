@@ -34,7 +34,7 @@ class ErrorDiagnostician:
         ),
         # 编码问题
         (
-            ["UnicodeDecodeError", "编码", "encoding", "codec"],
+            ["UnicodeDecodeError", "encoding", "codec"],
             "文件编码问题",
             "文件编码与预期不符，请确认文件使用 UTF-8 编码保存，或在脚本中指定正确的编码"
         ),
@@ -52,7 +52,7 @@ class ErrorDiagnostician:
         ),
         # 网络问题
         (
-            ["ConnectionError", "NetworkError", "ConnectionRefused", "网络"],
+            ["ConnectionError", "NetworkError", "ConnectionRefused"],
             "网络连接失败",
             "请检查网络连接是否正常，以及目标服务是否可访问"
         ),
@@ -101,7 +101,7 @@ class ErrorDiagnostician:
         # 遍历模式匹配
         for keywords, error_type, suggested_fix in cls._PATTERNS:
             for keyword in keywords:
-                if keyword in error_message:
+                if keyword.lower() in error_message.lower():
                     # 根据上下文补充建议
                     fix = suggested_fix
                     if context:

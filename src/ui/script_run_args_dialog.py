@@ -280,7 +280,7 @@ class _StepArgEditor(QGroupBox):
             elif isinstance(widget, QLineEdit):
                 value = widget.text().strip()
             if not value:
-                if arg.required and not arg.positional:
+                if arg.required:
                     raise CliArgsParseError(f"步骤 [{self.target.order}] {self.target.name}: 参数 {flag or arg.dest} 为必填")
                 continue
             if arg.positional:

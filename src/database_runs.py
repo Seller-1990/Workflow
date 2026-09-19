@@ -138,10 +138,16 @@ def update_run_history(run_history_id: int, **kwargs) -> Optional[RunHistory]:
     _validate_update_fields("RunHistory", kwargs, RUN_HISTORY_UPDATE_FIELDS)
     from database import get_session
     with get_session() as session:
-        query = session.query(RunHistory).filter(RunHistory.id == run_history_id)
         if condition_status is not None:
-            query = query.filter(RunHistory.status == condition_status)
-        run_history = query.first()
+            affected = session.query(RunHistory).filter(
+                RunHistory.id == run_history_id,
+                RunHistory.status == condition_status,
+            ).update(kwargs, synchronize_session=False)
+            session.commit()
+            if affected:
+                return session.query(RunHistory).get(run_history_id)
+            return None
+        run_history = session.query(RunHistory).filter(RunHistory.id == run_history_id).first()
         if run_history:
             for key, value in kwargs.items():
                 setattr(run_history, key, value)

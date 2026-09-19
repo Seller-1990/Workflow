@@ -546,13 +546,22 @@ class StepTablePanel(QWidget):
         if answer != QMessageBox.Yes:
             return
         try:
-            from database import delete_step as db_delete_step
-            for sid in step_ids:
-                db_delete_step(sid)
+            from database import get_session, invalidate_cycle_check_cache
+            from models import Step
+            with get_session() as session:
+                for sid in step_ids:
+                    step = session.query(Step).filter(Step.id == sid).first()
+                    if step:
+                        session.delete(step)
+                session.commit()
+            invalidate_cycle_check_cache()
             self._selected_step_id = None
             self._last_emitted_selection = None
             self.step_selected.emit(0)
             self.load_steps(self._workflow_id)
+            for sid in step_ids:
+                self.step_deleted.emit(sid)
+            self.steps_changed.emit()
         except Exception as e:
             from ui.theme import msg_critical
             msg_critical(self, self._dark, "批量删除失败", str(e))
