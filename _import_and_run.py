@@ -95,50 +95,13 @@ def find_workflow(name_or_id):
     return None
 
 
-def _ensure_risky_paths_confirmed(wf, auto_confirm: bool) -> bool:
-    """R1 门禁：返回 True 允许运行；False 表示用户取消 / 自动拒绝。
-
-    - auto_confirm（--auto / --confirm-risky-paths）为唯一自动确认路径。
-    - TTY：交互式 y/N（EOFError 防御）；非 TTY 且未自动确认 → 拒绝。
-    """
-    from risk_path_review import build_run_plan, evaluate_run_plan, format_risk_records
-    from database import confirm_risky_paths, get_steps_by_workflow
-
-    steps = get_steps_by_workflow(wf.id) or []
-    plan = build_run_plan(wf, steps)
-    if evaluate_run_plan(plan) is None:
-        return True
-    print("警告: 此工作流包含未经确认的风险路径（绝对路径或上级目录引用）:", flush=True)
-    print(format_risk_records(plan.risk_records), flush=True)
-    if auto_confirm:
-        confirm_risky_paths(wf.id)
-        return True
-    if not sys.stdin.isatty():
-        print("错误: 非交互环境请显式使用 --confirm-risky-paths 确认路径安全", flush=True)
-        return False
-    try:
-        answer = input("确认这些路径安全并允许运行? (y/N): ")
-    except EOFError:
-        answer = ""
-    if answer.strip().lower() != "y":
-        print("已取消: 风险路径未确认", flush=True)
-        return False
-    confirm_risky_paths(wf.id)
-    return True
-
-
 def cmd_run(workflow_name, auto_confirm=False):
+    """运行工作流；auto_confirm 仅兼容旧调用，不再触发路径确认。"""
     wf = find_workflow(workflow_name)
     if not wf:
         sys.exit(1)
 
-    # R1: run 与 --auto 同一门禁
-    if not _ensure_risky_paths_confirmed(wf, auto_confirm):
-        sys.exit(1)
-
     print(f"工作流: {wf.name} (ID: {wf.id})\n", flush=True)
-
-    engine = WorkflowEngine()
 
     def on_log(msg):
         print(msg, flush=True)
@@ -150,7 +113,7 @@ def cmd_run(workflow_name, auto_confirm=False):
         tag = "OK" if status == "success" else "FAIL"
         print(f"  {tag} [{name}] {status}", flush=True)
 
-    def on_wf_started(wid, rid):
+    def on_wf_started(wid, rid, total=0):
         print(f"\n{'='*60}", flush=True)
         print(f"  工作流开始 | Run ID: {rid}", flush=True)
         print(f"{'='*60}", flush=True)
@@ -161,38 +124,43 @@ def cmd_run(workflow_name, auto_confirm=False):
         print(f"  工作流结束 | 状态: {st} | Run ID: {rid}", flush=True)
         print(f"{'='*60}", flush=True)
 
-    engine.log_output.connect(on_log)
-    engine.step_started.connect(on_step_started)
-    engine.step_finished.connect(on_step_finished)
-    engine.workflow_started.connect(on_wf_started)
-    engine.workflow_finished.connect(on_wf_finished)
-
-    result = engine.run(
-        wf.id, RunMode.FULL, reason="cli",
-        signal_policy=RunSignalPolicy(send_notification=True)
-    )
-
-    for _ in range(100):
-        _app.processEvents()
-        if not engine.is_running:
-            break
-
-    print(f"\n最终结果: {'成功' if result else '失败'}", flush=True)
-
-    if not result:
-        rh = get_run_histories_by_workflow(wf.id, limit=1)
-        if rh:
-            logs = get_step_logs_by_run(rh[0].id)
-            for sl in logs:
-                if sl.status == "failure":
-                    print(f"  失败: {sl.error_message}", flush=True)
-
-    # 钉钉通知由引擎提交到内部线程池异步发送；若不先 shutdown(wait=True) 等通知任务收尾、
-    # 再刷一轮事件队列，进程退出时"钉钉通知…"成功/失败反馈日志会直接丢失。
+    completed = False
+    engine = WorkflowEngine()
     try:
-        engine.shutdown(wait=True)
-    except (RuntimeError, OSError) as exc:
-        print(f"警告: 引擎收尾失败: {exc}", flush=True)
+        engine.log_output.connect(on_log)
+        engine.step_started.connect(on_step_started)
+        engine.step_finished.connect(on_step_finished)
+        engine.workflow_started.connect(on_wf_started)
+        engine.workflow_finished.connect(on_wf_finished)
+
+        result = engine.run(
+            wf.id, RunMode.FULL, reason="cli",
+            signal_policy=RunSignalPolicy(send_notification=True)
+        )
+
+        for _ in range(100):
+            _app.processEvents()
+            if not engine.is_running:
+                break
+
+        print(f"\n最终结果: {'成功' if result else '失败'}", flush=True)
+
+        if not result:
+            rh = get_run_histories_by_workflow(wf.id, limit=1)
+            if rh:
+                logs = get_step_logs_by_run(rh[0].id)
+                for sl in logs:
+                    if sl.status == "failure":
+                        print(f"  失败: {sl.error_message}", flush=True)
+        completed = True
+    finally:
+        # 钉钉通知由引擎异步发送；等待任务收尾后再刷事件，保留通知反馈日志。
+        try:
+            engine.shutdown(wait=True)
+        except (RuntimeError, OSError) as exc:
+            # 异常传播时不再做可能失败的告警输出，避免遮蔽原始错误。
+            if completed:
+                print(f"警告: 引擎收尾失败: {exc}", flush=True)
     for _ in range(100):
         _app.processEvents()
 
@@ -215,7 +183,7 @@ def main():
     parser.add_argument(
         "--confirm-risky-paths",
         action="store_true",
-        help="自动确认导入风险路径（配合 run / --auto 使用；非交互环境必须显式指定）",
+        help="兼容旧脚本的无操作参数；所有运行入口均无需风险路径二次确认",
     )
     parser.add_argument(
         "--workflows-json",
@@ -231,7 +199,7 @@ def main():
     p_run.add_argument(
         "--confirm-risky-paths",
         action="store_true",
-        help="自动确认导入风险路径",
+        help="兼容旧脚本的无操作参数；所有运行入口均无需风险路径二次确认",
     )
 
     args = parser.parse_args()

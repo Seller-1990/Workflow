@@ -51,7 +51,7 @@ def test_force_cancel_run_record_marks_non_terminal_run_cancelled():
 
     assert result.status == "cancelled"
     assert cancelled_steps == [(11, "用户强制停止")]
-    assert updated == [((11,), {"status": "cancelled", "end_time": end_time, "_condition_status": "running"})]
+    assert updated == [((11,), {"status": "cancelled", "end_time": end_time, "_condition_status": ("pending", "running")})]
     assert logs == ["已强制停止运行记录 (run_history_id=11)"]
 
 

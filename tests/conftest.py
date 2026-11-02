@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+# Test import paths (src before repo root) are configured in pytest.ini: pythonpath.
+# Run the font helper before collection; it leaves ordinary platforms untouched.
+from _qt_font_bootstrap import bootstrap_text_font_for_offscreen
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-for path in (ROOT, SRC):
-    value = str(path)
-    if value not in sys.path:
-        sys.path.insert(0, value)
+bootstrap_text_font_for_offscreen()

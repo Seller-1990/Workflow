@@ -1,0 +1,20 @@
+{"file":".trellis/spec/context-curation.md","reason":"Task context admits only independently selectable contracts and research summaries"}
+{"file":".trellis/spec/backend/scoped-path-confirmation.md","reason":"Current all-entry path-consent retirement; preserve legacy data and normal validation"}
+{"file":".trellis/spec/backend/visible-range-run.md","reason":"Reuse the existing range button in a visible planning toolbar with its original run lock"}
+{"file":".trellis/tasks/10-30-comprehensive-review-single-step/research/path-policy-and-range-summary.md","reason":"Latest user decision supersedes earlier scoped-consent requirements; verify new snapshot separately"}
+{"file":".trellis/spec/backend/workflow-start-progress.md","reason":"Engine-selected total and signal-consumer compatibility contract"}
+{"file":".trellis/spec/backend/startup-stop-ownership.md","reason":"Target-ID ownership and reached-branch regression requirements during initialization"}
+{"file":".trellis/spec/backend/executor-output-ownership.md","reason":"Single-reader and sink-owner contract, bounded cleanup, known-risk projection, and required outcome/visibility regressions"}
+{"file":".trellis/tasks/10-30-comprehensive-review-single-step/research/recovery-and-single-step-summary.md","reason":"Recovered scope, existing WIP, and no-commit delivery constraints"}
+{"file":".trellis/tasks/10-30-comprehensive-review-single-step/research/final-review-summary.md","reason":"Delivered snapshot and constraints; continuation verification supersedes its source counts"}
+{"file":".trellis/tasks/10-30-comprehensive-review-single-step/research/executor-output-summary.md","reason":"Bounded continuation: sole pipe readers, safe log closure, bounded cleanup, and explicit residual-risk boundaries"}
+{"file": ".trellis/spec/ui/dialog-background.md", "reason": "Shared opaque root QSS order and dialog behavior regression contract"}
+{"file": ".trellis/spec/ui/checkbox-indicators.md", "reason": "Shared ordinary/table indicator states without behavior changes"}
+{"file": ".trellis/spec/ui/clipped-text.md", "reason": "Full-value accessibility without overwriting saved widths"}
+{"file": ".trellis/spec/ui/history-splitter.md", "reason": "Animation start/completion ownership and direct splitter child restoration"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Keep Qt styling in existing focused helpers and avoid widening legacy modules"}
+{"file": ".trellis/tasks/10-30-comprehensive-review-single-step/research/ui-repair-summary.md", "reason": "Confirmed four UI repairs and acceptance boundaries"}
+{"file": ".trellis/spec/backend/step-log-idempotency.md", "reason": "Durable creation identity and clean-session unknown-commit reconciliation without rewriting old rows"}
+{"file": ".trellis/spec/backend/run-ownership-cancellation.md", "reason": "Exact-owner persisted stop requests, conservative liveness and owner-only live finalization"}
+{"file": ".trellis/spec/backend/cli-engine-lifetime.md", "reason": "Finally-close after CLIEngine construction without altering exits or error propagation"}
+{"file": ".trellis/tasks/10-30-comprehensive-review-single-step/research/completion-summary.md", "reason": "Authorized Phase9 scope, isolated migration boundary and fresh validation requirements"}

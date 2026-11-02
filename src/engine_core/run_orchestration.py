@@ -205,6 +205,7 @@ def run_workflow(
     trace_id: Optional[str] = None,
     external_cancel_event: threading.Event = None,
     run_arg_overrides=None,
+    end_step_id: int = None,
 ) -> bool:
     """执行工作流（原 WorkflowEngine._run 方法体）
 
@@ -240,6 +241,8 @@ def run_workflow(
     # 预设 None 保证早退路径（如双启动拒绝）finally 也能安全恢复。
     _run_thread_ctx = None
     prev_ctx_run_id = None
+    from engine_core.run_ownership import OwnedRun
+    owned_run = OwnedRun(engine)
 
     # 原子启动：消除 UI/监听同时触发的双启动窗口
     # #2: 仅在 outermost run（allow_nested=False）时修改实例属性。
@@ -247,9 +250,11 @@ def run_workflow(
     from script_arg_utils import normalize_run_arg_overrides
     # 本地不可变上下文：不挂 engine 实例字段，避免并行/嵌套污染
     local_run_arg_overrides = normalize_run_arg_overrides(run_arg_overrides)
-    with engine._lock:
-        if engine._running and not allow_nested:
-            engine._emit_log("错误：已有工作流正在运行")
+    with engine._lock, engine._subworkflow_budget_lock:
+        if allow_nested and external_cancel_event is not None and external_cancel_event.is_set():
+            return False
+        if not allow_nested and (engine._running or engine._active_run_ids or engine._active_subworkflow_count):
+            engine._emit_log("错误：已有工作流或子工作流尚未结束")
             return False
         prev_running = engine._running
         prev_run_history_id = engine._current_run_history_id
@@ -271,42 +276,70 @@ def run_workflow(
         if not workflow:
             raise eng.ConfigurationError(f"工作流不存在: {workflow_id}")
 
-        # SEC1(R1): 同一数据库快照生成不可变 RunPlan（含 revision + 结构化路径记录），
-        # 基于 RunPlan 校验；执行消费同一快照（all_steps）。不在后台线程弹 Qt 对话框。
+        # 从同一组步骤选取执行范围并构建快照，避免启动后并发编辑改变本次输入。
         all_steps = eng.get_steps_by_workflow(workflow_id)
         if not all_steps:
             raise eng.ConfigurationError("工作流没有步骤")
 
-        from risk_path_review import build_run_plan, evaluate_run_plan
-        run_plan = build_run_plan(workflow, all_steps)
-        blocked_reason = evaluate_run_plan(run_plan)
-        if blocked_reason is not None:
-            engine._emit_log(f"错误：{blocked_reason}")
-            return False
-
         # 自动清理过期日志（后台线程执行，避免阻塞启动）
         engine._cleanup_old_logs_async(workflow)
 
-        # 根据模式筛选步骤（消费与 RunPlan 相同的快照）
-        steps = engine._select_steps(all_steps, mode, step_id, workflow, stage_uid=stage_uid)
+        # 先确定实际执行范围；RunPlan 保留全部执行快照，不再按路径审核状态拦截。
+        # 区间模式才透传 end_step_id，其余模式保持原调用形态（兼容实例级替身）
+        if end_step_id is not None:
+            steps = engine._select_steps(
+                all_steps, mode, step_id, workflow, stage_uid=stage_uid, end_step_id=end_step_id,
+            )
+        else:
+            steps = engine._select_steps(all_steps, mode, step_id, workflow, stage_uid=stage_uid)
         if not steps:
             engine._emit_log("没有需要执行的步骤")
             return True
 
+        from risk_path_review import build_run_plan
+        run_plan = build_run_plan(workflow, all_steps)
+        if run_plan is not None:
+            run_plan = run_plan.with_selected_steps(steps)
+
+        if end_step_id is not None and step_id:
+            run_mode_param = f"{step_id}-{end_step_id}"
+        else:
+            run_mode_param = str(step_id) if step_id else None
+
         # CA2: 创建 RunHistory + log_dir + 状态切 running，整体下沉到 lifecycle 模块
-        ctx = eng._begin_run(
-            workflow=workflow,
-            mode_value=mode.value,
-            run_mode_param=str(step_id) if step_id else None,
-            reason=reason,
-            trace_id=effective_trace_id,
-            parent_run_id=effective_parent_run_id,
-            start_time=start_time,
-            running_status_value=eng.RunStatus.RUNNING.value,
-        )
+        # 已创建记录后即使目录/running 更新失败，也要把 ID 交给统一 finally 收尾。
+        from engine_core import lifecycle
+
+        def create_active_run_history(**kwargs):
+            nonlocal run_history_id
+            history = owned_run.create_and_register(lifecycle.create_run_history, **kwargs)
+            run_history_id = history.id
+            return history
+
+        try:
+            ctx = eng._begin_run(
+                workflow=workflow,
+                mode_value=mode.value,
+                run_mode_param=run_mode_param,
+                reason=reason,
+                trace_id=effective_trace_id,
+                parent_run_id=effective_parent_run_id,
+                start_time=start_time,
+                running_status_value=eng.RunStatus.RUNNING.value,
+                create_run_history_fn=create_active_run_history,
+            )
+        except lifecycle.BeginRunError as exc:
+            ctx = exc.context
+            run_history_id = ctx.run_history_id
+            run_id = ctx.run_id
+            log_dir = ctx.log_dir
+            raise exc.__cause__ or exc
         run_history_id = ctx.run_history_id
         run_id = ctx.run_id
         log_dir = ctx.log_dir
+        owned_run.observe_before_steps()
+        if engine._is_run_cancelled(external_cancel_event):
+            return False
         # #2: 仅 outermost 把上下文写入实例属性。nested run（含并行 sub_workflow）
         # 不修改 instance attrs，靠 local run_id / trace_id 即可；UI/外部读到的始终是 outer。
         # F-18: run_id 同步写入 run 线程局部上下文（threading.local）。子工作流跑在
@@ -329,19 +362,16 @@ def run_workflow(
             # 修复 H1/H12：所有 run（包括 nested）的 history_id 都加入栈，用于 force_stop 命中
             engine._active_run_ids.add(run_history_id)
 
-        # H4(TOCTOU)→F-01：快照机制保留两重职责——(1) 原过期规避（expire_on_commit
-        # 已改 False，此项不再必要）；(2) R1 风险路径「校验与执行消费同一份数据」的
-        # 同源原子性（revision+digest 校验的对象与执行读到的步骤一致）。
-        # 因此 RunPlan/StepSnapshot/WorkflowView 保留；仅更新注释语义。
-        # 注：run_plan 可能为 None（R5 测试伪件契约 build_run_plan→None 绕过 R1），
-        # 此时退化为原 ORM 直读路径。
+        # 启动提交/并发编辑不应改变本次选步时已取得的执行输入；路径确认退役
+        # 不移除 RunPlan/StepSnapshot/WorkflowView 的快照职责。
+        # 测试替身允许 build_run_plan 返回 None，此时保留原 ORM 直读路径。
         exec_workflow = workflow
         if run_plan is not None:
             exec_workflow = run_plan.workflow_view or workflow
             steps = [run_plan.step_snapshots.get(s.id, s) for s in steps]
 
         if signal_policy.emit_run_signals:
-            engine.workflow_started.emit(workflow_id, run_id)
+            engine.workflow_started.emit(workflow_id, run_id, len(steps))
             started_emitted = True
         engine._emit_log(f"开始运行工作流: {exec_workflow.name}")
         engine._emit_log(f"运行模式: {mode.value}")
@@ -375,9 +405,16 @@ def run_workflow(
         engine._emit_log(traceback.format_exc())
         return False
     finally:
+        # Stop observation before choosing the terminal outcome: a later request
+        # races with normal completion, never retroactively changes its result.
+        owned_run.close_observer()
+        run_history_id = run_history_id or owned_run.history_id
         end_time = datetime.now()
         final_status = engine._resolve_final_status(status, external_cancel_event)
-        engine._finalize_run_history(run_history_id, final_status, end_time, signal_policy)
+        try:
+            engine._finalize_run_history(run_history_id, final_status, end_time, signal_policy)
+        finally:
+            owned_run.release()
         # F-01: 收尾重取一次最新 workflow 对象交给完成信号与通知——run 线程内的
         # 原 workflow 对象可能是 detached（get_session 现于块退出 close），按 id
         # 重读保证通知拿到最新值；失败仅降级 workflow=None，不阻断收尾。
@@ -407,7 +444,7 @@ def run_workflow(
             prev_parent_run_id=prev_parent_run_id,
         )
         # F-18: 恢复线程局部 run_id，避免线程复用（测试/池 worker）时向上泄漏。
-        # 早退路径（如 R1 拦截发生在 _begin_run 之前）未执行过写入——ctx 为 None
+        # 早退路径（如选步失败发生在 _begin_run 之前）未执行过写入——ctx 为 None
         # 时无事可恢复。
         if _run_thread_ctx is not None:
             _run_thread_ctx.run_id = prev_ctx_run_id
@@ -420,13 +457,15 @@ def select_steps(
     step_id: int,
     workflow: Workflow,
     stage_uid: str = None,
+    end_step_id: int = None,
 ) -> List[Step]:
-    """根据运行模式选择步骤"""
+    """根据运行模式选择步骤（end_step_id 仅用于 STEP_RANGE 模式）"""
     eng = _engine_module()
     return eng._select_steps(
         all_steps=all_steps,
         mode_value=mode.value,
         step_id=step_id,
+        end_step_id=end_step_id,
         workflow=workflow,
         stage_uid=stage_uid,
         get_stage_order_map=eng.get_stage_order_map,
@@ -649,89 +688,9 @@ def normalize_stage_uid(
     )
 
 
-def append_failed_detail(
-    engine: WorkflowEngine,
-    failed_details: list[dict],
-    step: Step,
-    result: StepResult,
-) -> None:
-    failed_details.append({
-        "step_id": step.id,
-        "step_name": step.name,
-        "error_message": result.error_message or "未知错误",
-        "suggested_fix": result.suggested_fix or "",
-    })
-
-
-def emit_failed_details(
-    engine: WorkflowEngine,
-    failed_details: list[dict],
-    signal_policy: RunSignalPolicy,
-) -> None:
-    if failed_details and signal_policy.emit_error_details:
-        engine.error_details.emit(failed_details)
-
-
-def update_execution_progress(
-    engine: WorkflowEngine,
-    completed_steps: int,
-    total_steps: int,
-    signal_policy: RunSignalPolicy,
-) -> None:
-    if signal_policy.emit_progress_signals:
-        engine.progress_updated.emit(completed_steps, total_steps)
-
-
-def handle_batch_results(
-    engine: WorkflowEngine,
-    batch: list[Step],
-    results: list[StepResult],
-    failed_details: list[dict],
-    signal_policy: RunSignalPolicy,
-) -> bool:
-    has_failure = False
-    # F-15: 按 step_id 配对，不依赖位置——scheduler 按步骤 order 排序结果，
-    # 同批出现重复 order 时（数据异常边缘态）排序稳定性不保证与 batch 一致，
-    # 位置 zip 会把失败详情归因到错误步骤。StepResult 与 _CancelledResult
-    # 均携带 step_id；缺 step_id 的异常结果回退位置配对。
-    results_by_id: dict = {}
-    positional_results: list = []
-    for r in results:
-        sid = getattr(r, "step_id", None)
-        if sid is None:
-            positional_results.append(r)
-        else:
-            results_by_id[sid] = r
-    paired: dict = {}
-    used_positional = 0
-    for step in batch:
-        if step.id in results_by_id:
-            paired[step.id] = results_by_id.pop(step.id)
-        elif used_positional < len(positional_results):
-            paired[step.id] = positional_results[used_positional]
-            used_positional += 1
-    leftovers = list(results_by_id.values()) + positional_results[used_positional:]
-
-    for step in batch:
-        result = paired.get(step.id)
-        if result is None:
-            # 没有结果对应此步骤（不应发生；scheduler 占位保证数量守恒）——
-            # 归位 leftover，保底不错配
-            if leftovers:
-                result = leftovers.pop(0)
-            else:
-                continue
-        if result.status == "cancelled":
-            engine._emit_failed_details(failed_details, signal_policy)
-            return False
-        if not result.success:
-            has_failure = True
-            engine._append_failed_detail(failed_details, step, result)
-
-    if has_failure:
-        engine._emit_failed_details(failed_details, signal_policy)
-        return False
-    return True
+from engine_core.run_results import (
+    append_failed_detail, emit_failed_details, update_execution_progress, handle_batch_results,
+)
 
 
 def cleanup_old_logs_async(engine: WorkflowEngine, workflow: Workflow):

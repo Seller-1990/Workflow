@@ -7,18 +7,22 @@
 """
 
 import logging
+import sys
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QStatusBar, QToolBar,
     QScrollArea, QFrame, QLabel, QPushButton, QToolButton,
     QSizePolicy, QStyle, QApplication, QTabWidget,
-    QStackedWidget
+    QStackedWidget, QAbstractButton
 )
-from PySide6.QtCore import QPropertyAnimation, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 
 from config import APP_NAME, APP_VERSION, ICON_PATH
+from ui import panel_controller
+from ui.run_page_build import build_run_tab
+from ui.text_utils import plain_text_tooltip
 from ui.theme import (
     get_colors,
     get_stylesheet,
@@ -268,6 +272,10 @@ def create_title_block(window) -> QVBoxLayout:
     title_block.addWidget(window.lbl_workflow_eyebrow)
     window.lbl_workflow_title = QLabel("请选择工作流")
     window.lbl_workflow_title.setObjectName("WorkflowTitle")
+    window.lbl_workflow_title.setTextFormat(Qt.PlainText)
+    window.lbl_workflow_title.setMinimumWidth(0)
+    window.lbl_workflow_title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    window.lbl_workflow_title.setToolTip(plain_text_tooltip(window.lbl_workflow_title.text()))
     title_block.addWidget(window.lbl_workflow_title)
     window.lbl_workflow_meta = QLabel("0 阶段 · 0 步 · 未运行")
     window.lbl_workflow_meta.setObjectName("WorkflowMeta")
@@ -281,7 +289,9 @@ def create_run_cluster(window) -> QWidget:
     run_layout = QHBoxLayout(run_cluster)
     run_layout.setContentsMargins(0, 0, 0, 0)
     run_layout.setSpacing(8)
-    window.lbl_run_state = QLabel("● 就绪")
+    # UI 精修 2026-10 #5：状态 chip 改用 BreathingChip（200ms 变色/文字淡入，运行中圆点呼吸）
+    from ui.motion import BreathingChip
+    window.lbl_run_state = BreathingChip("● 就绪")
     window.lbl_run_state.setObjectName("RunStateChip")
     window.lbl_run_state.setToolTip("当前运行状态")
     run_layout.addWidget(window.lbl_run_state)
@@ -317,8 +327,10 @@ def set_header_run_button_state(window, state: str) -> None:
             chip.setText("● 运行中")
             chip.setProperty("state", "running")
             _apply_chip_style(chip)
-        _start_pulse_animation(window, button)
+        _set_chip_breathing(chip, True)
+        button.setCursor(Qt.PointingHandCursor)
     elif state == "stopping":
+        # #3：停止中——按钮保持半透明红（QSS DangerAction:disabled），普通箭头光标，文字带“…”
         button.setText(" 正在停止...")
         set_icon_button(button, "run.stop", color=c["danger_aa"])
         button.setObjectName("DangerAction")
@@ -329,7 +341,8 @@ def set_header_run_button_state(window, state: str) -> None:
             chip.setText("● 停止中")
             chip.setProperty("state", "stopping")
             _apply_chip_style(chip)
-        _stop_pulse_animation(window)
+        _set_chip_breathing(chip, False)
+        button.setCursor(Qt.ArrowCursor)
     else:
         button.setText(" 运行全流程")
         set_icon_button(button, "run.start", color=c["primary_aa"])
@@ -341,7 +354,8 @@ def set_header_run_button_state(window, state: str) -> None:
             chip.setText("● 就绪")
             chip.setProperty("state", "idle")
             _apply_chip_style(chip)
-        _stop_pulse_animation(window)
+        _set_chip_breathing(chip, False)
+        button.setCursor(Qt.PointingHandCursor)
     button.style().unpolish(button)
     button.style().polish(button)
 
@@ -352,30 +366,13 @@ def _apply_chip_style(chip):
     chip.style().polish(chip)
 
 
-def _start_pulse_animation(window, button):
-    """任务3：运行中主按钮轻微脉动（opacity 0.85↔1.0，1.5s 循环）"""
-    from PySide6.QtWidgets import QGraphicsOpacityEffect
-
-    if not hasattr(window, "_pulse_effect"):
-        window._pulse_effect = QGraphicsOpacityEffect(button)
-        button.setGraphicsEffect(window._pulse_effect)
-        window._pulse_anim = QPropertyAnimation(window._pulse_effect, b"opacity")
-        window._pulse_anim.setDuration(1500)
-        window._pulse_anim.setKeyValueAt(0.0, 1.0)
-        window._pulse_anim.setKeyValueAt(0.5, 0.85)
-        window._pulse_anim.setKeyValueAt(1.0, 1.0)
-        window._pulse_anim.setLoopCount(-1)
-    window._pulse_effect.setEnabled(True)
-    if window._pulse_anim.state() != QPropertyAnimation.Running:
-        window._pulse_anim.start()
-
-
-def _stop_pulse_animation(window):
-    """任务3：停止脉动动画"""
-    if hasattr(window, "_pulse_anim") and window._pulse_anim.state() == QPropertyAnimation.Running:
-        window._pulse_anim.stop()
-    if hasattr(window, "_pulse_effect"):
-        window._pulse_effect.setEnabled(False)
+def _set_chip_breathing(chip, on: bool) -> None:
+    """UI 精修 2026-10 #6（用户选 B）：运行按钮不再脉动，只让状态 chip 的圆点呼吸。"""
+    if chip is None:
+        return
+    starter = getattr(chip, "start_breathing" if on else "stop_breathing", None)
+    if callable(starter):
+        starter()
 
 
 def add_plan_tab(window) -> None:
@@ -409,6 +406,8 @@ def create_plan_switch(window) -> QWidget:
     switch_layout.addWidget(window.btn_view_board)
     switch_layout.addWidget(window.btn_view_table)
     switch_layout.addStretch(1)
+    # 复用原按钮及运行锁，仅将入口移出隐藏的旧运行面板。
+    switch_layout.addWidget(window.run_control.btn_run_range)
     return plan_switch
 
 
@@ -424,26 +423,9 @@ def create_plan_stack(window) -> QStackedWidget:
 
 
 def add_run_tab(window) -> None:
-    run_page = QWidget()
-    run_page_layout = QVBoxLayout(run_page)
-    run_page_layout.setContentsMargins(0, 0, 0, 0)
-    run_page_layout.setSpacing(0)
-    window.run_splitter = QSplitter(Qt.Vertical)
-    window.run_splitter.setObjectName("RunSplitter")
-    window.run_splitter.setChildrenCollapsible(False)
-    window.run_splitter.setHandleWidth(5)
-    window.log_panel = LogPanel()
-    window.log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    window.run_history = RunHistoryPanel()
-    window.run_history.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    window.run_history.setMinimumHeight(180)
-    window.log_panel.setMinimumHeight(220)
-    window.run_splitter.addWidget(window.run_history)
-    window.run_splitter.addWidget(window.log_panel)
-    window.run_splitter.setSizes([360, 560])
-    window.run_splitter.splitterMoved.connect(window._on_run_splitter_moved)
-    run_page_layout.addWidget(window.run_splitter)
-    window._run_tab_index = window.mode_tabs.addTab(run_page, "运行")
+    build_run_tab(
+        window, ui=sys.modules[__name__],
+    )
 
 
 def add_config_tab(window) -> None:
@@ -691,6 +673,12 @@ def apply_theme(window):
     window.center_container.setStyleSheet(center_panel_stylesheet(tokens))
     window.mode_tabs.setStyleSheet(mode_tabs_stylesheet(tokens))
     window.right_panel.setStyleSheet(right_panel_stylesheet(tokens))
+    # UI 精修 2026-10 #16：侧栏/视图切换/工具栏/运行按钮悬停 150ms 淡入淡出（幂等，主题切换时只换色源）
+    from ui.main_window_theme import hover_colors_fn
+    from ui.motion import install_hover_fade
+    for btn in window.findChildren(QAbstractButton):
+        if btn.objectName() in ("SidebarNav", "ViewSwitch", "ViewSwitchActive", "IconButton", "PrimaryAction", "DangerAction"):
+            install_hover_fade(btn, hover_colors_fn(btn, tokens))
 
     window._refresh_border_fold_buttons()
 

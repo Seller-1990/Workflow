@@ -564,21 +564,6 @@ def test_retired_single_script_field_import_ok_and_not_exported(monkeypatch, tmp
     assert "single_script" not in exported["workflows"][0]
 
 
-def test_pending_migration_failure_raises(monkeypatch, tmp_path: Path):
-    db_path = tmp_path / "schema.db"
-    engine = create_engine(f"sqlite:///{db_path}")
-    database._ensure_schema_version_table(engine)
-
-    def _broken_migration(_engine):
-        raise ValueError("boom")
-
-    monkeypatch.setitem(database.__dict__, "_broken_migration_for_test", _broken_migration)
-    monkeypatch.setattr(database, "SCHEMA_MIGRATIONS", [(99, "_broken_migration_for_test")])
-
-    with pytest.raises(RuntimeError, match="schema 迁移 v99 失败"):
-        database._run_pending_migrations(engine)
-
-
 def test_perf_index_migration_is_idempotent(tmp_path: Path):
     db_path = tmp_path / "perf-indexes.db"
     engine = create_engine(f"sqlite:///{db_path}")

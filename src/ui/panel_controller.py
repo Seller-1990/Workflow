@@ -7,6 +7,7 @@
 
 from PySide6.QtCore import QPoint, QTimer
 
+from ui import run_splitter_controller
 from ui.panel_layout import (
     border_button_x,
     expanded_splitter_sizes,
@@ -51,39 +52,38 @@ def update_border_widget_positions(window):
 
 
 def on_run_splitter_moved(window, *_args):
-    window._run_splitter_user_adjusted = True
+    run_splitter_controller.on_run_splitter_moved(window, *_args)
+
+
+def begin_run_history_collapse(window) -> None:
+    run_splitter_controller.begin_run_history_collapse(window)
+
+
+def _restore_run_history_layout(window) -> None:
+    run_splitter_controller._restore_run_history_layout(window)
+
+
+def prepare_run_history_expand(window) -> None:
+    """展开动画开始前解除父 splitter 的折叠高度约束。"""
+    _restore_run_history_layout(window)
+
+
+def on_run_history_collapsed(window, collapsed: bool):
+    run_splitter_controller.on_run_history_collapsed(
+        window, collapsed, restore_layout=_restore_run_history_layout,
+        begin_collapse=begin_run_history_collapse,
+    )
 
 
 def apply_run_splitter_profile(window, profile: str, *, force: bool = False):
-    if not hasattr(window, "run_splitter"):
-        return
-    if window._run_splitter_user_adjusted and not force:
-        return
-    sizes = run_splitter_sizes(profile)
-    window.run_splitter.blockSignals(True)
-    try:
-        window.run_splitter.setSizes(sizes)
-    finally:
-        window.run_splitter.blockSignals(False)
-    if force:
-        window._run_splitter_user_adjusted = False
+    run_splitter_controller.apply_run_splitter_profile(
+        window, profile, force=force, restore_layout=_restore_run_history_layout,
+        profile_sizes=run_splitter_sizes,
+    )
 
 
 def ensure_run_log_visible(window) -> None:
-    """确保运行页中的实时日志区域不会被 splitter 压到不可见。"""
-    if not hasattr(window, "run_splitter"):
-        return
-    sizes = visible_run_splitter_sizes(
-        window.run_splitter.sizes(),
-        available_height=window.run_splitter.height(),
-    )
-    if sizes:
-        window.run_splitter.blockSignals(True)
-        try:
-            window.run_splitter.setSizes(sizes)
-        finally:
-            window.run_splitter.blockSignals(False)
-        window._run_splitter_user_adjusted = False
+    run_splitter_controller.ensure_run_log_visible(window, visible_sizes=visible_run_splitter_sizes)
 
 
 def toggle_left_panel(window, silent: bool = False):

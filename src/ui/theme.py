@@ -1,3 +1,9 @@
+from ui.theme_control_styles import (
+    build_danger_button_stylesheet as _build_danger_button_stylesheet,
+    get_checkbox_stylesheet,
+)
+from ui.theme_dialog_styles import _INPUT_DIALOG_STYLE, _MENU_STYLE, _MSG_BOX_STYLE
+
 # ── V8 Linear/Vercel Design System ──
 # 克制极简风：柔和 Indigo 主色 + Zinc 中性灰阶 + 微妙阴影
 # 替代原 iOS Blue + Slate 双轨制
@@ -202,6 +208,27 @@ CORNER_RADIUS = {
     "pill": 100,
 }
 
+# UI 精修 2026-10：动效时长 token（毫秒），所有动效统一从这里取值，曲线统一 OutCubic
+MOTION_TOKENS = {
+    "fast": 150,       # hover 背景/边框淡入、chevron 旋转
+    "switch": 180,     # IosSwitch 滑块
+    "base": 200,       # 状态标签变色、折叠展开、进度条变色/淡出
+    "progress": 250,   # 进度条数值平滑
+    "breath": 1500,    # 状态圆点呼吸一轮（运行卡片左条只做 base 换色过渡，不呼吸）
+    "hold": 800,       # 进度条完成后停留
+}
+
+# UI 精修 2026-10：字体单一来源（main.py 的 QFont 与全局 QSS 共用）
+FONT_FAMILIES = ("Segoe UI", "Microsoft YaHei")
+FONT_SIZE_PX = 13
+
+
+def application_font():
+    """Keep startup typography aligned with the current shared QSS tokens."""
+    from ui.theme_fonts import build_application_font
+
+    return build_application_font(FONT_FAMILIES, FONT_SIZE_PX)
+
 # V9 阴影 - 加深层级差异（depth 而非 line）
 SHADOW_TOKENS = {
     "xs": "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)",  # 卡片基础
@@ -279,29 +306,7 @@ def get_duration_tokens(dark: bool = False) -> dict:
 
 
 def get_danger_button_stylesheet(dark: bool = False, radius: int = 4, padding: str = "2px 10px") -> str:
-    colors = get_colors(dark)
-    fg = colors["text_primary"] if dark else colors["text_inverse"]
-    return f"""
-QPushButton {{
-    background: {colors["danger"]};
-    color: {fg};
-    border: none;
-    border-radius: {int(radius)}px;
-    padding: {padding};
-    font-weight: 700;
-    text-align: center;
-}}
-QPushButton:hover {{
-    background: {colors["danger_hover"]};
-}}
-QPushButton:pressed {{
-    background: {colors["danger_pressed"]};
-}}
-QPushButton:disabled {{
-    background: {colors["border"]};
-    color: {colors["text_tertiary"]};
-}}
-"""
+    return _build_danger_button_stylesheet(get_colors(dark), dark, radius, padding)
 
 
 def get_colors(dark=False):
@@ -314,19 +319,20 @@ def get_stylesheet(dark=False):
     focus_shadow = SHADOW_TOKENS["focus_ring"]
     return f"""
     * {{
-        font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
-        font-size: 13px;
+        font-family: {", ".join(f'"{f}"' for f in FONT_FAMILIES)}, sans-serif;
+        font-size: {FONT_SIZE_PX}px;
         color: {C["text_primary"]};
         outline: none;
-    }}
-
-    QMainWindow, QDialog {{
-        background: {C["background"]};
     }}
 
     QWidget {{
         background: transparent;
         border: none;
+    }}
+
+    /* 同级类型选择器按顺序覆盖：根窗口必须晚于透明 QWidget。 */
+    QMainWindow, QDialog {{
+        background: {C["background"]};
     }}
 
     /* --- Toolbar --- */
@@ -732,101 +738,7 @@ def get_stylesheet(dark=False):
     QSplitter::handle {{
         background: {C["divider_strong"]};
     }}
-    """ + get_menu_stylesheet(dark)
-
-
-_MSG_BOX_STYLE = """
-QMessageBox {{
-    background-color: {bg};
-    color: {fg};
-}}
-QMessageBox QLabel {{
-    color: {fg};
-    background-color: transparent;
-}}
-QMessageBox QPushButton {{
-    background-color: {btn_bg};
-    color: {fg};
-    border: 1px solid {border};
-    border-radius: 6px;
-    padding: 6px 20px;
-    min-width: 80px;
-    font-weight: 500;
-}}
-QMessageBox QPushButton:hover {{
-    background-color: {hover};
-}}
-"""
-
-_INPUT_DIALOG_STYLE = """
-QInputDialog {{
-    background-color: {bg};
-    color: {fg};
-}}
-QInputDialog QLabel {{
-    color: {fg};
-    background-color: transparent;
-}}
-QInputDialog QLineEdit {{
-    background-color: {input_bg};
-    color: {fg};
-    border: 1px solid {border};
-    border-radius: 6px;
-    padding: 6px 12px;
-}}
-QInputDialog QLineEdit:focus {{
-    border: 1px solid {focus};
-}}
-QInputDialog QPushButton {{
-    background-color: {btn_bg};
-    color: {fg};
-    border: 1px solid {border};
-    border-radius: 6px;
-    padding: 6px 20px;
-    min-width: 80px;
-    font-weight: 500;
-}}
-QInputDialog QPushButton:hover {{
-    background-color: {hover};
-}}
-QInputDialog QComboBox {{
-    background-color: {input_bg};
-    color: {fg};
-    border: 1px solid {border};
-    border-radius: 6px;
-    padding: 6px 12px;
-}}
-"""
-
-_MENU_STYLE = """
-QMenu {{
-    background-color: {bg};
-    color: {fg};
-    border: 1px solid {border};
-    border-radius: 10px;
-    padding: 6px;
-}}
-QMenu::item {{
-    background-color: transparent;
-    color: {fg};
-    border-radius: 6px;
-    padding: 7px 12px;
-    margin: 1px 0px;
-}}
-QMenu::item:selected {{
-    background-color: {hover};
-    color: {fg};
-}}
-QMenu::item:disabled {{
-    color: {muted};
-    background-color: transparent;
-}}
-QMenu::separator {{
-    height: 1px;
-    margin: 6px 8px;
-    background: {divider};
-}}
-"""
+    """ + get_checkbox_stylesheet(C) + get_menu_stylesheet(dark)
 
 
 def _style_colors(dark: bool) -> dict:

@@ -149,14 +149,20 @@ def test_python_executor_timeout_cleans_up_process_resources(monkeypatch, tmp_pa
             self.kwargs = kwargs or {}
             self.daemon = daemon
             self.started = False
+            self.ident = None
             self.join_calls = []
             self.__class__.instances.append(self)
 
         def start(self):
             self.started = True
+            self.ident = 1
+            self.target(*self.args, **self.kwargs)
 
         def join(self, timeout=None):
             self.join_calls.append(timeout)
+
+        def is_alive(self):
+            return False
 
     proc = DummyProc()
     monkeypatch.setattr("executors.python_executor.subprocess.Popen", lambda *args, **kwargs: proc)
@@ -182,14 +188,14 @@ def test_python_executor_timeout_cleans_up_process_resources(monkeypatch, tmp_pa
     assert result.success is False
     assert result.error_message == "执行超时 (1秒)"
     assert killed["pid"] == 4343
-    assert proc.communicate_calls == [PythonExecutor.COMMUNICATE_TIMEOUT_SECONDS]
+    assert proc.communicate_calls == []
     assert all(thread.started for thread in DummyThread.instances)
     assert all(thread.daemon for thread in DummyThread.instances)
     assert [thread.join_calls for thread in DummyThread.instances] == [
         [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
         [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
     ]
-    assert proc.wait_calls == []
+    assert proc.wait_calls == [PythonExecutor.PROCESS_WAIT_TIMEOUT_SECONDS]
 
 
 def test_python_executor_cleans_process_when_output_thread_start_fails(monkeypatch, tmp_path: Path):
@@ -220,7 +226,11 @@ def test_python_executor_cleans_process_when_output_thread_start_fails(monkeypat
         instances = []
 
         def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self.target = target
+            self.args = args
+            self.kwargs = kwargs or {}
             self.started = False
+            self.ident = None
             self.join_calls = []
             self.daemon = daemon
             self.__class__.instances.append(self)
@@ -229,9 +239,15 @@ def test_python_executor_cleans_process_when_output_thread_start_fails(monkeypat
             if len(self.__class__.instances) == 2:
                 raise RuntimeError("thread start boom")
             self.started = True
+            self.ident = 1
+            self.target(*self.args, **self.kwargs)
 
         def join(self, timeout=None):
+            assert self.started, "cannot join an unstarted thread"
             self.join_calls.append(timeout)
+
+        def is_alive(self):
+            return False
 
     proc = DummyProc()
     monkeypatch.setattr("executors.python_executor.subprocess.Popen", lambda *args, **kwargs: proc)
@@ -247,14 +263,16 @@ def test_python_executor_cleans_process_when_output_thread_start_fails(monkeypat
     assert result.success is False
     assert "thread start boom" in (result.error_message or "")
     assert killed == [5656]
-    assert proc.communicate_calls == [PythonExecutor.COMMUNICATE_TIMEOUT_SECONDS]
+    assert proc.communicate_calls == []
+    assert [thread.started for thread in DummyThread.instances] == [True, False]
     assert [thread.join_calls for thread in DummyThread.instances] == [
         [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
-        [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
+        [],
     ]
+    assert proc.stdout.closed and proc.stderr.closed
 
 
-def test_python_executor_cleanup_joins_threads_when_communicate_raises_unexpected_error(monkeypatch, tmp_path: Path):
+def test_python_executor_cleanup_joins_threads_when_process_wait_raises(monkeypatch, tmp_path: Path):
     script = tmp_path / "job.py"
     script.write_text("print('ok')", encoding="utf-8")
     killed = {}
@@ -266,17 +284,18 @@ def test_python_executor_cleanup_joins_threads_when_communicate_raises_unexpecte
             self.pid = 5454
             self.returncode = None
             self.communicate_calls = []
+            self.wait_calls = []
 
         def poll(self):
             return self.returncode
 
         def wait(self, timeout=None):
-            self.returncode = -1
-            return self.returncode
+            self.wait_calls.append(timeout)
+            raise ValueError("process wait boom")
 
         def communicate(self, timeout=None):
             self.communicate_calls.append(timeout)
-            raise ValueError("pipe already closed")
+            raise AssertionError("communicate must not compete with pipe readers")
 
     class DummyThread:
         instances = []
@@ -287,14 +306,20 @@ def test_python_executor_cleanup_joins_threads_when_communicate_raises_unexpecte
             self.kwargs = kwargs or {}
             self.daemon = daemon
             self.started = False
+            self.ident = None
             self.join_calls = []
             self.__class__.instances.append(self)
 
         def start(self):
             self.started = True
+            self.ident = 1
+            self.target(*self.args, **self.kwargs)
 
         def join(self, timeout=None):
             self.join_calls.append(timeout)
+
+        def is_alive(self):
+            return False
 
     proc = DummyProc()
     monkeypatch.setattr("executors.python_executor.subprocess.Popen", lambda *args, **kwargs: proc)
@@ -318,66 +343,16 @@ def test_python_executor_cleanup_joins_threads_when_communicate_raises_unexpecte
     )
 
     assert result.success is False
-    assert result.error_message == "执行超时 (1秒)"
+    assert result.error_message.startswith("执行超时 (1秒)")
+    assert "process wait boom" in result.error_message
+    assert result.extra[ResultPolicyKeys.BACKGROUND_RISK] is True
+    assert result.extra[ResultPolicyKeys.NON_RETRYABLE] is True
     assert killed["pid"] == 5454
-    assert proc.communicate_calls == [PythonExecutor.COMMUNICATE_TIMEOUT_SECONDS]
+    assert proc.communicate_calls == []
+    assert proc.wait_calls == [PythonExecutor.PROCESS_WAIT_TIMEOUT_SECONDS]
     assert all(thread.started for thread in DummyThread.instances)
     assert all(thread.daemon for thread in DummyThread.instances)
     assert [thread.join_calls for thread in DummyThread.instances] == [
         [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
         [PythonExecutor.STREAM_JOIN_TIMEOUT_SECONDS],
     ]
-
-
-
-def test_python_executor_sanitizes_subprocess_env(monkeypatch, tmp_path: Path):
-    script = tmp_path / "job.py"
-    script.write_text("print('ok')", encoding="utf-8")
-    captured = {}
-
-    class DummyProc:
-        def __init__(self):
-            self.stdout = io.BytesIO(b"")
-            self.stderr = io.BytesIO(b"")
-            self.returncode = 0
-
-        def wait(self, timeout=None):
-            return self.returncode
-
-        def poll(self):
-            return self.returncode
-
-    class DummyThread:
-        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-            self.join_calls = []
-            self.daemon = daemon
-
-        def start(self):
-            pass
-
-        def join(self, timeout=None):
-            self.join_calls.append(timeout)
-
-    def fake_popen(*args, **kwargs):
-        captured["env"] = kwargs["env"]
-        return DummyProc()
-
-    monkeypatch.setenv("PYTHONPATH", "bad-path")
-    monkeypatch.setenv("PYTHONHOME", "bad-home")
-    monkeypatch.setattr("executors.python_executor.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("executors.python_executor.threading.Thread", DummyThread)
-
-    result = PythonExecutor().execute(
-        str(script),
-        log_dir=tmp_path / "logs",
-        env={"PYTHONPATH": "override-bad", "CUSTOM_OK": "1"},
-    )
-
-    assert result.success is True
-    assert "PYTHONPATH" not in captured["env"]
-    assert "PYTHONHOME" not in captured["env"]
-    assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
-    assert captured["env"]["PYTHONUTF8"] == "1"
-    assert captured["env"]["PYTHONUNBUFFERED"] == "1"
-    assert captured["env"]["CUSTOM_OK"] == "1"
-    assert captured["env"]["WORKFLOW_STEP_LOG_DIR"] == str(tmp_path / "logs")

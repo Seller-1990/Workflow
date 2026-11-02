@@ -24,6 +24,11 @@ must not imply success while work is still stopping.
 
 ## Required Patterns
 
+New independently selectable contracts:
+
+- [Scoped imported-path confirmation](./scoped-path-confirmation.md)
+- [Workflow-start progress total](./workflow-start-progress.md)
+
 ### Scenario: Executor Cancellation Result Contract
 
 #### 1. Scope / Trigger
@@ -383,8 +388,9 @@ Correct:
 
 #### 4. Validation & Error Matrix
 
-- Step cleanup fails with operational error -> warn and still attempt run
-  terminal update.
+- Step cleanup fails with operational error -> warn, return `False`, and do not
+  attempt the run terminal update. Leave the unfinished record visible for
+  diagnosis or explicit recovery.
 - Run terminal update fails with operational error -> return `False` to caller.
 - Programming errors such as invalid update fields must propagate, not be hidden
   as ordinary finalization failures.

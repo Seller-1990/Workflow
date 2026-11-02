@@ -5,6 +5,8 @@
 ``panel._xxx`` 委托方法，保持原有动态分发语义。
 """
 
+import sys
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -24,6 +26,7 @@ from PySide6.QtCore import Qt
 from config import StepType
 from ui.collapsible_section import CollapsibleSection
 from ui.mini_dag import MiniDagWidget
+from ui.step_run_controls import create_step_run_controls
 from ui.step_editor_sections import (
     create_advanced_settings_section,
     create_dependency_summary_section,
@@ -323,31 +326,9 @@ def setup_ui(panel):
 
     basic_layout.addWidget(dep_row)
 
-    # 高频运行操作：不依赖编辑模式。
-    run_row = QWidget()
-    run_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-    run_row_layout = QVBoxLayout(run_row)
-    run_row_layout.setContentsMargins(0, 0, 0, 0)
-    run_row_layout.setSpacing(6)
-    panel.btn_run_only_step = QPushButton("只运行此步骤")
-    panel.btn_run_only_step.setObjectName("stepRunButton")
-    panel.btn_run_only_step.setFixedHeight(30)
-    panel.btn_run_only_step.setMinimumWidth(0)
-    panel.btn_run_only_step.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-    panel.btn_run_only_step.setToolTip("只运行当前选中的步骤")
-    panel.btn_run_only_step.setAccessibleName("只运行此步骤")
-    panel.btn_run_only_step.clicked.connect(lambda: panel._request_step_run("only_step"))
-    run_row_layout.addWidget(panel.btn_run_only_step)
-    panel.btn_run_from_step = QPushButton("从此步骤开始")
-    panel.btn_run_from_step.setObjectName("stepRunButton")
-    panel.btn_run_from_step.setFixedHeight(30)
-    panel.btn_run_from_step.setMinimumWidth(0)
-    panel.btn_run_from_step.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-    panel.btn_run_from_step.setToolTip("从当前步骤开始运行后续步骤")
-    panel.btn_run_from_step.setAccessibleName("从此步骤开始")
-    panel.btn_run_from_step.clicked.connect(lambda: panel._request_step_run("from_step"))
-    run_row_layout.addWidget(panel.btn_run_from_step)
-    basic_layout.addWidget(run_row)
+    basic_layout.addWidget(create_step_run_controls(
+        panel, ui=sys.modules[__name__],
+    ))
 
     # Save row（按 Pencil：右对齐，单按钮）
     save_row = QWidget()

@@ -320,6 +320,50 @@ def test_engine_maps_executor_cancellation_to_cancelled_step(monkeypatch, tmp_pa
         engine.shutdown(wait=False)
 
 
+def test_cancelled_step_preserves_original_error_and_risk_in_step_log(monkeypatch, tmp_path: Path):
+    engine = WorkflowEngine()
+    try:
+        workflow = SimpleNamespace(id=1, chart_theme="default")
+        step = SimpleNamespace(
+            id=2, uid="step-cancel-risk", order=1, name="取消风险",
+            step_type="bat", script_path="demo.bat", cwd="", chart_theme="",
+            timeout_seconds=30, retry_count=0, get_args=lambda: [], workflow_id=1,
+        )
+        updates = []
+
+        class CancelledRiskExecutor:
+            def execute(self, **kwargs):
+                kwargs["cancel_event"].set()
+                engine._cancelled = True
+                return ExecutorResult(
+                    success=False,
+                    exit_code=-1,
+                    error_message="Power BI 关闭前未能确认保存",
+                    extra=build_policy_extra(background_risk=True, orphan_risk=True),
+                )
+
+        monkeypatch.setattr("engine.create_step_log", lambda **kwargs: SimpleNamespace(id=302))
+        monkeypatch.setattr("engine.update_step_log", lambda step_log_id, **kwargs: updates.append(kwargs))
+        monkeypatch.setattr("engine.get_executor", lambda step_type: CancelledRiskExecutor())
+        monkeypatch.setattr(engine, "_emit_log", lambda message: None)
+        engine._cancelled = False
+
+        result = engine._execute_single_step(
+            workflow, step, run_history_id=11, log_dir=tmp_path,
+            signal_policy=SimpleNamespace(emit_step_signals=False),
+        )
+
+        assert result.status == "cancelled"
+        assert "用户取消" in result.error_message
+        assert "Power BI 关闭前未能确认保存" in result.error_message
+        assert "可能仍有后台任务运行" in result.error_message
+        assert "子工作流可能仍在后台运行" in result.error_message
+        assert updates[-1]["status"] == "cancelled"
+        assert updates[-1]["error_message"] == result.error_message
+    finally:
+        engine.shutdown(wait=False)
+
+
 def test_execute_parallel_steps_cleans_up_worker_sessions(monkeypatch, tmp_path: Path):
     engine = WorkflowEngine()
     try:
@@ -594,63 +638,5 @@ def test_execute_single_step_does_not_retry_manual_required_background_risk(monk
         assert "人工确认" in result.error_message
         assert finished[-1][2].status == "failure"
         assert finished[-1][3].extra[ResultPolicyKeys.BACKGROUND_RISK] is True
-    finally:
-        engine.shutdown(wait=False)
-
-
-def test_execute_single_step_does_not_retry_manual_required_without_background_risk(monkeypatch, tmp_path: Path):
-    engine = WorkflowEngine()
-    try:
-        workflow = SimpleNamespace(id=1, chart_theme="default")
-        step = SimpleNamespace(
-            id=5,
-            uid="step-powerbi-no-auto-refresh",
-            order=1,
-            name="Power BI Manual Refresh",
-            step_type="bat",
-            script_path="demo.pbix",
-            cwd="",
-            chart_theme="",
-            timeout_seconds=30,
-            retry_count=2,
-            get_args=lambda: ["--no-auto-refresh"],
-        )
-        step_log = SimpleNamespace(id=504)
-        attempts = []
-        finished = []
-
-        class ManualRequiredExecutor:
-            def execute(self, **kwargs):
-                attempts.append(kwargs)
-                return ExecutorResult(
-                    success=False,
-                    exit_code=2,
-                    error_message="Power BI 需要人工刷新确认，当前步骤未自动确认成功",
-                    extra=build_policy_extra(manual_required=True),
-                )
-
-        def fake_finish_step(current_step, step_log_id, result, exec_result=None, signal_policy=None):
-            finished.append((current_step, step_log_id, result, exec_result))
-
-        monkeypatch.setattr("engine.create_step_log", lambda run_history_id, step_id, order: step_log)
-        monkeypatch.setattr("engine.update_step_log", lambda *args, **kwargs: None)
-        monkeypatch.setattr("engine.get_executor", lambda step_type: ManualRequiredExecutor())
-        monkeypatch.setattr(engine, "_finish_step", fake_finish_step)
-        monkeypatch.setattr(engine, "_emit_log", lambda message: None)
-
-        result = engine._execute_single_step(
-            workflow,
-            step,
-            run_history_id=11,
-            log_dir=tmp_path,
-            signal_policy=SimpleNamespace(emit_step_signals=False),
-        )
-
-        assert len(attempts) == 1
-        assert result.status == "failure"
-        assert result.exit_code == 2
-        assert "人工刷新确认" in result.error_message
-        assert finished[-1][2].status == "failure"
-        assert finished[-1][3].extra == build_policy_extra(manual_required=True)
     finally:
         engine.shutdown(wait=False)

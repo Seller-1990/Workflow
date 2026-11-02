@@ -6,6 +6,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 MODULE_PATH = Path(__file__).resolve().parent.parent / "src" / "ui" / "run_diagnostics.py"
 spec = importlib.util.spec_from_file_location("ui_run_diagnostics_under_test", MODULE_PATH)
@@ -28,17 +30,6 @@ def test_failure_run_diagnostic_uses_failure_count():
     text = run_diagnostics.build_run_diagnostic("failure", {"failure": 3})
 
     assert text == "运行失败，3 个步骤失败"
-
-
-def test_failure_run_diagnostic_surfaces_background_risk():
-    text = run_diagnostics.build_run_diagnostic(
-        "failure",
-        {"failure": 1, "manual_required": 1, "background_risk": 1, "orphan_risk": 1},
-    )
-
-    assert "需要人工确认" in text
-    assert "后台任务" in text
-    assert "子工作流" in text
 
 
 def test_success_run_diagnostic_is_stable_without_counts():

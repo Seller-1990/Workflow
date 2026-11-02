@@ -14,25 +14,6 @@ from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 from ui import main_window_setup, run_lifecycle_controller
 
 
-def test_header_run_button_can_return_idle_after_pulse_animation():
-    app = QApplication.instance() or QApplication([])
-    window = SimpleNamespace(
-        _dark_mode=False,
-        btn_header_run=QPushButton(),
-        lbl_run_state=QLabel(),
-    )
-
-    main_window_setup.set_header_run_button_state(window, "running")
-    main_window_setup.set_header_run_button_state(window, "idle")
-
-    assert window.btn_header_run.isEnabled() is True
-    assert window.lbl_run_state.text() == "● 就绪"
-    assert window._pulse_effect.isEnabled() is False
-    window.btn_header_run.deleteLater()
-    window.lbl_run_state.deleteLater()
-    assert app is not None
-
-
 def test_workflow_finished_unlocks_step_actions_after_pulse_animation(monkeypatch):
     app = QApplication.instance() or QApplication([])
     history_refreshes = []

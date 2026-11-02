@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
-"""iOS 风格开关（避免 QSS 无法绘制「滑块」的限制）"""
+"""iOS 风格开关（避免 QSS 无法绘制「滑块」的限制）
+
+UI 精修 2026-10 #15：滑块位置与轨道颜色 180ms（MOTION_TOKENS["switch"]）OutCubic 过渡；
+不可见时直接到位。isChecked() 立即反映新状态，动画只影响绘制。
+"""
 
 from PySide6.QtWidgets import QCheckBox
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QPainter
 
-from ui.theme import COLORS, get_colors
+from ui import motion_state, switch_presentation
+from ui.motion import can_animate, make_variant, mix_color
+from ui.theme import get_colors
 
 
 class IosSwitch(QCheckBox):
@@ -17,32 +23,28 @@ class IosSwitch(QCheckBox):
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(48, 28)
         self.setFocusPolicy(Qt.StrongFocus)
+        # 0.0 = 关，1.0 = 开（绘制位置）
+        switch_presentation.init_switch_motion(self, make_variant)
 
     def sizeHint(self) -> QSize:
         return QSize(48, 28)
 
+    # ------------------------------------------------------------ 动画
+    def _on_toggled(self, checked: bool) -> None:
+        motion_state.retarget_scalar(self, float(bool(checked)), animation_allowed=lambda: can_animate(self))
+
+    def _on_anim(self, t: float) -> None:
+        switch_presentation.update_position(self, t)
+
+    @property
+    def animation(self):
+        return self._anim
+
+    # ------------------------------------------------------------ 绘制
     def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        switch_presentation.paint_switch(self, colors=get_colors(self._dark), mix_color=mix_color, painter_type=QPainter, color_type=QColor)
 
-        w = self.width()
-        h = self.height()
-        radius = h / 2.0
-
-        # Track：V9.2 用 token（原硬编码 #48484A/#E5E7EB）
-        c = get_colors(self._dark)
-        track = QColor(c["primary"] if self.isChecked() else c["border"])
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(track)
-        painter.drawRoundedRect(0, 0, w, h, radius, radius)
-
-        # Knob：V9.2 用 indicator_bg（原硬编码 #FFFFFF）
-        knob_d = 24
-        knob_y = (h - knob_d) / 2.0
-        knob_x = w - knob_d - 2 if self.isChecked() else 2
-        painter.setBrush(QColor(c["indicator_bg"]))
-        painter.drawEllipse(int(knob_x), int(knob_y), knob_d, knob_d)
-
+    # ------------------------------------------------------------ 交互
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             event.accept()
@@ -51,8 +53,7 @@ class IosSwitch(QCheckBox):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.isEnabled():
-            new_state = not self.isChecked()
-            self.setChecked(new_state)
+            self.setChecked(not self.isChecked())
             self.update()
             event.accept()
             return
@@ -61,8 +62,7 @@ class IosSwitch(QCheckBox):
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
             if self.isEnabled():
-                new_state = not self.isChecked()
-                self.setChecked(new_state)
+                self.setChecked(not self.isChecked())
                 self.update()
             event.accept()
             return

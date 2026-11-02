@@ -22,47 +22,33 @@ def _is_edit_mode_enabled(window) -> bool:
     return bool(getattr(window, "_edit_mode", False))
 
 
-def _confirm_risky_paths_gate(window, workflow_id: int) -> bool:
-    """R1: 主线程、创建 RunWorker 前弹窗确认风险路径。
+def _select_steps_for_mode(window, workflow, all_steps, mode: str, param):
+    """使用与引擎相同的选择器，返回本次实际运行范围。"""
+    from engine import RunMode
 
-    仅当引擎判定需要确认时弹窗（msg_question，默认 No，展示实际路径明细）；
-    确认后走专用事务 confirm_risky_paths，引擎侧 RunPlan 校验作为兜底。
-    """
-    from database import (
-        confirm_risky_paths,
-        get_steps_by_workflow,
-        get_workflow_by_id,
-    )
-    from risk_path_review import build_run_plan, evaluate_run_plan, format_risk_records
-    from PySide6.QtWidgets import QMessageBox
-
-    workflow = get_workflow_by_id(workflow_id)
-    if workflow is None:
-        return True
-    steps = get_steps_by_workflow(workflow_id) or []
-    plan = build_run_plan(workflow, steps)
-    if evaluate_run_plan(plan) is None:
-        return True
-    text = (
-        "此工作流包含未经确认的风险路径（绝对路径或上级目录引用），"
-        "首次运行前请确认脚本和工作目录来源可信：\n\n"
-        f"{format_risk_records(plan.risk_records)}\n\n"
-        "确认这些路径安全并允许运行？"
-    )
-    from ui.theme import msg_question
-
-    choice = msg_question(
-        window,
-        getattr(window, "_dark_mode", False),
-        "风险路径确认",
-        text,
-        buttons=QMessageBox.Yes | QMessageBox.No,
-        default_button=QMessageBox.No,
-    )
-    if choice != QMessageBox.Yes:
-        return False
-    confirm_risky_paths(workflow_id)
-    return True
+    mode_map = {
+        "full": RunMode.FULL,
+        "from_step": RunMode.FROM_STEP,
+        "only_step": RunMode.ONLY_STEP,
+        "only_stage": RunMode.ONLY_STAGE,
+        "from_stage": RunMode.FROM_STAGE,
+        "step_range": RunMode.STEP_RANGE,
+        "retry_failed": RunMode.RETRY_FAILED,
+    }
+    run_mode = mode_map.get(mode)
+    if run_mode is None or not hasattr(window.engine, "_select_steps"):
+        return all_steps
+    stage_uid = param if mode in {"only_stage", "from_stage"} else None
+    if mode == "step_range":
+        start_step_id, end_step_id = param
+        return window.engine._select_steps(
+            all_steps, run_mode, start_step_id, workflow,
+            stage_uid=None, end_step_id=end_step_id,
+        ) or []
+    step_id = param if mode in {"from_step", "only_step"} else None
+    return window.engine._select_steps(
+        all_steps, run_mode, step_id, workflow, stage_uid=stage_uid,
+    ) or []
 
 
 def on_run_requested(window, mode: str, param):
@@ -74,6 +60,12 @@ def on_run_requested(window, mode: str, param):
     if mode == "cancel":
         stop_workflow(window)
         return
+
+    # 区间运行：未给定 (起点, 终点) 时先弹对话框选择（主线程）
+    if mode == "step_range" and param is None:
+        param = _prompt_step_range(window)
+        if param is None:
+            return  # 用户取消或无步骤
 
     # R6-#2 / R7-#1: 主线程预检——已有运行时给三按钮弹窗（停止/切回/取消），
     # 而不是单纯告知（避免用户被迫手工编排）
@@ -163,12 +155,8 @@ def on_run_requested(window, mode: str, param):
 
     workflow_id = window._current_workflow_id
 
-    # R1: 创建 RunWorker 前（主线程）完成风险路径确认门禁
-    if not _confirm_risky_paths_gate(window, workflow_id):
-        return
-
     run_arg_overrides = {}
-    if mode == "only_step":
+    if mode == "only_step" and _should_modify_run_args(window):
         try:
             run_arg_overrides = _collect_run_arg_overrides(window, mode, param)
             if run_arg_overrides is None:
@@ -186,6 +174,28 @@ def on_run_requested(window, mode: str, param):
         run_arg_overrides=run_arg_overrides,
     )
     window._run_thread.start()
+
+
+def _should_modify_run_args(window) -> bool:
+    """编辑器和工具栏的单步运行共享 UI 会话内的临时参数选择。"""
+    editor = getattr(window, "step_editor", None)
+    should_modify = getattr(editor, "should_modify_run_args", None)
+    if callable(should_modify):
+        return bool(should_modify())
+    return False
+
+
+def _prompt_step_range(window):
+    """弹出区间运行对话框，返回 (起点 ID, 终点 ID)；取消/无步骤返回 None。"""
+    from database import get_steps_by_workflow
+    from ui.run_control import prompt_step_range
+
+    steps = get_steps_by_workflow(window._current_workflow_id) or []
+    if not steps:
+        msg_warning(window, getattr(window, "_dark_mode", False), "警告", "工作流没有步骤")
+        return None
+    default_start = getattr(getattr(window, "run_control", None), "_selected_step_id", None)
+    return prompt_step_range(window, steps, default_start_id=default_start)
 
 
 def stop_workflow(window):
@@ -215,27 +225,9 @@ def _collect_run_arg_overrides(window, mode: str, param):
         return None
 
     all_steps = get_steps_by_workflow(workflow_id) or []
-    steps = all_steps
-    try:
-        from engine import RunMode
-
-        mode_map = {
-            "full": RunMode.FULL,
-            "from_step": RunMode.FROM_STEP,
-            "only_step": RunMode.ONLY_STEP,
-            "only_stage": RunMode.ONLY_STAGE,
-            "from_stage": RunMode.FROM_STAGE,
-        }
-        run_mode = mode_map.get(mode)
-        if run_mode is not None and hasattr(window.engine, "_select_steps"):
-            step_id = param if mode in {"from_step", "only_step"} else None
-            stage_uid = param if mode in {"only_stage", "from_stage"} else None
-            steps = window.engine._select_steps(
-                all_steps, run_mode, step_id, workflow, stage_uid=stage_uid,
-            ) or []
-    except Exception as e:
-        logger.warning("预选步骤失败，回退全部步骤: %s", e)
-        steps = all_steps
+    # 当前仅单步且用户勾选临时参数时进入。选步失败必须终止，不能回退为
+    # 全部步骤并误编辑/保存其他步骤的参数。
+    steps = _select_steps_for_mode(window, workflow, all_steps, mode, param)
 
     def is_python(step) -> bool:
         return getattr(step, "step_type", None) == StepType.PYTHON

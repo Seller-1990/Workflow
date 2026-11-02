@@ -1,0 +1,20 @@
+{"file":".trellis/spec/context-curation.md","reason":"Verify leaf-only and summary-only task context policy"}
+{"file":".trellis/spec/backend/scoped-path-confirmation.md","reason":"Verify all-entry consent removal reaches safe execution without weakening normal validation"}
+{"file":".trellis/spec/backend/visible-range-run.md","reason":"Verify effective visibility, native dialog cancellation, selected interval and shared running lock"}
+{"file":".trellis/tasks/10-30-comprehensive-review-single-step/research/path-policy-and-range-summary.md","reason":"Latest user-approved policy supersedes old scoped consent; old 714-pass is not new acceptance"}
+{"file":".trellis/spec/backend/workflow-start-progress.md","reason":"Verify actual selected-step totals and nested signal policy"}
+{"file":".trellis/spec/backend/startup-stop-ownership.md","reason":"Verify matching target cancellation, unrelated orphan isolation, and actual test reachability"}
+{"file":".trellis/spec/backend/executor-output-ownership.md","reason":"Verify exclusive readers, no close/write overlap, bounded detach, risk persistence, and honest in-flight I/O boundaries"}
+{"file":".trellis/tasks/10-30-comprehensive-review-single-step/research/recovery-and-single-step-summary.md","reason":"Verify original single-step acceptance and preserve unrelated WIP"}
+{"file":".trellis/tasks/10-30-comprehensive-review-single-step/research/final-review-summary.md","reason":"Check delivered constraints without reusing old test counts for continuation"}
+{"file":".trellis/tasks/10-30-comprehensive-review-single-step/research/executor-output-summary.md","reason":"Check exclusive pipe ownership, synchronized log closure, bounded cleanup, and cancellation/risk semantics"}
+{"file": ".trellis/spec/ui/dialog-background.md", "reason": "Verify themed root pixels plus existing accept/cancel behavior"}
+{"file": ".trellis/spec/ui/checkbox-indicators.md", "reason": "Verify indicator contrast and state differentiation on affected surfaces"}
+{"file": ".trellis/spec/ui/clipped-text.md", "reason": "Verify complete updated tooltip values and saved column-width preservation"}
+{"file": ".trellis/spec/ui/history-splitter.md", "reason": "Verify final animation state, reached divider drag, hidden resize and profile guards"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Check style ownership, module boundaries, and hotspot impact"}
+{"file": ".trellis/tasks/10-30-comprehensive-review-single-step/research/ui-repair-summary.md", "reason": "Four UI repair regression and native limits"}
+{"file": ".trellis/spec/backend/step-log-idempotency.md", "reason": "Verify reached commit faults, stable rows under replay/concurrency and additive legacy upgrade"}
+{"file": ".trellis/spec/backend/run-ownership-cancellation.md", "reason": "Verify real multiprocess stop, nonterminal request state, owner identity and conservative orphan recovery"}
+{"file": ".trellis/spec/backend/cli-engine-lifetime.md", "reason": "Verify close exactly once after successful construction on normal and exceptional commands"}
+{"file": ".trellis/tasks/10-30-comprehensive-review-single-step/research/completion-summary.md", "reason": "Verify Phase9 boundaries and fresh evidence, not Phase8 hash/test reuse"}

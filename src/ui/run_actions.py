@@ -7,9 +7,8 @@ from typing import Mapping, Sequence
 
 
 def _call_run_method(method, *args, run_arg_overrides=None) -> bool:
-    if run_arg_overrides is not None:
-        return bool(method(*args, run_arg_overrides=run_arg_overrides))
-    return bool(method(*args))
+    kwargs = {} if run_arg_overrides is None else {"run_arg_overrides": run_arg_overrides}
+    return bool(method(*args, **kwargs))
 
 
 def run_engine_mode(
@@ -22,17 +21,18 @@ def run_engine_mode(
 ) -> bool:
     """按 UI 运行模式调用对应引擎方法。"""
     overrides = None if run_arg_overrides is None else dict(run_arg_overrides)
-    if mode == "full":
-        return _call_run_method(engine.run_all, workflow_id, run_arg_overrides=overrides)
-    if mode == "from_step":
-        return _call_run_method(engine.run_from, workflow_id, param, run_arg_overrides=overrides)
-    if mode == "only_step":
-        return _call_run_method(engine.run_only, workflow_id, param, run_arg_overrides=overrides)
-    if mode == "only_stage":
-        return _call_run_method(engine.run_stage, workflow_id, param, run_arg_overrides=overrides)
-    if mode == "from_stage":
-        return _call_run_method(engine.run_from_stage, workflow_id, param, run_arg_overrides=overrides)
+    methods = {
+        "full": "run_all", "from_step": "run_from", "only_step": "run_only",
+        "step_range": "run_range", "only_stage": "run_stage", "from_stage": "run_from_stage",
+    }
     if mode == "retry_failed":
         # 重试失败不弹窗、不附加临时参数
         return bool(engine.retry_failed(workflow_id))
-    return False
+    method_name = methods.get(mode)
+    if method_name is None:
+        return False
+    params = () if mode == "full" else (param,)
+    if mode == "step_range":
+        start_step_id, end_step_id = param
+        params = (start_step_id, end_step_id)
+    return _call_run_method(getattr(engine, method_name), workflow_id, *params, run_arg_overrides=overrides)

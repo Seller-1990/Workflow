@@ -194,7 +194,7 @@ def main(argv=None):
     from logging.handlers import RotatingFileHandler
 
     from PySide6.QtCore import Qt, QTimer
-    from PySide6.QtGui import QFont, QIcon
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
     from config import APP_NAME, APP_VERSION, ICON_PATH, LOG_DIR
     from tls_ca import configure_ca_bundle_environment
@@ -236,9 +236,9 @@ def main(argv=None):
     # 避免把个人/本机信息写入应用元数据；同时也利于跨机器一致性
     app.setOrganizationName(APP_NAME)
     
-    # 设置默认字体
-    font = QFont("Inter", 10)
-    app.setFont(font)
+    # 默认字体由主题公共 API 构造，与全局 QSS 使用同一组字体 token。
+    from ui.theme import application_font
+    app.setFont(application_font())
     
     # 设置样式（全局样式由 MainWindow._apply_theme 按恢复的主题统一应用，
     # 这里不再预刷一次亮色样式，避免启动时全树 repolish 两次）

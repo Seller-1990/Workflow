@@ -6,6 +6,10 @@ from __future__ import annotations
 import json
 import logging
 
+from database_step_validation import (
+    expect_int_if_present as _expect_int_if_present,
+    expect_non_negative_int_if_present as _expect_non_negative_int_if_present,
+)
 from models import Workflow
 
 import risk_path_review
@@ -82,16 +86,6 @@ def _expect_optional_list(parent: dict, key: str, path: str) -> list:
     if not isinstance(value, list):
         raise _json_error(f"{path}.{key}", "必须是数组")
     return value
-
-
-def _expect_int_if_present(parent: dict, key: str, path: str, *, allow_none: bool = False) -> None:
-    if key not in parent:
-        return
-    value = parent.get(key)
-    if allow_none and value is None:
-        return
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise _json_error(f"{path}.{key}", "必须是整数")
 
 
 def _expect_bool_if_present(parent: dict, key: str, path: str) -> None:
@@ -205,8 +199,8 @@ def _validate_steps(steps: list, wf_path: str) -> None:
         _expect_supported_executable_type_if_present(step, "step_type", step_path)
         _expect_str_if_present(step, "script", step_path)
         _expect_str_if_present(step, "cwd", step_path)
-        _expect_int_if_present(step, "timeout_seconds", step_path, allow_none=True)
-        _expect_int_if_present(step, "retry_count", step_path)
+        _expect_non_negative_int_if_present(step, "timeout_seconds", step_path)
+        _expect_non_negative_int_if_present(step, "retry_count", step_path)
         _expect_bool_if_present(step, "is_gate", step_path)
         _expect_bool_if_present(step, "is_parallel", step_path)
         _expect_bool_if_present(step, "skip_on_success", step_path)

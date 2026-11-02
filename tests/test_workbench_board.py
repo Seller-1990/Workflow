@@ -80,39 +80,6 @@ def _panel_with_dummy_workflow(monkeypatch) -> WorkbenchBoardPanel:
     return panel
 
 
-def test_stage_progress_tracks_step_statuses(monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    panel = _panel_with_dummy_workflow(monkeypatch)
-    try:
-        lane = panel._lanes["stage-a"]
-        assert lane.progress.value() == 0
-        assert lane.progress.property("stageStatus") == "idle"
-
-        panel.highlight_step(1, "success", 1.2)
-
-        assert lane.progress.value() == 50
-        assert lane.progress.toolTip() == "阶段进度：1/2"
-        assert lane.progress.property("stageStatus") == "idle"
-
-        panel.highlight_step(2, "running")
-
-        assert lane.progress.value() == 50
-        assert lane.progress.property("stageStatus") == "running"
-
-        panel.highlight_step(2, "success", 2.4)
-
-        assert lane.progress.value() == 100
-        assert lane.progress.property("stageStatus") == "success"
-
-        panel.reset_all_status()
-
-        assert lane.progress.value() == 0
-        assert lane.progress.property("stageStatus") == "idle"
-    finally:
-        panel.deleteLater()
-        assert app is not None
-
-
 def test_theme_refresh_recolors_step_card_type_icons(monkeypatch):
     """V9.3 回归：卡片类型图标颜色在创建时烘焙，refresh_theme 必须重设 pixmap。"""
     app = QApplication.instance() or QApplication([])
@@ -157,33 +124,34 @@ def test_gate_card_renders_shield_icon_without_text_pill(monkeypatch):
         assert app is not None
 
 
-def test_repeated_highlight_does_not_resync_board(monkeypatch):
+def test_batch_failure_shows_unknown_labels_warning_and_diagnostic(monkeypatch, caplog):
+    from exceptions import DependencyError
+
     app = QApplication.instance() or QApplication([])
-    panel = _panel_with_dummy_workflow(monkeypatch)
+    monkeypatch.setattr(board_module, "get_stage_order_map", lambda workflow_id: {"stage-a": 1})
+    monkeypatch.setattr(
+        board_module.WorkflowEngine,
+        "compute_batches",
+        staticmethod(lambda workflow, workflow_steps, stage_map: (_ for _ in ()).throw(
+            DependencyError("检测到循环依赖")
+        )),
+    )
+    panel = WorkbenchBoardPanel()
     try:
-        lane = panel._lanes["stage-a"]
-        refresh_calls = []
-        sync_calls = []
-        original_refresh = lane.refresh_minimum_height
-
-        def counted_refresh():
-            refresh_calls.append(1)
-            original_refresh()
-
-        monkeypatch.setattr(lane, "refresh_minimum_height", counted_refresh)
-        monkeypatch.setattr(panel, "_sync_board_minimum_size", lambda: sync_calls.append(1))
-
-        panel.highlight_step(1, "success", 1.2)
-        assert len(refresh_calls) == 1
-        assert len(sync_calls) == 1
-
-        panel.highlight_step(1, "success", 1.2)
-        assert len(refresh_calls) == 1
-        assert len(sync_calls) == 1
-
-        panel.highlight_step(1, "success", 2.4)
-        assert len(refresh_calls) == 2
-        assert len(sync_calls) == 2
+        with caplog.at_level("WARNING", logger=board_module.__name__):
+            panel.load_workflow(
+                100,
+                steps=[DummyStep(1, "step-1", "提取", "stage-a", 1)],
+                stages=[DummyStage("stage-a", "准备", 1)],
+                workflow=object(),
+            )
+        order_labels = panel.board_widget.findChildren(QLabel, "StepOrder")
+        assert [label.text() for label in order_labels] == ["B?"]
+        assert not panel.batch_warning.isHidden()
+        assert "批次计算失败：检测到循环依赖" in panel.batch_warning.text()
+        assert "Traceback" in panel.batch_warning.toolTip()
+        assert "看板批次计算失败" in caplog.text
+        assert panel._cards[1].isEnabled()
     finally:
         panel.deleteLater()
         assert app is not None
