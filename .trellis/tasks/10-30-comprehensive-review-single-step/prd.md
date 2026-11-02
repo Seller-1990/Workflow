@@ -118,11 +118,11 @@
 - [x] 2026-11-02 当前源码全量 967 passed/1 skipped/2 warnings，release metadata 3 passed；编译、diff-check、依赖一致性、环境、broad-except、risky-call通过。当前真实 hotspot strict 门与 local residue 披露见续办 progress；历史967/612仍只绑定原 checkpoint。
 - 仍未完成新原生产品矩阵。真实工作数据库、真实 QSettings、业务脚本、用户数据删除/移动均不在当前任务授权范围。
 
-### Continuation — release preparation (2026-11-03)
+### Continuation — release records (2026-11-03)
 - 后续用户明确要求完成提交、推送及更新版本标签，覆盖此前各阶段记录的“不提交/不升版本”约束；不覆盖真实数据库/QSettings、业务脚本或原生探针边界。
-- `APP_VERSION`、`__version__` 和 README 已统一准备为 `7.0.0`；版本元数据测试 3 项通过。此前全量 967 passed / 1 skipped / 2 warnings 在该版本号变更前执行，待对最终提交树重新执行推送前检查。
-- 候选暂存区共 176 路径（79 src、62 tests、17 Spec、15 当前任务文档、3 根文件）；临时证据、用户文件和独立 `scripts/ocr-review.sh` 均未纳入。提交前仍需核对最终清单并通过实际 pre-push hook。
-- 当前不宣称全部质量门通过：真实原生矩阵仍 blocked；working-strict 本轮尚未重跑；具体推送门禁结果应按即将执行的提交树验证记录更新。任务保持 in_progress，不因发布候选准备而勾选原生验收。
+- 7.0.0 实际结果（只读核实）：提交 `3edc923` 已推送至分支 `chore/ocr-auto-review`，并打注解标签 `v7.0.0`；实际推送前检查为 967 passed / 1 skipped / 2 条既有 warnings。Package 运行 41486757336：Windows 打包成功；macOS 在打包前测试阶段因缺少 Darwin 进程身份失败，未产出 macOS 7.0.0 安装包。
+- 补丁版 7.0.1 已在本地实现并验收：Darwin 改用 libproc `proc_pidinfo` 读取 PID + 内核创建时间（tvsec/tvusec），读取不足/非 ESRCH 返回 unknown、未知活性不判死、PID 复用按创建时间识别；observer 生命周期回归测试在断言失败时 finally 关闭观察线程并恢复引擎状态（仅测试改动，未改产品清理路径）。owner 聚焦 50 passed/17.39s；本地全量 984 passed / 1 skipped / 2 条既有 Query.get warnings（173.50s，exit 0）；broad 0 回归、risky 0 未批准（16 allowlisted）、hotspot 0 回归，requirements/compile/diff 均 exit 0；release metadata/docs/CI 守卫 10 passed（0.27s）；Trellis implement/check 各 20 条验证通过；非 strict tracked hygiene 通过；git 换行提示为 advisory 不是错误。提交、标签与 macOS CI 打包尚待完成；7.0.0 macOS 因缺少 Darwin 进程身份失败的记录保留。
+- 当前不宣称全部质量门通过：真实原生矩阵仍 blocked；未新增原生验收、未重跑 strict 门；working-strict 本轮无新读数；macOS CI 打包待验。任务保持 in_progress，不因本地验收而勾选原生验收。
 
 ## Out of Scope
 - 无证据的大规模架构重写、格式化全库、删除测试接缝。

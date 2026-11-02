@@ -1,19 +1,32 @@
 # Unified remaining-work completion
 
-## Current continuation — release preparation (2026-11-03)
+## Current continuation — release records (2026-11-03)
 
-The user later explicitly requested committing, pushing and updating the version tag,
-superseding prior phase-local restrictions against those operations. Release metadata is
-aligned at `7.0.0` in `src/config.py`, `src/__init__.py` and README; the focused
-release-metadata suite passed **3 tests**. The previously recorded full suite
-(**967 passed / 1 skipped / 2 existing warnings**) predates that version metadata
-update, so the exact candidate must pass the actual pre-push hook before publication.
-The staged candidate has 176 paths: 79 `src/`, 62 `tests/`, 17 Spec files, 15
-active-task files and 3 root files. Scratch evidence, user artifacts, and the unrelated
-`scripts/ocr-review.sh` change are excluded. Do not claim all gates are green:
-working-strict has not been rerun, and native Phase6 remains blocked after the one
-authorized probe failed; no retry or product matrix is allowed. Keep the task
-`in_progress` and unarchived.
+The user explicitly requested committing, pushing and updating the version tag,
+superseding prior phase-local restrictions against those operations. **7.0.0 is a
+historical, released fact:** commit `3edc923` was pushed on branch
+`chore/ocr-auto-review` with annotated tag `v7.0.0`; the actual pre-push check ran
+**967 passed / 1 skipped / 2 existing warnings**. Package workflow run `41486757336`
+produced a **Windows** package; its **macOS** job failed during pre-package tests
+because Darwin process identity is missing, so **no macOS 7.0.0 package exists**.
+That failure remains explicit and is not retroactively repaired.
+
+Patch **7.0.1** is implemented and locally accepted. Darwin identity now reads the
+PID plus its kernel creation time (tvsec/tvusec) through libproc `proc_pidinfo`;
+short or other-than-ESRCH reads return unknown, unknown liveness is never treated as
+death, and a reused PID is distinguished by creation time. The observer-lifecycle regression test now closes the observer thread and restores
+engine state in a `finally` block when an assertion fails, avoiding cascading test
+errors; this is a test-only change and the product owner-thread lifecycle is
+unchanged. Local acceptance: owner-focused
+**50 passed in 17.39s**; full run **984 passed / 1 skipped / 2 existing Query.get
+warnings in 173.50s (exit 0)**; static gates broad 0 regressions, risky 0 unapproved
+(16 allowlisted), hotspot 0 regressions, requirements/compile/diff exit 0, and the
+git line-ending notice is advisory rather than an error. Release metadata/docs/CI
+guard tests passed **10 in 0.27s**, Trellis implement/check manifests (20 entries
+each) validated, and non-strict tracked hygiene passed. No new native acceptance
+and no strict rerun, so no all-gates-green claim. Commit, tag and the macOS CI
+package remain pending; native Phase6 stays blocked after the one authorized probe
+failed and the task stays `in_progress`, unarchived.
 
 ## Decision and authorization
 

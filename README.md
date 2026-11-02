@@ -1,13 +1,21 @@
 # 工作流管理系统 (Workflow Manager)
 
-基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、批处理、子工作流等任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：7.0.0。
+基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、批处理、子工作流等任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：7.0.1。
+
+## 7.0.1 更新日志
+
+- **macOS 进程身份**：Darwin 平台改用 libproc `proc_pidinfo` 读取 PID 及其内核创建时间（tvsec/tvusec）作为身份令牌，不再只凭 PID 判定；读取不足或非 ESRCH 错误返回 unknown，未知活性不判死；PID 被复用但创建时间不符时判为已死。修复 7.0.0 在 macOS 打包前测试阶段因缺少 Darwin 进程身份而失败的问题。
+- **观察者测试清理**：测试断言失败时通过 finally 关闭观察线程并恢复引擎状态，避免后续测试级联错误（仅测试改动，产品 owner 线程生命周期未修改）。
+- **验证**：owner 聚焦 50 passed / 17.39s；本地全量 984 passed、1 skipped、2 条既有 SQLAlchemy `Query.get` warnings，173.50s，exit 0。静态门 broad 0 回归、risky 0 未批准（16 条既有 allowlist）、hotspot 0 回归，requirements/compile/diff 均 exit 0；release metadata/docs/CI 守卫测试 10 passed（0.27s）；Trellis implement/check 各 20 条验证通过；非 strict tracked hygiene 通过；git 换行提示为 advisory，不是错误。
+- **边界**：macOS CI 打包尚待验证，7.0.0 macOS 包因缺少 Darwin 进程身份失败的记录保留；桌面原生矩阵仍 blocked，未新增原生验收、未重跑 strict 门，不代表所有发布质量门全绿。
 
 ## 7.0.0 更新日志
 
 - **运行所有权与恢复**：增加可验证的运行 owner、跨进程协作取消、StepLog 操作身份及兼容迁移，避免并发停止、未知提交结果和重启恢复时误归属。
 - **执行与 CLI 生命周期**：完善 CLI 引擎关闭、执行输出回收与诊断投影；保留协作取消及有限清理边界。
 - **运行入口与交互**：提供区间运行可见入口、单步可选参数交互和更新后的工作台、主题、字体与布局行为。
-- **验证**：已验证源码全量测试为 967 passed、1 skipped、2 条既有 SQLAlchemy warnings；该全量结果早于 7.0.0 元数据更新，最终候选仍需重新通过推送前检查。桌面原生矩阵仍未验收，不代表所有发布质量门全绿。
+- **发布标识**：发布提交 `3edc923` 已推送到分支 `chore/ocr-auto-review`，并打注解标签 `v7.0.0`。
+- **验证与打包**：该提交树的实际推送前检查为 967 passed、1 skipped、2 条既有 SQLAlchemy warnings。Package 运行 41486757336 中 Windows 打包成功；macOS 在打包前测试阶段失败，原因是缺少 Darwin 进程身份，未产出 macOS 7.0.0 安装包。桌面原生矩阵仍未验收，不代表所有发布质量门全绿。
 
 ## 6.0.2 更新日志
 

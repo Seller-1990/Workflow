@@ -1,5 +1,6 @@
 """Conservative local process identity: PID plus OS creation token, never PID alone."""
 from dataclasses import dataclass
+import errno
 import os
 from pathlib import Path
 import socket
@@ -45,11 +46,60 @@ def _windows_process(pid: int) -> tuple[str, str | None]:
         kernel.CloseHandle(handle)
 
 
+# libproc.h / sys/proc_info.h: fixed layout on supported macOS architectures.
+_PROC_PIDTBSDINFO = 3
+_BSDINFO_SIZE = 136
+_BSDINFO_START_TVSEC = 120
+_BSDINFO_START_TVUSEC = 128
+
+
+def _darwin_libproc():
+    """Separate seam so the Darwin path stays testable off-macOS."""
+    import ctypes
+    import ctypes.util
+
+    libproc = ctypes.CDLL(
+        ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib", use_errno=True,
+    )
+    libproc.proc_pidinfo.argtypes = (
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
+    )
+    libproc.proc_pidinfo.restype = ctypes.c_int
+    return libproc
+
+
+def _darwin_start_token(raw: bytes) -> str:
+    tvsec = int.from_bytes(raw[_BSDINFO_START_TVSEC:_BSDINFO_START_TVSEC + 8], "little")
+    tvusec = int.from_bytes(raw[_BSDINFO_START_TVUSEC:_BSDINFO_START_TVUSEC + 8], "little")
+    return f"{tvsec}.{tvusec:06d}"
+
+
+def _darwin_process(pid: int) -> tuple[str, str | None]:
+    """Ask the kernel for the PID's own creation time; never signal-probe the PID."""
+    import ctypes
+
+    try:
+        libproc = _darwin_libproc()
+    except OSError:
+        return "unknown", None
+    raw = ctypes.create_string_buffer(_BSDINFO_SIZE)
+    # A short read must never inherit stale ESRCH as proof of death.
+    ctypes.set_errno(0)
+    written = libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.byref(raw), _BSDINFO_SIZE)
+    if written == _BSDINFO_SIZE:
+        return "alive", _darwin_start_token(raw.raw)
+    if written <= 0 and ctypes.get_errno() == errno.ESRCH:
+        return "dead", None
+    return "unknown", None
+
+
 def inspect_process(pid: int) -> tuple[str, str | None]:
     if pid <= 0:
         return "unknown", None
     if sys.platform == "win32":
         return _windows_process(pid)
+    if sys.platform == "darwin":
+        return _darwin_process(pid)
     if sys.platform.startswith("linux"):
         try:
             stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")

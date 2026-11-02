@@ -111,22 +111,32 @@ def test_observer_does_not_leak_sessions_or_wait_for_sqlite_writer(monkeypatch, 
         polled.set()
         return original_acknowledge(*args, **kwargs)
 
+    def restore():
+        # Idempotent teardown of acquired state: close_observer/release tolerate
+        # repeated calls, so an assertion failure above cannot leak the daemon
+        # run-owner thread or leave engine active IDs/_running behind.
+        scope.close_observer()
+        scope.release()
+        engine._active_run_ids.clear()
+        engine._running = False
+
     monkeypatch.setattr(coordination, "acknowledge_stop_requests", observe_poll)
     engine._running = True
-    history = scope.create_and_register(lifecycle.create_run_history, workflow_id=workflow.id)
-    assert polled.wait(3)
-    assert coordination.request_run_stop(history.id).status in ("requested", "acknowledged")
-    with db._engine.connect() as writer:
-        writer.exec_driver_sql("BEGIN IMMEDIATE")
-        before = time.monotonic()
-        scope.close_observer()
-        assert time.monotonic() - before < 0.8
-        assert not scope.thread.is_alive()
-        writer.rollback()
-    scope.release()
-    engine._active_run_ids.clear()
-    engine._running = False
-    assert db._engine.pool.checkedout() == 0
+    try:
+        history = scope.create_and_register(lifecycle.create_run_history, workflow_id=workflow.id)
+        assert polled.wait(3)
+        assert coordination.request_run_stop(history.id).status in ("requested", "acknowledged")
+        with db._engine.connect() as writer:
+            writer.exec_driver_sql("BEGIN IMMEDIATE")
+            before = time.monotonic()
+            scope.close_observer()
+            assert time.monotonic() - before < 0.8
+            assert not scope.thread.is_alive()
+            writer.rollback()
+        restore()
+        assert db._engine.pool.checkedout() == 0
+    finally:
+        restore()
 
 
 def test_owner_release_after_failed_step_cleanup_remains_recoverable(monkeypatch, owned_engine):
