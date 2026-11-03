@@ -32,7 +32,7 @@ from database import (
     get_step_by_id
 )
 from models import Step
-from ui import step_editor_build, step_editor_io
+from ui import step_editor_build, step_editor_io, step_editor_state
 from ui.collapsible_section import CollapsibleSection
 from ui.step_editor_sections import (
     create_advanced_settings_section,
@@ -74,6 +74,8 @@ class StepEditorPanel(QWidget):
         self._suppress_type_override = False
         self._prev_step_uid = None
         self._extra_sections_visible = False
+        # 临时参数选择属于运行会话状态，不属于步骤配置，也不随选步加载重置。
+        self._modify_run_args_for_session = False
         # #5: 脏标记 + 加载/保存抑制旗——加载时禁止 _mark_dirty 误置 True
         self._is_dirty = False
         self._suppress_dirty = False
@@ -85,6 +87,7 @@ class StepEditorPanel(QWidget):
         self._setup_ui()
         # #5: setup 完成后再接脏检测，避免初始化期间 setValue/setText 触发
         self._connect_dirty_tracking()
+        self.check_modify_run_args.toggled.connect(self._on_modify_run_args_toggled)
     
     def _setup_ui(self):
         """设置 UI（实现在 ui.step_editor_build）"""
@@ -226,6 +229,13 @@ class StepEditorPanel(QWidget):
             return
         self.step_delete_requested.emit(int(self._step_id))
 
+    def _on_modify_run_args_toggled(self, checked: bool):
+        self._modify_run_args_for_session = bool(checked)
+
+    def should_modify_run_args(self) -> bool:
+        """运行入口读取同一临时参数选择；不写步骤配置或数据库。"""
+        return self._modify_run_args_for_session
+
     def _request_step_run(self, mode: str):
         if self._step_id is None:
             return
@@ -249,62 +259,7 @@ class StepEditorPanel(QWidget):
             logger.warning("更新步骤编辑器控件状态失败: %s", label, exc_info=True)
 
     def _apply_enabled_state(self):
-        can_edit = self._edit_enabled
-        has_step = self._step_id is not None
-        can_edit_step = can_edit and has_step
-        # 编辑模式只做「写操作门禁」，不应让用户无法查看/复制字段内容
-        self.section.setEnabled(True)
-        self.section.set_collapsed(False)
-        self.btn_save.setEnabled(can_edit_step)
-
-        # 基础字段：只读/可编辑
-        self._safe_update_control_state(
-            "基础字段",
-            lambda: (
-                self.edit_name.setReadOnly(not can_edit_step),
-                self.edit_script.setReadOnly(not can_edit_step),
-            ),
-        )
-        self._safe_update_control_state("浏览脚本按钮", lambda: self.btn_browse.setEnabled(can_edit_step))
-        self._safe_update_control_state("浏览工作目录按钮", lambda: self.btn_browse_cwd.setEnabled(can_edit_step))
-        self._safe_update_control_state("依赖快捷按钮", lambda: self.btn_dep_quick.setEnabled(can_edit_step))
-        self._safe_update_control_state("阶段下拉框", lambda: self.combo_stage.setEnabled(can_edit_step))
-
-        # 高级设置：可见但写操作禁用（避免误操作）
-        self.advanced.setEnabled(can_edit_step)
-        self._safe_update_control_state(
-            "高级设置",
-            lambda: (
-                self.combo_type.setEnabled(can_edit_step),
-                self.edit_args.setReadOnly(not can_edit_step),
-                self.edit_saved_run_args.setReadOnly(not can_edit_step),
-                self.edit_output_paths.setReadOnly(not can_edit_step),
-                self.edit_cwd.setReadOnly(not can_edit_step),
-                self.edit_theme.setReadOnly(not can_edit_step),
-                self.edit_timeout.setReadOnly(not can_edit_step),
-                self.edit_retry.setReadOnly(not can_edit_step),
-                self.check_gate.setEnabled(can_edit_step),
-                self.check_skip_on_success.setEnabled(can_edit_step),
-                self.dep_list.setEnabled(can_edit_step),
-                self.combo_target_workflow.setEnabled(can_edit_step),
-            ),
-        )
-        self._safe_update_control_state("更多按钮", lambda: self.btn_more.setEnabled(has_step))
-        self._safe_update_control_state(
-            "运行按钮",
-            lambda: (
-                self.btn_run_only_step.setEnabled(has_step),
-                self.btn_run_from_step.setEnabled(has_step),
-            ),
-        )
-        self._safe_update_control_state(
-            "删除按钮",
-            lambda: (
-                self.btn_delete.setVisible(has_step),
-                self.btn_delete.setEnabled(can_edit_step),
-            ),
-        )
-        self._update_action_tooltips()
+        step_editor_state.apply_enabled_state(self)
 
     def _on_gate_state_changed(self, _state: int):
         # 自动并行语义下，「检查点」仅用于强制关键步骤单独执行；这里无需联动并行开关

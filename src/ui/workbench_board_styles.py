@@ -3,7 +3,14 @@
 
 from __future__ import annotations
 
-from ui.theme import get_colors
+from ui.motion import rgba
+from ui.workbench_card_styles import build_card_stylesheet
+from ui.theme import CORNER_RADIUS, get_colors
+
+# UI 精修 2026-10 O-2：圆角引用 CORNER_RADIUS；例外（保持字面量）：
+# SelectionHint 17px / StatusBadge 10px 为高度一半的胶囊形，StageProgress 2px 为细条。
+_R = CORNER_RADIUS["default"]
+_RS = CORNER_RADIUS["small"]
 
 
 def board_tokens(dark: bool) -> dict:
@@ -12,7 +19,8 @@ def board_tokens(dark: bool) -> dict:
         "bg": c["background"],
         "panel": c["surface_card"],
         "panel_soft": c["surface_secondary"],
-        "lane": "rgba(255, 255, 255, 0.72)" if not dark else "rgba(44, 44, 46, 0.72)",
+        # O-1：泳道半透明底由 surface_card token 派生（亮/暗各自跟随主题），不再硬编码 rgba 字面量
+        "lane": rgba(c["surface_card"], 0.72),
         "ink": c["text_primary"],
         "muted": c["text_secondary"],
         "line": c["border"],
@@ -28,6 +36,27 @@ def board_tokens(dark: bool) -> dict:
         "violet": c["violet"],
         "violet_weak": c["violet_weak"],
     }
+
+
+# #11：StepCard 左条颜色单一来源（与下方 QSS 的 stepStatus/checkpoint 规则保持一致），
+# 供卡片换色 200ms 过渡计算起止色。
+_STEP_LEFT_KEYS = {
+    "running": "blue",
+    "failure": "red",
+    "success": "green",
+    "cancelled": "amber",
+    "skipped": "amber",
+}
+
+
+def step_left_color(c: dict, status: str, checkpoint: bool = False, selected: bool = False) -> str:
+    """与 QSS 层叠顺序一致：状态色 > 检查点 violet > 选中 blue > 默认 green。"""
+    key = _STEP_LEFT_KEYS.get(status or "idle")
+    if key:
+        return c[key]
+    if checkpoint:
+        return c["violet"]
+    return c["blue"] if selected else c["green"]
 
 
 def build_board_stylesheet(c: dict) -> str:
@@ -49,7 +78,7 @@ def build_board_stylesheet(c: dict) -> str:
             color: {c["ink"]};
             background: {c["panel"]};
             border: 1px solid {c["line"]};
-            border-radius: 8px;
+            border-radius: {_R}px;
             font-weight: 700;
         }}
         QPushButton#GhostButton:hover {{
@@ -69,13 +98,20 @@ def build_board_stylesheet(c: dict) -> str:
         QFrame#StageLane {{
             background: {c["lane"]};
             border: 1px solid {c["line"]};
-            border-radius: 8px;
+            border-radius: {_R}px;
         }}
         QFrame#StageLane[selected="true"] {{
             border: 1px solid {c["blue"]};
         }}
         QFrame#StageLane[dragOver="true"] {{
             border: 2px solid {c["green"]};
+        }}
+        QLabel#BatchWarning {{
+            padding: 8px 12px;
+            color: {c["amber"]};
+            background: {c["amber_weak"]};
+            border: 1px solid {c["amber"]};
+            border-radius: {_R}px;
         }}
         QLabel#StageCode {{
             color: {c["blue"]};
@@ -109,86 +145,11 @@ def build_board_stylesheet(c: dict) -> str:
         QProgressBar#StageProgress[stageStatus="cancelled"]::chunk {{
             background: {c["amber"]};
         }}
-        QFrame#StepCard {{
-            background: {c["panel"]};
-            border: 1px solid {c["line"]};
-            border-left: 4px solid {c["green"]};
-            border-radius: 8px;
-        }}
-        QFrame#StepCard:hover, QFrame#StepCard[selected="true"] {{
-            border: 1px solid {c["blue"]};
-            border-left: 4px solid {c["blue"]};
-            background: {c["blue_weak"]};
-        }}
-        QFrame#StepCard[checkpoint="true"] {{
-            border-left: 4px solid {c["violet"]};
-        }}
-        QFrame#StepCard[stepStatus="running"] {{
-            border-left: 4px solid {c["blue"]};
-        }}
-        QFrame#StepCard[stepStatus="failure"] {{
-            border-left: 4px solid {c["red"]};
-        }}
-        QFrame#StepCard[stepStatus="success"] {{
-            border-left: 4px solid {c["green"]};
-        }}
-        QFrame#StepCard[stepStatus="cancelled"], QFrame#StepCard[stepStatus="skipped"] {{
-            border-left: 4px solid {c["amber"]};
-        }}
-        QLabel#StepOrder {{
-            min-height: 24px;
-            padding: 0;
-            color: {c["muted"]};
-            background: {c["panel_soft"]};
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: 800;
-            text-align: center;
-            qproperty-alignment: AlignCenter;
-        }}
-        QLabel#StatusBadge {{
-            padding: 2px 7px;
-            border-radius: 10px;
-            font-size: 11px;
-            font-weight: 760;
-            text-align: center;
-            qproperty-alignment: AlignCenter;
-        }}
-        QLabel#StatusBadge[stepStatus="running"] {{
-            color: {c["blue"]};
-            background: {c["blue_weak"]};
-        }}
-        QLabel#StatusBadge[stepStatus="success"] {{
-            color: {c["green"]};
-            background: {c["green_weak"]};
-        }}
-        QLabel#StatusBadge[stepStatus="failure"] {{
-            color: {c["red"]};
-            background: {c["red_weak"]};
-        }}
-        QLabel#StatusBadge[stepStatus="cancelled"], QLabel#StatusBadge[stepStatus="skipped"] {{
-            color: {c["amber"]};
-            background: {c["amber_weak"]};
-        }}
-        QLabel#StepTitle {{
-            color: {c["ink"]};
-            font-size: 14px;
-            font-weight: 760;
-        }}
-        QLabel#StepSubtitle {{
-            color: {c["muted"]};
-            font-size: 12px;
-        }}
-        QLabel#DurationBadge {{
-            color: {c["muted"]};
-            font-size: 11px;
-            font-weight: 650;
-        }}
-        QLabel#EmptyState {{
+{build_card_stylesheet(c, radius=_R, small_radius=_RS)}        QLabel#EmptyState {{
             color: {c["muted"]};
             background: {c["panel"]};
             border: 1px solid {c["line"]};
-            border-radius: 8px;
+            border-radius: {_R}px;
             padding: 28px;
         }}
     """

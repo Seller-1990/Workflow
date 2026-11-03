@@ -148,7 +148,7 @@ def on_bg_running_label_clicked(window, _event) -> None:
         logger.warning("切回运行工作流失败: %s", e)
 
 
-def on_workflow_started(window, workflow_id: int, run_id: str):
+def on_workflow_started(window, workflow_id: int, run_id: str, total: int = 0):
     """工作流开始"""
     # R5-#1: 记录正在运行的 workflow_id，供面板锁定守卫与切换显示判断使用
     window._running_workflow_id = workflow_id
@@ -163,9 +163,8 @@ def on_workflow_started(window, workflow_id: int, run_id: str):
     window.lbl_run_state.setText("● 运行中")
     window.lbl_run_state.setToolTip(f"当前运行中：{run_id}")
     set_header_run_button_state(window, "running")
-    # V9：全局进度条显示
+    # V9：使用引擎实际选步总数；旧版直接调用未传总数时沿用占位进度。
     if hasattr(window, "global_progress"):
-        total = getattr(window, "_running_step_total", 0) or 0
         window.global_progress.show_running(total if total > 0 else 1)
     window._apply_run_splitter_profile("running")
 

@@ -9,6 +9,7 @@ Workflow CLI - 无需 GUI 即可操作工作流
     python cli.py run "月度报表" --from-stage "数据导入" # 从某个阶段开始
     python cli.py run "月度报表" --only "清洗数据"      # 只运行某个步骤
     python cli.py run "月度报表" --from "清洗数据"      # 从某个步骤开始
+    python cli.py run "月度报表" --from "清洗数据" --to "导出"  # 区间运行（含两端）
     python cli.py retry "月度报表"              # 重试失败步骤
     python cli.py history "月度报表"            # 查看运行历史
     python cli.py steps "月度报表"              # 查看工作流步骤
@@ -303,7 +304,7 @@ class CLIEngine:
         reset = "\033[0m"
         print(f"{tag}{message}{reset}" if tag else message)
 
-    def _on_workflow_started(self, workflow_id, run_id):
+    def _on_workflow_started(self, workflow_id, run_id, total=0):
         self._last_run_id = run_id
         self._last_start_time = datetime.now()
         print(f"\n{'='*60}")
@@ -311,6 +312,7 @@ class CLIEngine:
         print(f"{'='*60}")
 
     def _on_workflow_finished(self, workflow_id, run_id, status):
+        self._run_status = status
         self._last_run_id = run_id
         self._last_end_time = datetime.now()
         if self._last_start_time and self._last_end_time:
@@ -329,7 +331,8 @@ class CLIEngine:
     def _on_step_finished(self, step_id, step_name, status, duration_seconds=None):
         print(format_step_finished_line(step_name, status, duration_seconds))
 
-    def run(self, workflow_id, mode="full", step_id=None, stage_uid=None, notify_on_complete=True, notify_on_error=True):
+    def run(self, workflow_id, mode="full", step_id=None, stage_uid=None, notify_on_complete=True, notify_on_error=True,
+            end_step_id=None):
         """运行工作流
         
         Args:
@@ -339,6 +342,7 @@ class CLIEngine:
             stage_uid: 阶段UID（用于only_stage/from_stage模式）
             notify_on_complete: 运行完成时是否发送通知（默认True）
             notify_on_error: 运行出错时是否发送通知（默认True）
+            end_step_id: 终点步骤ID（用于step_range模式，step_id为起点）
         """
         workflow = get_workflow_by_id(workflow_id)
         if not workflow:
@@ -398,6 +402,11 @@ class CLIEngine:
                     result = self.engine.run(
                         workflow_id, RunMode.ONLY_STEP, step_id=step_id, reason="cli", signal_policy=policy
                     )
+                elif mode == "step_range" and step_id and end_step_id:
+                    result = self.engine.run(
+                        workflow_id, RunMode.STEP_RANGE, step_id=step_id, end_step_id=end_step_id,
+                        reason="cli", signal_policy=policy,
+                    )
                 elif mode == "only_stage" and stage_uid:
                     result = self.engine.run(
                         workflow_id, RunMode.ONLY_STAGE, stage_uid=stage_uid, reason="cli", signal_policy=policy
@@ -417,20 +426,22 @@ class CLIEngine:
                 if main_thread is threading.main_thread():
                     signal.signal(signal.SIGINT, prev_sigint)
 
-            # F-03: run 收尾后若因取消结束（SIGINT handler 已置 cancel），按取消语义
-            # 打印并走通知链路；run 本身返回 False（cancelled 不是 success）。
-            if self.engine.is_cancelled:
-                print("运行已取消")
-                self._send_cli_notification(workflow, False, notify_on_complete, notify_on_error, cancelled=True)
-                return False
-
-            # MA4: 退出前刷一次事件队列，把 finished/error_details 等队列信号兑现给本地 slot
+            # MA4: 先兑现 finished/error_details 等队列信号；引擎收尾会复位
+            # is_cancelled，取消语义必须来自本次运行的终态而非该瞬时标志。
             if _app:
                 for _ in range(100):
                     _app.processEvents()
                     if not self.engine.is_running:
                         break
             self._refresh_last_run_metadata(workflow_id)
+            if self._run_status == "cancelled" or (
+                self._run_status is None and self.engine.is_cancelled
+            ):
+                print("运行已取消")
+                self._send_cli_notification(
+                    workflow, False, notify_on_complete, notify_on_error, cancelled=True,
+                )
+                return False
 
             # 根据运行结果发送通知
             self._send_cli_notification(workflow, result, notify_on_complete, notify_on_error)
@@ -453,11 +464,15 @@ class CLIEngine:
             return False
 
     def _refresh_last_run_metadata(self, workflow_id: int):
+        """仅补充本次运行已知的 Run ID，避免通知冒用历史运行元数据。"""
+        if not self._last_run_id:
+            return
         histories = get_run_histories_by_workflow(workflow_id, limit=1)
         if not histories:
             return
         latest = histories[0]
-        self._last_run_id = latest.run_id or self._last_run_id
+        if latest.run_id != self._last_run_id:
+            return
         self._last_start_time = latest.start_time or self._last_start_time
         self._last_end_time = latest.end_time or self._last_end_time
         if getattr(latest, "duration_seconds", None) is not None:
@@ -488,7 +503,8 @@ class CLIEngine:
         self.engine.dry_run(workflow_id)
 
     def close(self):
-        pass
+        """幂等关闭引擎辅助任务池，避免 CLI 退出或重复调用方泄漏线程。"""
+        self.engine.shutdown(wait=True)
 
 
 # ============== 命令处理 ==============
@@ -510,47 +526,16 @@ def cmd_list(args):
     print(f"\n共 {len(workflows)} 个工作流\n")
 
 
-def _confirm_risky_paths(workflow_id: int, auto_confirm: bool) -> bool:
-    """R1 门禁：返回 True 允许运行；False 由调用方以退出码 1 结束。
-
-    - TTY：交互式 y/N（EOFError 防御，视为拒绝）。
-    - 非 TTY 且无 --confirm-risky-paths：打印错误退出码 1。
-    - --confirm-risky-paths 为唯一自动确认参数。
-    """
-    from database import confirm_risky_paths, get_steps_by_workflow, get_workflow_by_id
-    from risk_path_review import build_run_plan, evaluate_run_plan, format_risk_records
-
-    workflow = get_workflow_by_id(workflow_id)
-    if workflow is None:
-        return True
-    steps = get_steps_by_workflow(workflow_id) or []
-    plan = build_run_plan(workflow, steps)
-    if evaluate_run_plan(plan) is None:
-        return True
-    print("错误：此工作流包含未经确认的风险路径（绝对路径或上级目录引用）：")
-    print(format_risk_records(plan.risk_records))
-    if auto_confirm:
-        confirm_risky_paths(workflow_id)
-        return True
-    if not sys.stdin.isatty():
-        print("错误：非交互环境请显式使用 --confirm-risky-paths 确认路径安全")
-        return False
-    try:
-        answer = input("确认这些路径安全并允许运行? (y/N): ")
-    except EOFError:
-        answer = ""
-    if answer.strip().lower() != "y":
-        print("已取消：风险路径未确认")
-        return False
-    confirm_risky_paths(workflow_id)
-    return True
-
-
 def cmd_run(args):
     """运行工作流"""
+    # --to 只能与 --from 组合（区间运行），单独给出时明确报错，避免静默跑全流程
+    if getattr(args, "to_step", None) and not args.from_step:
+        print("错误: --to 需要与 --from 一起使用", file=sys.stderr)
+        sys.exit(2)
     init_db()
     workflow_id = resolve_workflow_id(args.workflow_id)
     step_id = None
+    end_step_id = None
     stage_uid = None
     mode = "full"
 
@@ -561,6 +546,11 @@ def cmd_run(args):
     elif args.from_stage:
         stage_uid = resolve_stage_uid(workflow_id, args.from_stage)
         mode = "from_stage"
+    elif args.from_step and getattr(args, "to_step", None):
+        # 区间运行：--from X --to Y（含两端，反向由引擎自动交换）
+        step_id = resolve_step_id(workflow_id, args.from_step)
+        end_step_id = resolve_step_id(workflow_id, args.to_step)
+        mode = "step_range"
     elif args.from_step:
         step_id = resolve_step_id(workflow_id, args.from_step)
         mode = "from_step"
@@ -568,13 +558,14 @@ def cmd_run(args):
         step_id = resolve_step_id(workflow_id, args.only_step)
         mode = "only_step"
 
-    # R1: 运行前风险路径确认门禁
-    if not _confirm_risky_paths(workflow_id, bool(getattr(args, "confirm_risky_paths", False))):
-        sys.exit(1)
-
     cli = CLIEngine()
-    success = cli.run(workflow_id, mode=mode, step_id=step_id, stage_uid=stage_uid)
-    cli.close()
+    try:
+        if mode == "step_range":
+            success = cli.run(workflow_id, mode=mode, step_id=step_id, end_step_id=end_step_id)
+        else:
+            success = cli.run(workflow_id, mode=mode, step_id=step_id, stage_uid=stage_uid)
+    finally:
+        cli.close()
     sys.exit(0 if success else 1)
 
 
@@ -583,13 +574,11 @@ def cmd_retry(args):
     init_db()
     workflow_id = resolve_workflow_id(args.workflow_id)
 
-    # R1: 重试前同样走风险路径确认门禁
-    if not _confirm_risky_paths(workflow_id, bool(getattr(args, "confirm_risky_paths", False))):
-        sys.exit(1)
-
     cli = CLIEngine()
-    success = cli.run(workflow_id, mode="retry")
-    cli.close()
+    try:
+        success = cli.run(workflow_id, mode="retry")
+    finally:
+        cli.close()
     sys.exit(0 if success else 1)
 
 
@@ -790,8 +779,10 @@ def cmd_dry_run(args):
     init_db()
     workflow_id = resolve_workflow_id(args.workflow_id)
     cli = CLIEngine()
-    cli.dry_run(workflow_id)
-    cli.close()
+    try:
+        cli.dry_run(workflow_id)
+    finally:
+        cli.close()
 
 
 # ============== 主入口 ==============
@@ -813,14 +804,19 @@ def main(argv=None):
     # run
     run_parser = subparsers.add_parser("run", aliases=["start"], help="运行工作流")
     run_parser.add_argument("workflow_id", help="工作流名称 / UID / ID")
-    run_parser.add_argument("--stage", "-s", dest="stage", help="只运行指定阶段（名称 / UID）")
-    run_parser.add_argument("--from-stage", "-S", dest="from_stage", help="从指定阶段开始运行（名称 / UID）")
-    run_parser.add_argument("--only", "-o", dest="only_step", help="只运行指定步骤（名称 / UID / ID）")
-    run_parser.add_argument("--from", "-f", dest="from_step", help="从指定步骤开始（名称 / UID / ID）")
+    run_mode_group = run_parser.add_mutually_exclusive_group()
+    run_mode_group.add_argument("--stage", "-s", dest="stage", help="只运行指定阶段（名称 / UID）")
+    run_mode_group.add_argument("--from-stage", "-S", dest="from_stage", help="从指定阶段开始运行（名称 / UID）")
+    run_mode_group.add_argument("--only", "-o", dest="only_step", help="只运行指定步骤（名称 / UID / ID）")
+    run_mode_group.add_argument("--from", "-f", dest="from_step", help="从指定步骤开始（名称 / UID / ID）")
+    run_parser.add_argument(
+        "--to", "-t", dest="to_step",
+        help="与 --from 合用：运行到指定步骤为止（含两端，名称 / UID / ID）",
+    )
     run_parser.add_argument(
         "--confirm-risky-paths",
         action="store_true",
-        help="自动确认导入风险路径（唯一自动确认参数；非交互环境必须显式指定）",
+        help="兼容旧脚本的无操作参数；所有运行入口均无需风险路径二次确认",
     )
 
     # retry
@@ -829,7 +825,7 @@ def main(argv=None):
     retry_parser.add_argument(
         "--confirm-risky-paths",
         action="store_true",
-        help="自动确认导入风险路径（唯一自动确认参数；非交互环境必须显式指定）",
+        help="兼容旧脚本的无操作参数；所有运行入口均无需风险路径二次确认",
     )
 
     # history

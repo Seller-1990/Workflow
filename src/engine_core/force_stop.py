@@ -62,22 +62,22 @@ def force_cancel_run_record(
             orphan_steps_cleaned=affected,
         )
 
-    _safe_cancel_pending_steps(
-        run_history_id,
-        "用户强制停止",
-        cancel_pending_step_logs,
-        warn_cb,
-        "批量取消 step_logs 失败: %s",
-    )
+    cancel_pending_step_logs(run_history_id, "用户强制停止")
     result = update_run_history(
         run_history_id,
         status=cancelled_status_value,
         end_time=now or datetime.now(),
-        _condition_status="running",
+        _condition_status=("pending", "running"),
     )
     if result is None:
-        _log(log_cb, f"运行 {run_history_id} 终态已被正常流程写入，跳过强制取消")
-        return ForceStopResult(status="already_terminal", existing_status=existing_status)
+        current_status = _safe_get_status(run_history_id, get_status, warn_cb)
+        if current_status in TERMINAL_STATUSES:
+            _log(log_cb, f"运行 {run_history_id} 终态已被正常流程写入，跳过强制取消")
+            return ForceStopResult(status="already_terminal", existing_status=current_status)
+        if current_status is None and existing_status is None:
+            return ForceStopResult(status="not_found")
+        _log(log_cb, f"运行 {run_history_id} 状态并发变化，未强制取消")
+        return ForceStopResult(status="conflict", existing_status=current_status or existing_status)
     _log(log_cb, f"已强制停止运行记录 (run_history_id={run_history_id})")
     return ForceStopResult(status="cancelled", existing_status=existing_status)
 

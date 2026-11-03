@@ -56,7 +56,7 @@ def test_finalize_success_run_cleans_unfinished_steps_before_run_terminal_status
     ]
 
 
-def test_finalize_run_continues_when_step_cleanup_fails():
+def test_finalize_run_does_not_write_terminal_run_when_step_cleanup_fails():
     warnings = []
     updates = []
 
@@ -69,9 +69,9 @@ def test_finalize_run_continues_when_step_cleanup_fails():
         warn_cb=lambda template, exc: warnings.append(template % exc),
     )
 
-    assert result is True
+    assert result is False
     assert warnings == ["批量收敛未完成 step_logs 失败: db locked"]
-    assert updates
+    assert updates == []
 
 
 def test_finalize_run_returns_false_when_run_update_fails():

@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-"""R4: _import_and_run.py 导入告警输出测试。
+"""_import_and_run.py 导入告警输出测试。
 
-验证月度批量脚本的 import 子命令与 --auto 路径都会逐条打印
-ImportResult.warnings（中文告警），而不是只输出导入数量。
+验证 import 子命令与 --auto 路径逐条打印 ImportResult.warnings，
+旧确认参数兼容性由 test_import_and_run_compatibility.py 独立验证。
 
-DB 隔离遵循 test_import_warnings.py / test_cli_contracts.py 的既有模式：
-子进程 + WORKFLOW_APP_DATA_DIR 环境变量指向 tmp_path，避免污染真实数据库。
+子进程使用独立 WORKFLOW_APP_DATA_DIR，不运行真实业务或发送外部通知。
 注意 argparse 父 parser 选项（--workflows-json）须位于子命令（import）之前。
 """
 
@@ -16,6 +15,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 IMPORT_AND_RUN_SCRIPT = ROOT_DIR / "_import_and_run.py"

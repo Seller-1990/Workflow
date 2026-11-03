@@ -26,7 +26,9 @@ from ui.theme import (
     get_menu_stylesheet,
     msg_question,
 )
+from ui.run_history_duration import history_duration
 from ui.run_diagnostics import build_run_diagnostic
+from ui.text_utils import plain_text_tooltip
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +326,7 @@ class RunHistoryPanel(QWidget):
                 msg = "暂无运行历史，运行一次工作流后会出现在这里"
             placeholder = QTableWidgetItem(msg)
             placeholder.setTextAlignment(Qt.AlignCenter)
+            placeholder.setToolTip(plain_text_tooltip(msg))
             placeholder.setFlags(Qt.NoItemFlags)
             placeholder.setForeground(QColor(get_colors(self._dark)["text_tertiary"]))
             self.table.setItem(0, 0, placeholder)
@@ -369,9 +372,9 @@ class RunHistoryPanel(QWidget):
             status_item.setTextAlignment(Qt.AlignCenter)
             status_item.setForeground(QColor(status_tokens["fg"]))
             if notify_tooltip:
-                status_item.setToolTip(f"{diagnostic}\n{notify_tooltip}")
+                status_item.setToolTip(plain_text_tooltip(f"{status_text}\n{diagnostic}\n{notify_tooltip}"))
             else:
-                status_item.setToolTip(diagnostic)
+                status_item.setToolTip(plain_text_tooltip(f"{status_text}\n{diagnostic}"))
             if row_bg:
                 status_item.setBackground(row_bg)
             self.table.setItem(row, 1, status_item)
@@ -379,6 +382,7 @@ class RunHistoryPanel(QWidget):
             # 触发原因
             reason_text = self.REASON_MAP.get(history.reason, history.reason or "")
             reason_item = QTableWidgetItem(reason_text)
+            reason_item.setToolTip(plain_text_tooltip(reason_text))
             reason_item.setTextAlignment(Qt.AlignCenter)
             if row_bg:
                 reason_item.setBackground(row_bg)
@@ -389,39 +393,21 @@ class RunHistoryPanel(QWidget):
             if history.start_time:
                 start_text = history.start_time.strftime("%m-%d %H:%M:%S")
             start_item = QTableWidgetItem(start_text)
+            start_item.setToolTip(plain_text_tooltip(start_text))
             if row_bg:
                 start_item.setBackground(row_bg)
             self.table.setItem(row, 3, start_item)
 
             # 耗时（带颜色分级）
-            duration_text = ""
-            duration_color = None
-            duration_tokens = get_duration_tokens(self._dark)
-            if history.duration_seconds is not None:
-                ds = history.duration_seconds
-                if ds < 60:
-                    duration_text = f"{ds:.0f}s"
-                elif ds < 3600:
-                    minutes = int(ds // 60)
-                    seconds = int(ds % 60)
-                    duration_text = f"{minutes}m{seconds:02d}s"
-                else:
-                    hours = int(ds // 3600)
-                    minutes = int((ds % 3600) // 60)
-                    duration_text = f"{hours}h{minutes:02d}m"
-
-                # 颜色分级：快(绿) / 中(黄) / 慢(红)
-                if ds < 30:
-                    duration_color = QColor(duration_tokens["fast"])
-                elif ds < 300:
-                    duration_color = QColor(duration_tokens["medium"])
-                else:
-                    duration_color = QColor(duration_tokens["slow"])
+            duration_text, duration_color = history_duration(
+                history.duration_seconds, get_duration_tokens(self._dark),
+            )
 
             duration_item = QTableWidgetItem(duration_text)
+            duration_item.setToolTip(plain_text_tooltip(duration_text))
             duration_item.setTextAlignment(Qt.AlignCenter)
             if duration_color:
-                duration_item.setForeground(duration_color)
+                duration_item.setForeground(QColor(duration_color))
             if row_bg:
                 duration_item.setBackground(row_bg)
             self.table.setItem(row, 4, duration_item)
@@ -435,7 +421,7 @@ class RunHistoryPanel(QWidget):
             cancelled_count = int(counts.get('cancelled', 0))
             if cancelled_count:
                 summary_parts.append(f"取消{cancelled_count}")
-            run_item.setToolTip(f"{diagnostic}\n步骤: {' '.join(summary_parts)}")
+            run_item.setToolTip(plain_text_tooltip(f"{history.run_id}\n{diagnostic}\n步骤: {' '.join(summary_parts)}"))
 
     def clear(self):
         """清空"""

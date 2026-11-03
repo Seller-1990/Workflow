@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """运行控制面板"""
 
+import sys
+
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel
+    QWidget, QVBoxLayout, QPushButton, QLabel,
+    QDialog, QFormLayout, QComboBox, QDialogButtonBox,
 )
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 
+from ui.run_control_build import RUN_MODE_BUTTONS, setup_run_controls
 from ui.theme import COLORS, get_colors
 
 
@@ -35,104 +39,11 @@ class RunControlPanel(QWidget):
         self._setup_ui()
     
     def _setup_ui(self):
-        """设置 UI"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 0, 4, 0)
-        layout.setSpacing(8)
-
-        header = QLabel("运行控制")
-        f = QFont(header.font())
-        f.setPointSize(15)
-        f.setWeight(QFont.Weight.Bold)
-        header.setFont(f)
-        layout.addWidget(header)
-
-        # 选中步骤提示
-        self.lbl_selected = QLabel("未选中步骤")
-        self.lbl_selected.setObjectName("selectedStepLabel")
-        self.lbl_selected.setStyleSheet(f"""
-            QLabel#selectedStepLabel {{
-                color: {COLORS["text_tertiary"]};
-                font-size: 11px;
-                padding: 2px 0px;
-            }}
-        """)
-        layout.addWidget(self.lbl_selected)
-
-        # 全流程运行（Primary）—— U-P1-2：Primary 升 36px 加强视觉权重 & 满足 Win11 推荐 32px 最小点击区
-        self.btn_run_all = QPushButton(" 全流程运行")
-        self.btn_run_all.setObjectName("runPrimary")
-        self.btn_run_all.setFixedHeight(36)
-        self.btn_run_all.setToolTip("从第一阶段开始运行整个工作流")
-        self.btn_run_all.setAccessibleName("全流程运行")
-        # V9：图标化（V9.3：图标色与 text_inverse 文字一致，原默认暗灰压靛蓝底）
         from ui.icons import set_icon_button
-        set_icon_button(self.btn_run_all, "run.all", color=COLORS["text_inverse"])
-        self.btn_run_all.clicked.connect(lambda: self._run("full"))
-        layout.addWidget(self.btn_run_all)
 
-        ghost = QWidget()
-        ghost_layout = QVBoxLayout(ghost)
-        ghost_layout.setContentsMargins(0, 0, 0, 0)
-        ghost_layout.setSpacing(2)
-
-        # Ghost buttons：高 32px（仍满足 Win11 推荐最小点击区）
-        self.btn_run_from = QPushButton(" 从选中步骤开始")
-        self.btn_run_from.setObjectName("runGhost")
-        self.btn_run_from.setFixedHeight(32)
-        self.btn_run_from.setToolTip("从当前选中的步骤开始运行后续步骤")
-        self.btn_run_from.setAccessibleName("从选中步骤开始")
-        set_icon_button(self.btn_run_from, "run.from", color=COLORS["primary"])
-        self.btn_run_from.clicked.connect(lambda: self._run("from_step"))
-        ghost_layout.addWidget(self.btn_run_from)
-
-        self.btn_run_only = QPushButton(" 只运行选中步骤")
-        self.btn_run_only.setObjectName("runGhost")
-        self.btn_run_only.setFixedHeight(32)
-        self.btn_run_only.setToolTip("只运行当前选中的单个步骤")
-        self.btn_run_only.setAccessibleName("只运行选中步骤")
-        set_icon_button(self.btn_run_only, "run.only", color=COLORS["primary"])
-        self.btn_run_only.clicked.connect(lambda: self._run("only_step"))
-        ghost_layout.addWidget(self.btn_run_only)
-
-        self.btn_run_stage = QPushButton(" 只运行该阶段")
-        self.btn_run_stage.setObjectName("runGhost")
-        self.btn_run_stage.setFixedHeight(32)
-        self.btn_run_stage.setToolTip("只运行当前选中步骤所属的阶段")
-        self.btn_run_stage.setAccessibleName("只运行该阶段")
-        set_icon_button(self.btn_run_stage, "run.only", color=COLORS["primary"])
-        self.btn_run_stage.clicked.connect(lambda: self._run("only_stage"))
-        ghost_layout.addWidget(self.btn_run_stage)
-
-        self.btn_run_from_stage = QPushButton(" 从该阶段开始")
-        self.btn_run_from_stage.setObjectName("runGhost")
-        self.btn_run_from_stage.setFixedHeight(32)
-        self.btn_run_from_stage.setToolTip("从当前阶段开始运行后续阶段")
-        self.btn_run_from_stage.setAccessibleName("从该阶段开始")
-        set_icon_button(self.btn_run_from_stage, "run.from", color=COLORS["primary"])
-        self.btn_run_from_stage.clicked.connect(lambda: self._run("from_stage"))
-        ghost_layout.addWidget(self.btn_run_from_stage)
-
-        self.btn_retry = QPushButton(" 重试失败步骤")
-        self.btn_retry.setObjectName("runGhost")
-        self.btn_retry.setFixedHeight(32)
-        self.btn_retry.setToolTip("重试最近一次运行失败的步骤")
-        self.btn_retry.setAccessibleName("重试失败步骤")
-        set_icon_button(self.btn_retry, "run.retry", color=COLORS["primary"])
-        self.btn_retry.clicked.connect(lambda: self._run("retry_failed"))
-        ghost_layout.addWidget(self.btn_retry)
-
-        # 预演（默认可用，但视觉为「次要」）
-        self.btn_dry_run = QPushButton(" 工作流预演")
-        self.btn_dry_run.setObjectName("runGhostMuted")
-        self.btn_dry_run.setFixedHeight(28)
-        self.btn_dry_run.setToolTip("预览执行计划，不实际执行")
-        self.btn_dry_run.setAccessibleName("工作流预演")
-        set_icon_button(self.btn_dry_run, "run.dry", color=COLORS["primary"])
-        self.btn_dry_run.clicked.connect(self.dry_run_clicked.emit)
-        ghost_layout.addWidget(self.btn_dry_run)
-
-        layout.addWidget(ghost)
+        setup_run_controls(
+            self, ui=sys.modules[__name__], colors=COLORS, set_icon_button=set_icon_button,
+        )
 
     def refresh_theme(self, dark: bool):
         self._dark = dark
@@ -148,15 +59,9 @@ class RunControlPanel(QWidget):
         from ui.icons import set_icon_button
 
         set_icon_button(self.btn_run_all, "run.all", color=colors["text_inverse"])
-        for btn, key in (
-            (self.btn_run_from, "run.from"),
-            (self.btn_run_only, "run.only"),
-            (self.btn_run_stage, "run.only"),
-            (self.btn_run_from_stage, "run.from"),
-            (self.btn_retry, "run.retry"),
-            (self.btn_dry_run, "run.dry"),
-        ):
-            set_icon_button(btn, key, color=colors["primary"])
+        for attr, _text, _tip, _accessible, key, _mode in RUN_MODE_BUTTONS:
+            set_icon_button(getattr(self, attr), key, color=colors["primary"])
+        set_icon_button(self.btn_dry_run, "run.dry", color=colors["primary"])
 
     def set_running(self, running: bool):
         """设置运行状态（用于避免重复触发运行）"""
@@ -171,6 +76,7 @@ class RunControlPanel(QWidget):
         self.btn_run_only.setEnabled(has_step and can_run)
         self.btn_run_stage.setEnabled(has_stage and can_run)
         self.btn_run_from_stage.setEnabled(has_stage and can_run)
+        self.btn_run_range.setEnabled(can_run)
         self.btn_retry.setEnabled(can_run)
         self.btn_dry_run.setEnabled(can_run)
     
@@ -195,8 +101,9 @@ class RunControlPanel(QWidget):
         """统一运行入口（P2 精简：收敛原 _run_all/_run_from/_run_only/_run_stage/
         _run_from_stage/_retry_failed 六个近相同按钮体）。
 
-        mode: full / from_step / only_step / only_stage / from_stage / retry_failed
+        mode: full / from_step / only_step / step_range / only_stage / from_stage / retry_failed
         param: 显式参数；缺省时按 mode 从当前选中步骤/阶段推导。
+        step_range 的 param 为 None 时由分发层弹出区间选择对话框（见 prompt_step_range）。
         """
         if mode in ("from_step", "only_step"):
             if not self._selected_step_id:
@@ -207,3 +114,83 @@ class RunControlPanel(QWidget):
                 return
             param = self._selected_stage_uid
         self.run_requested.emit(mode, param)
+
+
+def compute_range_step_ids(step_ids, start_step_id, end_step_id):
+    """按全局顺序返回 [起点, 终点] 区间内的步骤 ID（含两端，反向自动交换）。
+
+    纯函数，供对话框实时显示“将运行 N 个步骤”与测试复用；
+    未找到起点/终点时返回空列表。
+    """
+    ids = list(step_ids)
+    if start_step_id not in ids or end_step_id not in ids:
+        return []
+    a, b = ids.index(start_step_id), ids.index(end_step_id)
+    if a > b:
+        a, b = b, a
+    return ids[a:b + 1]
+
+
+class StepRangeDialog(QDialog):
+    """区间运行对话框：选择起点/终点步骤（视觉精修留给后续 UI 任务）。"""
+
+    def __init__(self, steps, default_start_id=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("区间运行")
+        self.setModal(True)
+        self._step_ids = [step.id for step in steps]
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.cmb_start = QComboBox()
+        self.cmb_end = QComboBox()
+        for idx, step in enumerate(steps, start=1):
+            label = f"{idx}. {getattr(step, 'name', '') or step.id}"
+            self.cmb_start.addItem(label, step.id)
+            self.cmb_end.addItem(label, step.id)
+        self.cmb_start.setAccessibleName("起点步骤")
+        self.cmb_end.setAccessibleName("终点步骤")
+        form.addRow("起点步骤", self.cmb_start)
+        form.addRow("终点步骤", self.cmb_end)
+        layout.addLayout(form)
+
+        self.lbl_count = QLabel()
+        self.lbl_count.setObjectName("selectedStepLabel")
+        layout.addWidget(self.lbl_count)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("开始运行")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        # 默认：起点 = 当前选中步骤（无则第一步），终点 = 最后一步
+        start_index = self.cmb_start.findData(default_start_id) if default_start_id is not None else -1
+        self.cmb_start.setCurrentIndex(start_index if start_index >= 0 else 0)
+        self.cmb_end.setCurrentIndex(max(self.cmb_end.count() - 1, 0))
+
+        self.cmb_start.currentIndexChanged.connect(self._update_count)
+        self.cmb_end.currentIndexChanged.connect(self._update_count)
+        self._update_count()
+
+    def selected_range(self):
+        return self.cmb_start.currentData(), self.cmb_end.currentData()
+
+    def _update_count(self):
+        start_id, end_id = self.selected_range()
+        n = len(compute_range_step_ids(self._step_ids, start_id, end_id))
+        hint = ""
+        if self.cmb_start.currentIndex() > self.cmb_end.currentIndex():
+            hint = "（起点在终点之后，将自动交换）"
+        self.lbl_count.setText(f"将运行 {n} 个步骤{hint}")
+
+
+def prompt_step_range(parent, steps, default_start_id=None):
+    """弹出区间选择对话框；返回 (起点 ID, 终点 ID)，取消返回 None。"""
+    if not steps:
+        return None
+    dialog = StepRangeDialog(steps, default_start_id=default_start_id, parent=parent)
+    if dialog.exec() != QDialog.Accepted:
+        return None
+    return dialog.selected_range()

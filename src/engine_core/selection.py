@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Callable, Iterable, List
 
 from exceptions import ConfigurationError
+from engine_core.stage_selection import _select_only_stage, _select_from_stage
 
 MODE_FULL = "full"
 MODE_FROM_STEP = "from_step"
@@ -13,6 +14,7 @@ MODE_ONLY_STEP = "only_step"
 MODE_ONLY_STAGE = "only_stage"
 MODE_FROM_STAGE = "from_stage"
 MODE_RETRY_FAILED = "retry_failed"
+MODE_STEP_RANGE = "step_range"
 
 
 def select_steps(
@@ -28,6 +30,7 @@ def select_steps(
     running_status_value: str,
     pending_status_value: str,
     log_cb: Callable[[str], None] | None = None,
+    end_step_id: int | None = None,
 ) -> List[object]:
     """根据运行模式筛选待执行步骤。
 
@@ -38,6 +41,8 @@ def select_steps(
         return all_steps
     if mode_value == MODE_FROM_STEP:
         return _select_from_step(all_steps, step_id)
+    if mode_value == MODE_STEP_RANGE:
+        return _select_step_range(all_steps, step_id, end_step_id, log_cb=log_cb)
     if mode_value == MODE_ONLY_STEP:
         return _select_only_step(all_steps, step_id)
     if mode_value == MODE_ONLY_STAGE:
@@ -75,45 +80,37 @@ def _select_from_step(all_steps: List[object], step_id: int | None) -> List[obje
     return result
 
 
+def _select_step_range(
+    all_steps: List[object],
+    start_step_id: int | None,
+    end_step_id: int | None,
+    *,
+    log_cb: Callable[[str], None] | None = None,
+) -> List[object]:
+    """按全局步骤顺序选取 [起点, 终点]（含两端，可跨阶段）。
+
+    与 from_step 一致：不按步骤属性做额外过滤（如 skip_on_success 仍交由执行期处理）。
+    起点位于终点之后时自动交换并通过 log_cb 说明。
+    """
+    index_by_id = {step.id: idx for idx, step in enumerate(all_steps)}
+    if start_step_id not in index_by_id:
+        raise ConfigurationError(f"未找到步骤: {start_step_id}")
+    if end_step_id not in index_by_id:
+        raise ConfigurationError(f"未找到步骤: {end_step_id}")
+    start_idx = index_by_id[start_step_id]
+    end_idx = index_by_id[end_step_id]
+    if start_idx > end_idx:
+        start_idx, end_idx = end_idx, start_idx
+        if log_cb:
+            log_cb("区间起点位于终点之后，已自动交换起点与终点")
+    return list(all_steps[start_idx:end_idx + 1])
+
+
 def _select_only_step(all_steps: List[object], step_id: int | None) -> List[object]:
     for step in all_steps:
         if step.id == step_id:
             return [step]
     raise ConfigurationError(f"未找到步骤: {step_id}")
-
-
-def _select_only_stage(all_steps: List[object], stage_uid: str | None) -> List[object]:
-    if not stage_uid:
-        raise ConfigurationError("ONLY_STAGE 模式需要指定 stage_uid")
-    stage_steps = [step for step in all_steps if getattr(step, "stage_uid", None) == stage_uid]
-    if not stage_steps:
-        raise ConfigurationError(f"阶段 {stage_uid} 中没有步骤")
-    return stage_steps
-
-
-def _select_from_stage(
-    *,
-    all_steps: List[object],
-    workflow_id: int,
-    stage_uid: str | None,
-    get_stage_order_map: Callable[[int], dict],
-) -> List[object]:
-    if not stage_uid:
-        raise ConfigurationError("FROM_STAGE 模式需要指定 stage_uid")
-    stage_map = get_stage_order_map(workflow_id)
-    target_order = stage_map.get(stage_uid)
-    if target_order is None:
-        raise ConfigurationError(f"未找到阶段: {stage_uid}")
-
-    result = []
-    for step in all_steps:
-        step_stage_uid = getattr(step, "stage_uid", None)
-        step_order = stage_map.get(step_stage_uid, 0)
-        if step_order >= target_order:
-            result.append(step)
-    if not result:
-        raise ConfigurationError(f"阶段 {stage_uid} 及之后没有步骤")
-    return result
 
 
 def _select_retry_failed(

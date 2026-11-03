@@ -11,7 +11,7 @@ QUALITY_GUARDS = [
     "python tools/module_hotspot_report.py --top 30 --baseline quality/module_hotspot_baseline.json --fail-on-regression",
     "python tools/run_tests.py --collect-only",
 ]
-DOC_GUARD_TEST = "python -m pytest tests/test_docs_guardrails.py tests/test_ci_workflow_guards.py -q"
+DOC_GUARD_TEST = "python -m pytest tests/test_spec_runtime_tmpdir.py tests/test_docs_guardrails.py tests/test_ci_workflow_guards.py -q"
 
 
 def _read_workflow(name: str) -> str:

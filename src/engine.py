@@ -103,6 +103,7 @@ class RunMode(Enum):
     ONLY_STAGE = "only_stage"        # 只运行指定阶段
     FROM_STAGE = "from_stage"        # 从指定阶段开始
     RETRY_FAILED = "retry_failed"    # 重试失败步骤
+    STEP_RANGE = "step_range"        # 从起点步骤运行到终点步骤（含两端）
 
 
 class RunStatus(Enum):
@@ -163,7 +164,7 @@ class WorkflowEngine(QObject):
     """
     
     # Qt 信号
-    workflow_started = Signal(int, str)  # workflow_id, run_id
+    workflow_started = Signal(int, str, int)  # workflow_id, run_id, total_steps
     workflow_finished = Signal(int, str, str)  # workflow_id, run_id, status(success/failure/cancelled)
     step_started = Signal(int, str)  # step_id, step_name
     step_finished = Signal(int, str, str, object)  # step_id, step_name, status, duration_seconds
@@ -241,53 +242,9 @@ class WorkflowEngine(QObject):
             self._cancelled = True
 
     def force_stop_run(self, run_history_id: int):
-        """强制停止指定运行：先尝试取消当前引擎运行，再将数据库中该记录及未完成步骤标记为 cancelled
-
-        适用场景：任务历史列表中出现 status=running 的"孤儿"记录（引擎已不在运行该任务），
-        需要手动将其标记为已取消以释放状态。
-
-        修复 H1/H12：使用嵌套运行栈 _active_run_ids 识别——
-        命中栈内任一 run_history_id 即触发 cancel，避免父运行被误置 cancelled 但引擎仍跑子工作流。
-        """
-        # 1) 引擎正在运行且目标在活动运行栈中 → 正常 cancel。
-        # 2) 其余一律只做 DB 孤儿记录清理，绝不设置 _cancelled。
-        #
-        # P0-1：旧实现只要 self._running 为真就无条件取消，导致用户从历史列表停止一条
-        # 孤儿记录 B 时，把真正在跑的 A 误杀（且 B 的库记录根本没写终态）。
-        # 说明：run_orchestration 在同一 lock 内原子写入 _current_run_history_id 与
-        # _active_run_ids.add，真正在跑的 run 必然已在栈中；启动瞬间（_begin_run 已建
-        # DB 记录、但尚未进入该 lock 段）无法用 current 区分"正在启动的 run"与"旧孤儿
-        # 记录"（此刻 current 仍是上一值）——对该极窄窗口宁可只做 DB 清理（停止无效，
-        # 引擎继续跑），也绝不再误伤正在运行的其它任务。
-        with self._lock:
-            if self._running and run_history_id in self._active_run_ids:
-                self._cancelled = True
-                self._emit_log(f"已发送停止信号给当前运行 (run_history_id={run_history_id})")
-                return
-
-        # 2) 否则直接在数据库中标记为 cancelled（孤儿记录）
-        try:
-            from database import cancel_pending_step_logs
-
-            # R5-#3: 先批量取消 step_logs，再写 run_history 终态，
-            # 避免跨进程读到 "run cancelled 但 step pending" 的窗口。
-            _force_cancel_run_record(
-                run_history_id,
-                get_status=lambda rid: _read_run_history_status(
-                    rid,
-                    session_factory=get_session,
-                    run_history_model=RunHistory,
-                ),
-                cancel_pending_step_logs=cancel_pending_step_logs,
-                update_run_history=update_run_history,
-                cancelled_status_value=RunStatus.CANCELLED.value,
-                now=datetime.now(),
-                log_cb=self._emit_log,
-                warn_cb=logger.warning,
-            )
-        except Exception as e:
-            logger.warning("强制停止运行记录失败: %s", e)
-            self._emit_log(f"强制停止失败: {e}")
+        """停止确切目标；其他进程拥有的运行只发布请求，不提前写终态。"""
+        from engine_core.stop_dispatch import force_stop_run
+        return force_stop_run(self, run_history_id)
 
     def wait_for_completion(self, timeout: float = 10.0) -> bool:
         """等待当前运行完成
@@ -388,6 +345,20 @@ class WorkflowEngine(QObject):
             run_arg_overrides=run_arg_overrides,
         )
     
+    def run_range(
+        self,
+        workflow_id: int,
+        start_step_id: int,
+        end_step_id: int,
+        reason: str = "manual",
+        run_arg_overrides=None,
+    ) -> bool:
+        """从起点步骤运行到终点步骤（含两端，按全局步骤顺序，可跨阶段；反向自动交换）"""
+        return self._run(
+            workflow_id, RunMode.STEP_RANGE, step_id=start_step_id, reason=reason,
+            run_arg_overrides=run_arg_overrides, end_step_id=end_step_id,
+        )
+
     def run_only(self, workflow_id: int, step_id: int, reason: str = "manual", run_arg_overrides=None) -> bool:
         """只运行指定步骤"""
         return self._run(
@@ -425,12 +396,15 @@ class WorkflowEngine(QObject):
         parent_run_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         run_arg_overrides=None,
+        end_step_id: int = None,
     ) -> bool:
         """MA4: 公开执行入口
 
         CLI 与未来 headless 调用方应使用本方法替代私有 ``_run``，
         以便参数变更时 CLI/GUI 共享同一签名。
+        end_step_id 仅用于 STEP_RANGE 模式（step_id 为起点）。
         """
+        extra = {"end_step_id": end_step_id} if end_step_id is not None else {}
         return self._run(
             workflow_id,
             mode,
@@ -442,6 +416,7 @@ class WorkflowEngine(QObject):
             parent_run_id=parent_run_id,
             trace_id=trace_id,
             run_arg_overrides=run_arg_overrides,
+            **extra,
         )
     
     def run_sub_workflow(
@@ -584,6 +559,7 @@ class WorkflowEngine(QObject):
         external_cancel_event: threading.Event = None,
         run_arg_overrides=None,
         subworkflow_depth: int = 0,
+        end_step_id: int = None,
     ) -> bool:
         """执行工作流（batch-4: 方法体下沉到 run_orchestration.run_workflow）
 
@@ -640,6 +616,7 @@ class WorkflowEngine(QObject):
                 trace_id=trace_id,
                 external_cancel_event=external_cancel_event,
                 run_arg_overrides=run_arg_overrides,
+                end_step_id=end_step_id,
             )
         finally:
             # R5: run 结束统一收尾——释放预算槽位（child finalization）、
@@ -660,10 +637,12 @@ class WorkflowEngine(QObject):
         step_id: int,
         workflow: Workflow,
         stage_uid: str = None,
+        end_step_id: int = None,
     ) -> List[Step]:
-        """根据运行模式选择步骤"""
+        """根据运行模式选择步骤（end_step_id 仅用于 STEP_RANGE 模式）"""
         return _run_orchestration.select_steps(
             self, all_steps, mode, step_id, workflow, stage_uid=stage_uid,
+            end_step_id=end_step_id,
         )
 
     @staticmethod

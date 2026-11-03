@@ -10,18 +10,13 @@ from sqlalchemy import (
     Column, Integer, String, Text, Boolean, DateTime,
     ForeignKey, Index
 )
-from sqlalchemy.orm import (
-    DeclarativeBase, relationship, Mapped, mapped_column
-)
+from sqlalchemy.orm import relationship, Mapped, mapped_column
+
+from database_base import Base
 
 from exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
-
-
-class Base(DeclarativeBase):
-    """ORM 基类"""
-    pass
 
 
 class Workflow(Base):
@@ -316,6 +311,9 @@ class StepLog(Base):
     run_history_id: Mapped[int] = mapped_column(Integer, ForeignKey("run_histories.id"), nullable=False, index=True)
     step_id: Mapped[int] = mapped_column(Integer, ForeignKey("steps.id"), nullable=False, index=True)
     
+    operation_key: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    creation_payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # 执行信息
     order: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(32), default="pending")  # pending, running, success, failure, skipped
@@ -335,6 +333,7 @@ class StepLog(Base):
     step: Mapped["Step"] = relationship("Step", back_populates="step_logs")
 
     __table_args__ = (
+        Index('uq_step_logs_operation_key', 'operation_key', unique=True),
         Index('ix_step_logs_run_status', 'run_history_id', 'status'),
         Index('ix_step_logs_step_status', 'step_id', 'status'),  # HA3: 加速 skip_on_success 检查
         # R2-#5: 加速 get_recent_step_logs_for_step（WHERE step_id=? AND run_history_id IN (...) ORDER BY run_history_id DESC）

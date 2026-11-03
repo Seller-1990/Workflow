@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """工作台式阶段编排面板。"""
 
+import logging
+import sys
+import traceback
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
@@ -9,7 +12,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -21,7 +23,11 @@ from PySide6.QtWidgets import (
 from database import get_stage_order_map, get_steps_by_workflow, get_workflow_by_id, list_stages
 from duration_utils import format_duration_short
 from engine import WorkflowEngine
-from ui.workbench_board_styles import board_tokens, build_board_stylesheet
+from exceptions import WorkflowError
+from ui import workbench_board_build, workbench_card_build
+from ui.motion import SmoothProgressBar, can_animate, make_variant, mix_hex
+from ui.text_utils import plain_text_tooltip
+from ui.workbench_board_styles import board_tokens, build_board_stylesheet, step_left_color
 from ui.workbench_board_constants import (
     COMPLETED_STATUSES,
     MIME_STEP_ID,
@@ -38,6 +44,9 @@ from ui.workbench_board_constants import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class StepCard(QFrame):
     """可点击、可拖拽的步骤卡片。"""
 
@@ -51,6 +60,11 @@ class StepCard(QFrame):
         self._press_pos = QPoint()
         self._status = "idle"
         self._duration_seconds = None
+        # #11：左条换色 200ms 过渡状态
+        self._dark = False
+        self._left_anim = None
+        self._left_pair = None
+        self._left_t = 1.0
         self.setObjectName("StepCard")
         self.setProperty("stepStatus", "idle")
         self.setProperty("stepType", TYPE_CLASSES.get(step.step_type, "python"))
@@ -60,89 +74,7 @@ class StepCard(QFrame):
         self.setAcceptDrops(False)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(6)
-
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(6)
-
-        batch_tip = (
-            f"{order_label} 是执行批次。\n"
-            "批次由阶段顺序、上游依赖和检查点自动计算。\n"
-            "同一批次的步骤在依赖满足后可一起执行；启用自动并行时可并行运行。"
-        )
-        order = QLabel(order_label)
-        order.setObjectName("StepOrder")
-        order.setFixedWidth(42)
-        order.setToolTip(batch_tip)
-        order.setAccessibleName(f"执行批次 {order_label}")
-        order.setAlignment(Qt.AlignCenter)
-        order.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        top.addWidget(order)
-
-        # 类型图标 + 检查点盾牌图标（检查点卡片）。文字徽章（TypePill/“检查点”）已精简，
-        # 避免 200px 紧凑泳道下顶行溢出截断；类型与检查点全称保留在 tooltip 和 accessibleName。
-        # 图标颜色在创建时烘焙，保存引用供 refresh_theme 按当前主题重设
-        from ui.icons import type_icon
-        self._step_type = step.step_type
-        self._is_gate = bool(getattr(step, "is_gate", False))
-        self.type_icon_label = QLabel()
-        self.type_icon_label.setPixmap(
-            type_icon(step.step_type, dark=False).pixmap(self.ICON_SIZE_PX, self.ICON_SIZE_PX)
-        )
-        self.type_icon_label.setAccessibleName(f"类型：{TYPE_LABELS.get(step.step_type, step.step_type)}")
-        self.type_icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        top.addWidget(self.type_icon_label)
-
-        if self._is_gate:
-            self.gate_icon_label = QLabel()
-            self.gate_icon_label.setPixmap(self._gate_pixmap(dark=False))
-            self.gate_icon_label.setAccessibleName("检查点")
-            self.gate_icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            top.addWidget(self.gate_icon_label)
-
-        top.addStretch()
-        self.status_badge = QLabel("")
-        self.status_badge.setObjectName("StatusBadge")
-        self.status_badge.setProperty("stepStatus", "idle")
-        self.status_badge.setAlignment(Qt.AlignCenter)
-        self.status_badge.setVisible(False)
-        self.status_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        top.addWidget(self.status_badge)
-        layout.addLayout(top)
-
-        title = QLabel(step.name or "未命名步骤")
-        title.setObjectName("StepTitle")
-        title.setWordWrap(False)
-        title.setMinimumWidth(0)
-        title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        title.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        layout.addWidget(title)
-
-        subtitle = QLabel(self._subtitle(step, dep_text))
-        subtitle.setObjectName("StepSubtitle")
-        subtitle.setWordWrap(False)
-        subtitle.setMinimumWidth(0)
-        subtitle.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        subtitle.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        layout.addWidget(subtitle)
-        self.subtitle = subtitle
-        self._base_subtitle = subtitle.text()
-
-        self.duration_badge = QLabel("")
-        self.duration_badge.setObjectName("DurationBadge")
-        self.duration_badge.setVisible(False)
-        self.duration_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        layout.addWidget(self.duration_badge)
-
-        self.setToolTip(
-            f"{step.name}\n{batch_tip}\n类型：{TYPE_LABELS.get(step.step_type, step.step_type)}\n"
-            f"文件：{getattr(step, 'script_path', '') or '未设置'}\n{dep_text}"
-        )
-        self.setAccessibleName(f"步骤：{step.name}")
-        self.refresh_minimum_height()
+        workbench_card_build.setup_card_content(self, step, order_label, dep_text, ui=sys.modules[__name__])
 
     def refresh_minimum_height(self) -> None:
         layout = self.layout()
@@ -158,25 +90,72 @@ class StepCard(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
 
-    def set_status(self, status: str) -> bool:
+    def set_status(self, status: str, *, refresh_geometry: bool = True) -> bool:
         next_status = status or "idle"
         if next_status == self._status:
             return False
+        old_left = self._current_left_color()
         self._status = next_status
         self.setProperty("stepStatus", self._status)
         self.status_badge.setProperty("stepStatus", self._status)
         self.status_badge.setText(STATUS_LABELS.get(self._status, ""))
         self.status_badge.setVisible(self._status in STATUS_LABELS)
         if self._status == "running":
-            self.set_duration_seconds(None)
+            self.set_duration_seconds(None, refresh_geometry=refresh_geometry)
         self.status_badge.style().unpolish(self.status_badge)
         self.status_badge.style().polish(self.status_badge)
         self.style().unpolish(self)
         self.style().polish(self)
-        self.refresh_minimum_height()
+        self._animate_left(old_left, self._left_color())
+        if refresh_geometry:
+            self.refresh_minimum_height()
         return True
 
-    def set_duration_seconds(self, duration_seconds) -> bool:
+    # ------------------------------------------------ #11 左条换色过渡
+    def _left_color(self) -> str:
+        return step_left_color(
+            board_tokens(self._dark), self._status, self._is_gate, bool(self.property("selected"))
+        )
+
+    def _current_left_color(self) -> str:
+        """动画进行中取当前插值色，避免连续换状态时跳色。"""
+        anim = self._left_anim
+        if anim is not None and anim.state() == anim.State.Running and self._left_pair:
+            return mix_hex(self._left_pair[0], self._left_pair[1], self._left_t)
+        return self._left_color()
+
+    def _animate_left(self, start: str, end: str) -> None:
+        if self._left_anim is not None:
+            self._left_anim.stop()
+        if start == end or not can_animate(self):
+            # 不可见（构建/恢复/测试）或颜色未变：直接交给 QSS 终态
+            self._clear_left_style()
+            return
+        if self._left_anim is None:
+            self._left_anim = make_variant("base", self, self._on_left_value)
+            self._left_anim.finished.connect(self._clear_left_style)
+        self._left_pair = (start, end)
+        self._on_left_value(0.0)
+        self._left_anim.start()
+
+    def _on_left_value(self, t: float) -> None:
+        self._left_t = t
+        if not self._left_pair:
+            return
+        color = mix_hex(self._left_pair[0], self._left_pair[1], t)
+        # 自身样式表优先于面板 QSS，只覆盖 border-left；结束后清空交还 QSS（终点色一致，无跳变）
+        self.setStyleSheet(f"#StepCard {{ border-left: 4px solid {color}; }}")
+
+    def _clear_left_style(self) -> None:
+        self._left_t = 1.0
+        if self.styleSheet():
+            self.setStyleSheet("")
+
+    @property
+    def left_animation(self):
+        return self._left_anim
+
+    def set_duration_seconds(self, duration_seconds, *, refresh_geometry: bool = True) -> bool:
         duration_text = format_duration_short(duration_seconds)
         next_text = f"耗时 {duration_text}" if duration_text else ""
         if duration_seconds == self._duration_seconds and self.duration_badge.text() == next_text:
@@ -184,7 +163,8 @@ class StepCard(QFrame):
         self._duration_seconds = duration_seconds
         self.duration_badge.setText(next_text)
         self.duration_badge.setVisible(bool(duration_text))
-        self.refresh_minimum_height()
+        if refresh_geometry:
+            self.refresh_minimum_height()
         return True
 
     def mousePressEvent(self, event):
@@ -224,6 +204,7 @@ class StepCard(QFrame):
     def refresh_theme(self, dark: bool):
         """主题切换后按新主题重设图标颜色（颜色创建时烘焙，无法靠 QSS 更新）。"""
         from ui.icons import type_icon
+        self._dark = bool(dark)
         self.type_icon_label.setPixmap(
             type_icon(self._step_type, dark=dark).pixmap(self.ICON_SIZE_PX, self.ICON_SIZE_PX)
         )
@@ -286,7 +267,8 @@ class StageLane(QFrame):
         header.addWidget(self.count_label)
         self.layout.addLayout(header)
 
-        self.progress = QProgressBar()
+        # #9：阶段进度 250ms OutCubic 平滑；value() 仍返回逻辑值，不可见时直接到终态
+        self.progress = SmoothProgressBar()
         self.progress.setObjectName("StageProgress")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -308,13 +290,11 @@ class StageLane(QFrame):
     def add_card(self, card: StepCard) -> None:
         self._cards.append(card)
         self.cards_box.addWidget(card)
-        self.count_label.setText(f"{len(self._cards)} 步")
-        self.update_progress()
-        self.refresh_minimum_height()
 
     def refresh_minimum_height(self) -> None:
-        for card in self._cards:
-            card.refresh_minimum_height()
+        """Lay out the lane, not every card's already-computed geometry."""
+        self.count_label.setText(f"{len(self._cards)} 步")
+        self.update_progress()
         self.layout.invalidate()
         self.layout.activate()
         self.setMaximumHeight(QT_MAX_WIDGET_SIZE)
@@ -329,15 +309,16 @@ class StageLane(QFrame):
     def ordered_step_ids(self) -> list[int]:
         return [card.step_id for card in self._cards]
 
-    def set_lane_width(self, width: int) -> None:
+    def set_lane_width(self, width: int) -> bool:
         """任务13：响应式——动态调整泳道宽度。"""
         target = max(STAGE_LANE_COMPACT_WIDTH, int(width))
         if target == self.width():
-            return
+            return False
         self.setFixedWidth(target)
         self.setMinimumWidth(target)
         self.refresh_minimum_height()
         self.updateGeometry()
+        return True
 
     def update_progress(self) -> bool:
         total = len(self._cards)
@@ -447,64 +428,13 @@ class WorkbenchBoardPanel(QWidget):
         self._cards: dict[int, StepCard] = {}
         self._step_stage: dict[int, str] = {}
         self._ordered_step_ids: list[int] = []
+        self._board_size_timer = QTimer(self)
+        self._board_size_timer.setSingleShot(True)
+        self._board_size_timer.timeout.connect(self._refresh_board_layout)
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setFocusPolicy(Qt.StrongFocus)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
-
-        toolbar = QFrame()
-        toolbar.setObjectName("BoardToolbar")
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(0, 0, 0, 0)
-        toolbar_layout.setSpacing(10)
-
-        self.selection_hint = QLabel("选择一个工作流后开始编排")
-        self.selection_hint.setObjectName("SelectionHint")
-        toolbar_layout.addWidget(self.selection_hint, stretch=1)
-
-        self.btn_add_step = QPushButton("+ 添加步骤")
-        self.btn_add_step.setObjectName("GhostButton")
-        self.btn_add_step.setToolTip("添加步骤到当前选中的阶段")
-        self.btn_add_step.setAccessibleName("添加步骤")
-        self.btn_add_step.clicked.connect(self._request_add_step)
-        toolbar_layout.addWidget(self.btn_add_step)
-
-        self.btn_add_stage = QPushButton("+ 新阶段")
-        self.btn_add_stage.setObjectName("GhostButton")
-        self.btn_add_stage.setToolTip("在当前阶段之后新增阶段")
-        self.btn_add_stage.setAccessibleName("新增阶段")
-        self.btn_add_stage.clicked.connect(self._request_add_stage)
-        toolbar_layout.addWidget(self.btn_add_stage)
-        root.addWidget(toolbar)
-
-        self.scroll = QScrollArea()
-        self.scroll.setObjectName("StageBoardScroll")
-        self.scroll.setWidgetResizable(False)
-        self.scroll.setFrameShape(QFrame.NoFrame)
-        # 任务15：横向滚动条 AsNeeded——内容能放下时不占用空间
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        self.board_widget = QWidget()
-        self.board_widget.setObjectName("StageBoard")
-        self.board_widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
-        self.board_layout = QHBoxLayout(self.board_widget)
-        self.board_layout.setContentsMargins(0, 0, 0, 0)
-        self.board_layout.setSpacing(STAGE_LANE_GAP)
-        self.board_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self.scroll.setWidget(self.board_widget)
-        root.addWidget(self.scroll, stretch=1)
-
-        self.empty_state = QLabel("暂无步骤。开启编辑后点击“添加步骤”创建第一步。")
-        self.empty_state.setObjectName("EmptyState")
-        self.empty_state.setAlignment(Qt.AlignCenter)
-        self.empty_state.setVisible(False)
-        root.addWidget(self.empty_state)
-
-        self.refresh_theme(False)
+        workbench_board_build.setup_board_ui(self, ui=sys.modules[__name__])
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -515,7 +445,7 @@ class WorkbenchBoardPanel(QWidget):
         self._queue_board_size_sync()
 
     def refresh_after_view_shown(self) -> None:
-        self._sync_board_minimum_size()
+        self._refresh_board_layout()
         self._queue_board_size_sync()
         self._queue_selected_scroll()
 
@@ -551,35 +481,43 @@ class WorkbenchBoardPanel(QWidget):
         if not self._selected_stage_uid and stages:
             self._selected_stage_uid = stages[0].uid
 
-        batch_map = self._build_batch_map(workflow, steps, stage_map)
+        batch_map, batch_error, batch_traceback = self._build_batch_map(workflow, steps, stage_map)
         ordered_steps = sorted(
             steps,
             key=lambda s: (int(stage_map.get(getattr(s, "stage_uid", ""), 0) or 0), s.order),
         )
         self._ordered_step_ids = [int(s.id) for s in ordered_steps]
+        lane_width = self._responsive_lane_width()
+        steps_by_stage: dict[str, list] = {}
+        for step in ordered_steps:
+            stage_uid = getattr(step, "stage_uid", "") or ""
+            steps_by_stage.setdefault(stage_uid, []).append(step)
 
         for idx, stage in enumerate(stages):
             lane = StageLane(stage, idx)
+            lane.set_lane_width(lane_width)
             lane.selected.connect(self._on_lane_selected)
             lane.step_dropped.connect(self._on_step_dropped)
             self._lanes[stage.uid] = lane
             self.board_layout.addWidget(lane, 0, Qt.AlignTop)
 
-            stage_steps = [
-                step for step in ordered_steps if (getattr(step, "stage_uid", "") or "") == stage.uid
-            ]
-            for within_idx, step in enumerate(stage_steps, start=1):
+            for step in steps_by_stage.get(stage.uid, []):
                 dep_text = self._dep_summary(step)
-                order_label = f"B{batch_map.get(int(step.id), within_idx)}"
+                batch_index = batch_map.get(int(step.id))
+                order_label = f"B{batch_index}" if batch_index is not None else "B?"
                 card = StepCard(step, order_label, dep_text)
                 card.refresh_theme(self._dark)
                 card.selected.connect(self._on_card_selected)
                 lane.add_card(card)
+                card.refresh_minimum_height()
                 self._cards[int(step.id)] = card
                 self._step_stage[int(step.id)] = stage.uid
+            lane.refresh_minimum_height()
 
+        self.batch_warning.setText(batch_error or "")
+        self.batch_warning.setToolTip(batch_traceback)
+        self.batch_warning.setVisible(bool(batch_error))
         self._sync_board_minimum_size()
-        self._queue_board_size_sync()
         self.empty_state.setVisible(not steps)
         if self._selected_step_id in self._cards:
             self.select_step(self._selected_step_id, emit_signal=False)
@@ -591,14 +529,17 @@ class WorkbenchBoardPanel(QWidget):
         self._workflow_id = None
         self._selected_stage_uid = ""
         self._selected_step_id = None
+        self.batch_warning.clear()
+        self.batch_warning.setToolTip("")
+        self.batch_warning.setVisible(False)
         self._cards.clear()
         self._lanes.clear()
         self._step_stage.clear()
         self._ordered_step_ids.clear()
         self._clear_layout()
         self._sync_board_minimum_size()
-        self._queue_board_size_sync()
         self.selection_hint.setText("选择一个工作流后开始编排")
+        self.selection_hint.setToolTip(plain_text_tooltip(self.selection_hint.text()))
         self.empty_state.setVisible(False)
         self._refresh_button_state()
 
@@ -616,6 +557,7 @@ class WorkbenchBoardPanel(QWidget):
             self.selection_hint.setText(
                 f"已选中 S{lane.index + 1} {lane.stage_name}，新增步骤会加入该阶段"
             )
+            self.selection_hint.setToolTip(plain_text_tooltip(self.selection_hint.text()))
             self._queue_lane_scroll(stage_uid)
         if emit_signal:
             self.stage_selected.emit(stage_uid)
@@ -636,6 +578,7 @@ class WorkbenchBoardPanel(QWidget):
             self.selection_hint.setText(
                 f"已选中 S{lane.index + 1} {lane.stage_name}，新增步骤会加入该阶段"
             )
+            self.selection_hint.setToolTip(plain_text_tooltip(self.selection_hint.text()))
             self._queue_step_scroll(step_id)
         if emit_signal:
             self.step_selected.emit(step_id)
@@ -652,18 +595,29 @@ class WorkbenchBoardPanel(QWidget):
         self.setFocus(Qt.MouseFocusReason)
 
     def reset_all_status(self):
-        for card in self._cards.values():
-            card.set_status("idle")
-            card.set_duration_seconds(None)
+        changed_stages = set()
+        for step_id, card in self._cards.items():
+            changed = card.set_status("idle", refresh_geometry=False)
+            changed = card.set_duration_seconds(None, refresh_geometry=False) or changed
+            if changed:
+                card.refresh_minimum_height()
+                changed_stages.add(self._step_stage.get(step_id, ""))
         self._refresh_stage_progress()
-        self._sync_board_minimum_size()
+        for stage_uid in changed_stages:
+            lane = self._lanes.get(stage_uid)
+            if lane:
+                lane.refresh_minimum_height()
+        if changed_stages:
+            self._sync_board_minimum_size()
 
     def highlight_step(self, step_id: int, status: str, duration_seconds=None):
         card = self._cards.get(int(step_id))
         if card:
-            changed = card.set_status(status or "idle")
+            changed = card.set_status(status or "idle", refresh_geometry=False)
             if status != "running":
-                changed = card.set_duration_seconds(duration_seconds) or changed
+                changed = card.set_duration_seconds(duration_seconds, refresh_geometry=False) or changed
+            if changed:
+                card.refresh_minimum_height()
             stage_uid = self._step_stage.get(int(step_id), "")
             lane = self._lanes.get(stage_uid)
             if lane and changed:
@@ -737,7 +691,6 @@ class WorkbenchBoardPanel(QWidget):
         lane_width = self._responsive_lane_width()
         for lane in self._lanes.values():
             lane.set_lane_width(lane_width)
-            lane.refresh_minimum_height()
         total_width = (
             margins.left()
             + margins.right()
@@ -777,7 +730,13 @@ class WorkbenchBoardPanel(QWidget):
         QTimer.singleShot(0, lambda sid=int(step_id): self._scroll_step_into_view(sid))
 
     def _queue_board_size_sync(self) -> None:
-        QTimer.singleShot(0, self._sync_board_minimum_size)
+        if not self._board_size_timer.isActive():
+            self._board_size_timer.start(0)
+
+    def _refresh_board_layout(self) -> None:
+        for lane in self._lanes.values():
+            lane.refresh_minimum_height()
+        self._sync_board_minimum_size()
 
     def _queue_selected_scroll(self) -> None:
         if self._selected_step_id in self._cards:
@@ -840,15 +799,20 @@ class WorkbenchBoardPanel(QWidget):
             return "本阶段检查点"
         return "无显式上游依赖"
 
-    def _build_batch_map(self, workflow, steps, stage_map: dict) -> dict[int, int]:
+    def _build_batch_map(self, workflow, steps, stage_map: dict) -> tuple[dict[int, int], str, str]:
         if not workflow or not steps:
-            return {}
+            return {}, "", ""
         try:
             batches = WorkflowEngine.compute_batches(workflow, steps, stage_map)
-        except Exception:
-            return {}
+        except WorkflowError as exc:
+            logger.warning("看板批次计算失败: %s", exc, exc_info=True)
+            diagnostic = f"批次计算失败：{exc}（请检查依赖/阶段配置）；看板已按顺序展示。"
+            return {}, diagnostic, traceback.format_exc()
+        except Exception as exc:
+            logger.exception("看板批次计算异常")
+            return {}, f"批次计算异常：{exc}（看板已按顺序展示）。", traceback.format_exc()
         batch_map = {}
         for idx, batch in enumerate(batches, start=1):
             for step in batch:
                 batch_map[int(step.id)] = idx
-        return batch_map
+        return batch_map, "", ""

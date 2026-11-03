@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from ui.theme import CORNER_RADIUS
+from ui.theme import CORNER_RADIUS, get_checkbox_stylesheet
 
 
 def build_table_stylesheet(colors: dict) -> str:
@@ -82,22 +82,6 @@ def build_table_stylesheet(colors: dict) -> str:
                 border: none;
             }}
 
-            QCheckBox {{
-                background: transparent;
-                border: none;
-            }}
-            QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
-                border: 1.5px solid {colors["border"]};
-                border-radius: 4px;
-                background: {colors["background"]};
-            }}
-            QCheckBox::indicator:checked {{
-                background: {colors["primary"]};
-                border: 1.5px solid {colors["primary"]};
-            }}
-
             /* Stage header action pill (iOS-like compact toolbar) */
             QFrame#stagePill {{
                 background: {colors["background"]};
@@ -140,4 +124,4 @@ def build_table_stylesheet(colors: dict) -> str:
                 background: {colors["selected_bg"]};
                 border: 1px solid {colors["primary"]};
             }}
-        """
+        """ + get_checkbox_stylesheet(colors)

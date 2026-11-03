@@ -13,10 +13,10 @@ from sqlalchemy.orm import joinedload
 
 from database_field_guards import (
     STAGE_UPDATE_FIELDS,
-    STEP_UPDATE_FIELDS,
     WORKFLOW_UPDATE_FIELDS,
     validate_update_fields as _validate_update_fields,
 )
+from database_step_validation import STEP_UPDATE_FIELDS, validate_step_update_fields
 from models import Workflow, WorkflowStage, Step, RecentWorkflow
 
 
@@ -415,8 +415,8 @@ def get_steps_by_workflow(workflow_id: int) -> List[Step]:
 
 
 def update_step(step_id: int, **kwargs) -> Optional[Step]:
-    """更新步骤"""
-    _validate_update_fields("Step", kwargs, STEP_UPDATE_FIELDS)
+    """更新步骤；导入与直接写库遵守同一执行数值边界。"""
+    validate_step_update_fields(kwargs, validate_fields=_validate_update_fields, allowed_fields=STEP_UPDATE_FIELDS)
     from database import get_session, invalidate_cycle_check_cache
     with get_session() as session:
         step = session.query(Step).filter(Step.id == step_id).first()

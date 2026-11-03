@@ -1,6 +1,27 @@
 # 工作流管理系统 (Workflow Manager)
 
-基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、批处理、子工作流等任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：6.0.3。
+基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、批处理、子工作流等任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：7.0.2。
+
+## 7.0.2 更新日志
+
+- **修复 7.0.1 打包版启动失败**：Windows 三个 spec 原来在构建期用 `os.environ["LOCALAPPDATA"]` 求值，把 CI 构建机的用户目录（`C:\Users\runneradmin\...`）写死进单文件 exe；终端用户机器不存在该路径，引导器创建目录失败，启动即报 `LOADER: failed to create runtime-tmpdir path ... CreateDirectory: 系统找不到指定的路径`。现改为保留 `%LOCALAPPDATA%\工作流管理\pyi-tmp` 字面量，由 PyInstaller 引导器在运行期按当前用户展开并递归创建目录树，同时保留"运行文件放应用数据目录、不受系统清理临时目录影响"的原设计。
+- **回归防护**：新增 `tests/test_spec_runtime_tmpdir.py` 守卫测试，禁止 `runtime_tmpdir` 在构建期展开成绝对路径或构建机路径。
+- **验证**：本地全量 985 passed、1 skipped、2 条既有 SQLAlchemy `Query.get` warnings，80.86s；静态门 broad/risky/hotspot 0 回归，requirements/compile 通过；本地重建 `dist/工作流管理_7.0.2_slim2.exe` 后 `--self-check` exit 0，运行时解压到 `%LOCALAPPDATA%\工作流管理\pyi-tmp\_MEIxxxxx`，exe 内已无 `runneradmin` 等构建机路径。CI Package 打包与原生验收仍以发布运行结果为准。
+
+## 7.0.1 更新日志
+
+- **macOS 进程身份**：Darwin 平台改用 libproc `proc_pidinfo` 读取 PID 及其内核创建时间（tvsec/tvusec）作为身份令牌，不再只凭 PID 判定；读取不足或非 ESRCH 错误返回 unknown，未知活性不判死；PID 被复用但创建时间不符时判为已死。修复 7.0.0 在 macOS 打包前测试阶段因缺少 Darwin 进程身份而失败的问题。
+- **观察者测试清理**：测试断言失败时通过 finally 关闭观察线程并恢复引擎状态，避免后续测试级联错误（仅测试改动，产品 owner 线程生命周期未修改）。
+- **验证**：owner 聚焦 50 passed / 17.39s；本地全量 984 passed、1 skipped、2 条既有 SQLAlchemy `Query.get` warnings，173.50s，exit 0。静态门 broad 0 回归、risky 0 未批准（16 条既有 allowlist）、hotspot 0 回归，requirements/compile/diff 均 exit 0；release metadata/docs/CI 守卫测试 10 passed（0.27s）；Trellis implement/check 各 20 条验证通过；非 strict tracked hygiene 通过；git 换行提示为 advisory，不是错误。
+- **边界**：macOS CI 打包尚待验证，7.0.0 macOS 包因缺少 Darwin 进程身份失败的记录保留；桌面原生矩阵仍 blocked，未新增原生验收、未重跑 strict 门，不代表所有发布质量门全绿。
+
+## 7.0.0 更新日志
+
+- **运行所有权与恢复**：增加可验证的运行 owner、跨进程协作取消、StepLog 操作身份及兼容迁移，避免并发停止、未知提交结果和重启恢复时误归属。
+- **执行与 CLI 生命周期**：完善 CLI 引擎关闭、执行输出回收与诊断投影；保留协作取消及有限清理边界。
+- **运行入口与交互**：提供区间运行可见入口、单步可选参数交互和更新后的工作台、主题、字体与布局行为。
+- **发布标识**：发布提交 `3edc923` 已推送到分支 `chore/ocr-auto-review`，并打注解标签 `v7.0.0`。
+- **验证与打包**：该提交树的实际推送前检查为 967 passed、1 skipped、2 条既有 SQLAlchemy warnings。Package 运行 41486757336 中 Windows 打包成功；macOS 在打包前测试阶段失败，原因是缺少 Darwin 进程身份，未产出 macOS 7.0.0 安装包。桌面原生矩阵仍未验收，不代表所有发布质量门全绿。
 
 ## 6.0.2 更新日志
 

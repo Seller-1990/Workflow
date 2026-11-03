@@ -6,7 +6,6 @@
 """
 
 import logging
-import time
 from datetime import datetime
 from typing import Optional, List
 
@@ -36,52 +35,7 @@ def truncate_error_message(message: object, max_length: int = MAX_ERROR_MESSAGE_
 
 # ============== RunHistory CRUD ==============
 
-def create_run_history(
-    workflow_id: int,
-    run_mode: str = "full",
-    run_mode_param: str = None,
-    reason: str = "manual",
-    trace_id: str = None,
-    parent_run_id: str = None
-) -> RunHistory:
-    """创建运行历史
-
-    Args:
-        workflow_id: 工作流 ID
-        run_mode: 运行模式 (full/from_step/only_step/retry_failed)
-        run_mode_param: 运行模式参数
-        reason: 触发原因 (manual/watch/sub_workflow)
-        trace_id: 追踪 ID（同一次完整执行的顶级 ID，子工作流继承父级）
-        parent_run_id: 父运行 ID（子工作流设置，用于关联父工作流）
-    """
-    from database import generate_uid, get_session
-    run_id = generate_uid()
-    with get_session() as session:
-        run_history = RunHistory(
-            workflow_id=workflow_id,
-            run_id=run_id,
-            status="pending",
-            reason=reason,
-            run_mode=run_mode,
-            run_mode_param=run_mode_param,
-            trace_id=trace_id or run_id,
-            parent_run_id=parent_run_id
-        )
-        session.add(run_history)
-        session.commit()
-        # F-01: fallback 复制对象移除——原为 refresh 失败时返回"已知字段"的兜底；
-        # expire_on_commit=False 下对象属性在 commit 后仍有效，refresh 只是补
-        # DEFAULT/ON UPDATE 列。refresh 失败时对象已含全部入参字段，直接返回即可
-        # （id 由 flush 时自增填充）。仍保留 refresh 本身：start_time 等服务端列。
-        try:
-            session.refresh(run_history)
-        except Exception as exc:
-            logger.warning("RunHistory 已提交但刷新失败（返回提交时对象）: id=%s, error=%s", run_history.id, exc)
-            try:
-                session.rollback()
-            except Exception:
-                pass
-        return run_history
+from database_run_creation import create_run_history
 
 
 def get_run_histories_by_workflow(
@@ -130,8 +84,8 @@ def update_run_history(run_history_id: int, **kwargs) -> Optional[RunHistory]:
     """更新运行历史
 
     Args:
-        _condition_status: 可选条件——仅当当前 status 等于该值时才更新。
-            用于 force_stop 竞态保护：避免覆盖正常 finalization 已写入的终态。
+        _condition_status: 可选条件——仅当当前 status 等于该值（或属于给定状态集合）
+            时才更新。用于 force_stop 竞态保护：避免覆盖正常 finalization 已写入的终态。
             不匹配时返回 None（表示未修改）。
     """
     condition_status = kwargs.pop("_condition_status", None)
@@ -139,9 +93,14 @@ def update_run_history(run_history_id: int, **kwargs) -> Optional[RunHistory]:
     from database import get_session
     with get_session() as session:
         if condition_status is not None:
+            status_condition = (
+                RunHistory.status.in_(condition_status)
+                if isinstance(condition_status, (list, tuple, set, frozenset))
+                else RunHistory.status == condition_status
+            )
             affected = session.query(RunHistory).filter(
                 RunHistory.id == run_history_id,
-                RunHistory.status == condition_status,
+                status_condition,
             ).update(kwargs, synchronize_session=False)
             session.commit()
             if affected:
@@ -187,47 +146,7 @@ def clear_run_histories(workflow_id: int) -> int:
         session.commit()
         return count
 
-def create_step_log(
-    run_history_id: int,
-    step_id: int,
-    order: int = 0,
-    error_message: str | None = None,
-) -> StepLog:
-    """创建步骤日志"""
-    last_error = None
-    safe_error_message = truncate_error_message(error_message)
-    from database import get_session
-    for attempt in range(3):
-        with get_session() as session:
-            step_log = StepLog(
-                run_history_id=run_history_id,
-                step_id=step_id,
-                order=order,
-                status="pending",
-                error_message=safe_error_message,
-            )
-            session.add(step_log)
-            try:
-                session.flush()
-                session.commit()
-            except Exception as e:
-                session.rollback()
-                last_error = e
-                if attempt < 2:
-                    time.sleep(0.1 * (attempt + 1))
-                continue
-            # F-01: fallback 复制对象移除（同 create_run_history）——refresh 失败
-            # 时直接返回已含全部入参字段的对象。
-            try:
-                session.refresh(step_log)
-            except Exception as exc:
-                logger.warning("StepLog 已提交但刷新失败（返回提交时对象）: id=%s, error=%s", step_log.id, exc)
-                try:
-                    session.rollback()
-                except Exception:
-                    pass
-            return step_log
-    raise last_error
+from database_step_log_creation import create_step_log
 
 
 def get_step_logs_by_run(run_history_id: int) -> List[StepLog]:
@@ -249,7 +168,7 @@ def get_recent_step_logs_for_step(workflow_id: int, step_id: int, limit: int = 2
         recent_run_ids_subq = (
             session.query(RunHistory.id)
             .filter(RunHistory.workflow_id == workflow_id)
-            .order_by(RunHistory.start_time.desc().nullslast(), RunHistory.id.desc())
+            .order_by(RunHistory.id.desc())
             .limit(limit)
             .subquery()
         )
@@ -330,29 +249,25 @@ def finish_unfinished_step_logs(
     """批量把指定 run 下所有 pending/running 的 step_logs 收敛到终态。"""
     now = datetime.now()
     safe_error_message = truncate_error_message(error_message)
-    try:
-        from database import get_session
-        with get_session() as session:
-            affected = (
-                session.query(StepLog)
-                .filter(
-                    StepLog.run_history_id == run_history_id,
-                    StepLog.status.in_(("pending", "running")),
-                )
-                .update(
-                    {
-                        StepLog.status: status,
-                        StepLog.end_time: now,
-                        StepLog.error_message: safe_error_message,
-                    },
-                    synchronize_session=False,
-                )
+    from database import get_session
+    with get_session() as session:
+        affected = (
+            session.query(StepLog)
+            .filter(
+                StepLog.run_history_id == run_history_id,
+                StepLog.status.in_(("pending", "running")),
             )
-            session.commit()
-            return int(affected or 0)
-    except Exception as e:
-        logger.warning("批量收敛 step_logs 失败: %s", e)
-        return 0
+            .update(
+                {
+                    StepLog.status: status,
+                    StepLog.end_time: now,
+                    StepLog.error_message: safe_error_message,
+                },
+                synchronize_session=False,
+            )
+        )
+        session.commit()
+        return int(affected or 0)
 
 
 def update_step_log(step_log_id: int, **kwargs) -> Optional[StepLog]:

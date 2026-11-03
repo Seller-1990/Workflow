@@ -2,6 +2,7 @@
 """run_dispatch temporary CLI args collection tests.
 
 Load run_dispatch without importing full ui/database stacks (no PySide6/sqlalchemy).
+Path-consent retirement tests live in test_run_dispatch_path_consent.py.
 """
 
 import importlib.util
@@ -62,6 +63,8 @@ def _install_stubs(monkeypatch):
         ONLY_STEP = "only_step"
         ONLY_STAGE = "only_stage"
         FROM_STAGE = "from_stage"
+        RETRY_FAILED = "retry_failed"
+        STEP_RANGE = "step_range"
 
     eng.RunMode = RunMode
     monkeypatch.setitem(sys.modules, "engine", eng)
@@ -210,6 +213,60 @@ def test_collect_blocks_saved_runtime_write_outside_edit_mode(monkeypatch):
     database.update_step.assert_not_called()
 
 
+def test_only_step_defaults_to_saved_args_without_dialog(monkeypatch):
+    rd = _load_run_dispatch(monkeypatch)
+    rd._collect_run_arg_overrides = MagicMock()
+    rd.prompt_run_arg_overrides = MagicMock()
+    worker = SimpleNamespace(start=MagicMock())
+    rd.RunWorker = MagicMock(return_value=worker)
+    window = _make_gate_window()
+
+    rd.on_run_requested(window, "only_step", 7)
+
+    rd._collect_run_arg_overrides.assert_not_called()
+    rd.prompt_run_arg_overrides.assert_not_called()
+    assert rd.RunWorker.call_args.kwargs["run_arg_overrides"] == {}
+    worker.start.assert_called_once_with()
+
+
+def test_only_step_checkbox_enables_existing_args_dialog_for_editor_and_toolbar(monkeypatch):
+    rd = _load_run_dispatch(monkeypatch)
+    rd._collect_run_arg_overrides = MagicMock(return_value={"u1": ["--once"]})
+    worker = SimpleNamespace(start=MagicMock())
+    rd.RunWorker = MagicMock(return_value=worker)
+    window = SimpleNamespace(
+        **_make_gate_window().__dict__,
+        step_editor=SimpleNamespace(should_modify_run_args=MagicMock(return_value=True)),
+    )
+
+    # 两个入口最终都走同一 dispatcher，不修改既有 (mode, step_id) 信号。
+    rd.on_run_requested(window, "only_step", 7)
+    rd.on_run_requested(window, "only_step", 7)
+
+    assert rd._collect_run_arg_overrides.call_count == 2
+    assert all(
+        call.kwargs["run_arg_overrides"] == {"u1": ["--once"]}
+        for call in rd.RunWorker.call_args_list
+    )
+
+
+def test_only_step_args_cancel_does_not_start_or_persist(monkeypatch):
+    rd = _load_run_dispatch(monkeypatch)
+    rd._collect_run_arg_overrides = MagicMock(return_value=None)
+    rd.RunWorker = MagicMock()
+    import database
+
+    window = SimpleNamespace(
+        **_make_gate_window().__dict__,
+        step_editor=SimpleNamespace(should_modify_run_args=lambda: True),
+    )
+
+    rd.on_run_requested(window, "only_step", 7)
+
+    rd.RunWorker.assert_not_called()
+    database.update_step.assert_not_called()
+
+
 def test_only_step_preserves_explicit_empty_override_before_starting(monkeypatch):
     rd = _load_run_dispatch(monkeypatch)
     overrides = {"step-1": []}
@@ -217,9 +274,8 @@ def test_only_step_preserves_explicit_empty_override_before_starting(monkeypatch
     worker = SimpleNamespace(start=MagicMock())
     rd.RunWorker = MagicMock(return_value=worker)
     window = SimpleNamespace(
-        _current_workflow_id=42,
-        _dark_mode=False,
-        engine=SimpleNamespace(is_running=False),
+        **_make_gate_window().__dict__,
+        step_editor=SimpleNamespace(should_modify_run_args=lambda: True),
     )
 
     rd.on_run_requested(window, "only_step", 7)
@@ -241,9 +297,8 @@ def test_saved_runtime_args_failure_prevents_worker_start(monkeypatch):
     rd.RunWorker = MagicMock()
     rd.msg_warning = MagicMock()
     window = SimpleNamespace(
-        _current_workflow_id=42,
-        _dark_mode=False,
-        engine=SimpleNamespace(is_running=False),
+        **_make_gate_window().__dict__,
+        step_editor=SimpleNamespace(should_modify_run_args=lambda: True),
     )
 
     rd.on_run_requested(window, "only_step", 7)
@@ -259,6 +314,7 @@ def test_saved_runtime_args_failure_prevents_worker_start(monkeypatch):
         ("from_step", 7),
         ("only_stage", "stage-1"),
         ("from_stage", "stage-1"),
+        ("step_range", (7, 8)),
         ("retry_failed", None),
     ],
 )
@@ -294,149 +350,9 @@ def test_source_uses_get_workflow_by_id():
     assert "无法导入 database" not in text
 
 
-# ============== R1: 风险路径确认门禁（GUI 各模式） ==============
-
-def _risky_stub_step():
-    return SimpleNamespace(uid="s1", step_type="python", script_path="C:/evil.py", cwd=None)
-
-
-def _risky_stub_workflow(workflow_id=42):
-    return SimpleNamespace(
-        id=workflow_id,
-        risky_paths_review_required=1,
-        risky_paths_revision=1,
-        risky_paths_confirmed_digest=None,
-    )
-
-
 def _make_gate_window():
     return SimpleNamespace(
         _current_workflow_id=42,
         _dark_mode=False,
         engine=SimpleNamespace(is_running=False),
     )
-
-
-def test_risky_gate_no_risk_skips_dialog(monkeypatch):
-    rd = _load_run_dispatch(monkeypatch)
-    import database
-
-    database.get_workflow_by_id = MagicMock(return_value=SimpleNamespace(
-        id=42,
-        risky_paths_review_required=0,
-        risky_paths_revision=0,
-        risky_paths_confirmed_digest=None,
-    ))
-    database.get_steps_by_workflow = MagicMock(return_value=[
-        SimpleNamespace(uid="s1", step_type="python", script_path="scripts/run.py", cwd=None),
-    ])
-    ui_theme = sys.modules["ui.theme"]
-    ui_theme.msg_question = MagicMock(return_value=None)
-    worker = SimpleNamespace(start=MagicMock())
-    rd.RunWorker = MagicMock(return_value=worker)
-
-    rd.on_run_requested(_make_gate_window(), "full", None)
-
-    ui_theme.msg_question.assert_not_called()
-    database.confirm_risky_paths.assert_not_called()
-    rd.RunWorker.assert_called_once_with(
-        rd.RunWorker.call_args.args[0],
-        workflow_id=42,
-        mode="full",
-        param=None,
-        run_arg_overrides={},
-    )
-    worker.start.assert_called_once_with()
-
-
-def test_risky_gate_blocks_run_on_no(monkeypatch):
-    rd = _load_run_dispatch(monkeypatch)
-    import database
-
-    database.get_workflow_by_id = MagicMock(return_value=_risky_stub_workflow())
-    database.get_steps_by_workflow = MagicMock(return_value=[_risky_stub_step()])
-    ui_theme = sys.modules["ui.theme"]
-    ui_theme.msg_question = MagicMock(return_value=None)  # 默认 No
-    rd.RunWorker = MagicMock()
-
-    rd.on_run_requested(_make_gate_window(), "full", None)
-
-    ui_theme.msg_question.assert_called_once()
-    call = ui_theme.msg_question.call_args
-    assert call.args[1] is False  # dark 参数
-    assert "风险路径" in call.args[2]
-    # normalize_path 仅在 Windows 折叠大小写，POSIX 保留——断言做大小写不敏感匹配
-    assert "s1" in call.args[3] and "c:/evil.py" in call.args[3].lower()  # 实际路径明细（规范化后）
-    assert call.kwargs["default_button"] is not None
-    rd.RunWorker.assert_not_called()
-    database.confirm_risky_paths.assert_not_called()
-
-
-def test_risky_gate_confirms_and_runs_on_yes(monkeypatch):
-    rd = _load_run_dispatch(monkeypatch)
-    import database
-
-    database.get_workflow_by_id = MagicMock(return_value=_risky_stub_workflow())
-    database.get_steps_by_workflow = MagicMock(return_value=[_risky_stub_step()])
-    from PySide6.QtWidgets import QMessageBox
-
-    ui_theme = sys.modules["ui.theme"]
-    ui_theme.msg_question = MagicMock(return_value=QMessageBox.Yes)
-    worker = SimpleNamespace(start=MagicMock())
-    rd.RunWorker = MagicMock(return_value=worker)
-
-    rd.on_run_requested(_make_gate_window(), "full", None)
-
-    database.confirm_risky_paths.assert_called_once_with(42)
-    rd.RunWorker.assert_called_once()
-    worker.start.assert_called_once_with()
-
-
-@pytest.mark.parametrize(
-    ("mode", "param"),
-    [
-        ("full", None),
-        ("from_step", 7),
-        ("only_step", 7),
-        ("only_stage", "stage-1"),
-        ("from_stage", "stage-1"),
-        ("retry_failed", None),
-    ],
-)
-def test_risky_gate_applies_to_all_run_modes(monkeypatch, mode, param):
-    rd = _load_run_dispatch(monkeypatch)
-    import database
-
-    database.get_workflow_by_id = MagicMock(return_value=_risky_stub_workflow())
-    database.get_steps_by_workflow = MagicMock(return_value=[_risky_stub_step()])
-    ui_theme = sys.modules["ui.theme"]
-    ui_theme.msg_question = MagicMock(return_value=None)
-    rd.RunWorker = MagicMock()
-
-    window = SimpleNamespace(
-        _current_workflow_id=42,
-        _dark_mode=True,
-        engine=SimpleNamespace(is_running=False),
-    )
-    rd.on_run_requested(window, mode, param)
-
-    ui_theme.msg_question.assert_called_once()
-    assert ui_theme.msg_question.call_args.args[1] is True  # dark 透传
-    rd.RunWorker.assert_not_called()
-    database.confirm_risky_paths.assert_not_called()
-
-
-def test_risky_gate_does_not_fire_when_workflow_missing(monkeypatch):
-    rd = _load_run_dispatch(monkeypatch)
-    import database
-
-    database.get_workflow_by_id = MagicMock(return_value=None)
-    ui_theme = sys.modules["ui.theme"]
-    ui_theme.msg_question = MagicMock()
-    worker = SimpleNamespace(start=MagicMock())
-    rd.RunWorker = MagicMock(return_value=worker)
-
-    rd.on_run_requested(_make_gate_window(), "full", None)
-
-    ui_theme.msg_question.assert_not_called()
-    rd.RunWorker.assert_called_once()

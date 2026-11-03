@@ -21,8 +21,10 @@ from database import (
 )
 from engine import WorkflowEngine
 from ui.theme import msg_information, msg_warning, msg_critical, msg_question
+from ui.text_utils import plain_text_tooltip
 from ui.webhook_manager import WebhookManagerDialog
 from ui.json_actions import export_json_action, import_json_action
+from ui import plan_view_controller
 from ui import dirty_guard, main_window_setup, main_window_steps, panel_controller, run_dispatch, run_lifecycle_controller
 
 
@@ -85,13 +87,7 @@ class MainWindow(QMainWindow):
         return main_window_setup.create_plan_switch(self)
 
     def _set_plan_view(self, index: int):
-        self.plan_stack.setCurrentIndex(index)
-        for btn, stack_index in getattr(self, "_view_buttons", []):
-            btn.setObjectName("ViewSwitchActive" if stack_index == index else "ViewSwitch")
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
-        if index == 0 and hasattr(self, "workbench_board"):
-            self.workbench_board.refresh_after_view_shown()
+        plan_view_controller.set_plan_view(self, index)
         # V9：持久化编排视图索引（启动时 _restore_ui_state 调用也会走这里，重复写无害）
         try:
             from ui.ui_state import save_plan_view_current
@@ -398,6 +394,7 @@ class MainWindow(QMainWindow):
     ):
         if not workflow_id:
             self.lbl_workflow_title.setText("请选择工作流")
+            self.lbl_workflow_title.setToolTip(plain_text_tooltip(self.lbl_workflow_title.text()))
             self.lbl_workflow_meta.setText("0 阶段 · 0 步 · 未运行")
             return
         # P1-B: 切换工作流路径已由 _switch_workflow 预加载并传入，其余调用点回退自查。
@@ -405,6 +402,7 @@ class MainWindow(QMainWindow):
         stages = list_stages(workflow_id) if stages is None else stages
         steps = get_steps_by_workflow(workflow_id) if steps is None else steps
         self.lbl_workflow_title.setText(workflow.name if workflow else f"工作流 #{workflow_id}")
+        self.lbl_workflow_title.setToolTip(plain_text_tooltip(self.lbl_workflow_title.text()))
         parallel = "自动并行" if (workflow and workflow.parallel_enabled) else "串行"
         self.lbl_workflow_meta.setText(f"{len(stages)} 阶段 · {len(steps)} 步 · {parallel}")
 
@@ -771,10 +769,10 @@ class MainWindow(QMainWindow):
         """运行请求（实现在 ui.run_dispatch：含运行中三选弹窗与停止重试链）"""
         run_dispatch.on_run_requested(self, mode, param)
 
-    @Slot(int, str)
-    def _on_workflow_started(self, workflow_id: int, run_id: str):
+    @Slot(int, str, int)
+    def _on_workflow_started(self, workflow_id: int, run_id: str, total: int = 0):
         """工作流开始（实现在 ui.run_lifecycle_controller）"""
-        run_lifecycle_controller.on_workflow_started(self, workflow_id, run_id)
+        run_lifecycle_controller.on_workflow_started(self, workflow_id, run_id, total)
 
     @Slot(int, str, str)
     def _on_workflow_finished(self, workflow_id: int, run_id: str, status: str):

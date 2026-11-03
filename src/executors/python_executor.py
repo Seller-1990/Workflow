@@ -6,12 +6,14 @@ import sys
 import shutil
 import subprocess
 import threading
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from executors.base import BaseExecutor, ExecutorResult
 from executors.result_policy import build_cancelled_extra
+from executors.output_capture import OutputCapture
 from runtime.process_runner import build_subprocess_kwargs, start_process
 from constants import PYTHON_STEP_TIMEOUT
 
@@ -60,35 +62,6 @@ def _decode_line(raw: bytes) -> str:
         except (UnicodeDecodeError, LookupError):
             continue
     return raw.decode('utf-8', errors='replace')
-
-
-def _stream_pipe(pipe, file_obj, stream, log_errors: bool = True):
-    """流式读取管道输出"""
-    try:
-        for raw_line in iter(pipe.readline, b''):
-            if not raw_line:  # 管道已关闭
-                break
-            decoded = _decode_line(raw_line)
-            try:
-                file_obj.write(decoded)
-                file_obj.flush()
-            except IOError as e:
-                if log_errors:
-                    print(f"[PythonExecutor] 写入日志文件失败: {e}", file=sys.stderr)
-                break
-            try:
-                stream.write(decoded)
-                stream.flush()
-            except Exception:
-                # 控制台写入失败可忽略（如重定向到非TTY）
-                pass
-    except IOError as e:
-        # 管道读取错误（如进程被强制终止）
-        if log_errors:
-            print(f"[PythonExecutor] 读取管道失败: {e}", file=sys.stderr)
-    except Exception as e:
-        if log_errors:
-            print(f"[PythonExecutor] 输出流处理异常: {e}", file=sys.stderr)
 
 
 _ENV_REMOVE_KEYS = {
@@ -146,7 +119,7 @@ class PythonExecutor(BaseExecutor):
 
     SUPPORTED_SUFFIXES = {".py", ".pyw"}
     STREAM_JOIN_TIMEOUT_SECONDS = 5
-    COMMUNICATE_TIMEOUT_SECONDS = 3
+    PROCESS_WAIT_TIMEOUT_SECONDS = 3
 
     def _normalize_args(self, args: List[str] = None) -> List[str]:
         """标准化并校验命令行参数。"""
@@ -176,27 +149,17 @@ class PythonExecutor(BaseExecutor):
             raise ValueError(f"工作目录不是文件夹: {work_dir}")
         return work_dir
 
-    def _cleanup_process_resources(
-        self,
-        proc: subprocess.Popen,
-        t_out: threading.Thread | None,
-        t_err: threading.Thread | None,
-    ) -> None:
-        """终止后尽快清空管道并回收输出线程，避免句柄与后台线程残留。"""
+    def _cleanup_process_resources(self, proc: subprocess.Popen, capture: OutputCapture) -> None:
+        """只终止/等待进程；管道始终由原输出线程读取和关闭。"""
         try:
-            proc.communicate(timeout=self.COMMUNICATE_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.wait()
-            except Exception as e:
-                print(f"[PythonExecutor] 等待进程退出失败: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"[PythonExecutor] 回收进程管道失败: {e}", file=sys.stderr)
-        finally:
-            if t_out is not None:
-                t_out.join(timeout=self.STREAM_JOIN_TIMEOUT_SECONDS)
-            if t_err is not None:
-                t_err.join(timeout=self.STREAM_JOIN_TIMEOUT_SECONDS)
+            if proc.poll() is None:
+                self.kill_process_tree(proc)
+        except Exception as exc:
+            capture.cleanup_failed(f"终止进程失败: {exc}")
+        try:
+            proc.wait(timeout=self.PROCESS_WAIT_TIMEOUT_SECONDS)
+        except Exception as exc:
+            capture.cleanup_failed(f"未确认进程退出: {exc}")
     
     def execute(
         self,
@@ -282,21 +245,21 @@ class PythonExecutor(BaseExecutor):
         cmd = [python_exe, '-u', str(script)] + list(args)
         
         start_time = datetime.now()
-        
-        proc = None
-        t_out = None
-        t_err = None
+        success = False
+        exit_code = -1
+        error_message = None
+        extra = {}
+        capture_extra = {}
         try:
-            with open(stdout_path, 'w', encoding='utf-8-sig') as f_out, \
-                 open(stderr_path, 'w', encoding='utf-8-sig') as f_err:
+            with ExitStack() as setup_logs:
+                f_out = setup_logs.enter_context(open(stdout_path, 'w', encoding='utf-8-sig'))
+                f_err = setup_logs.enter_context(open(stderr_path, 'w', encoding='utf-8-sig'))
                 # 在日志首行记录实际使用的解释器，便于排查环境问题
                 f_out.write(f"[PythonExecutor] interpreter: {python_exe}\n")
 
-                # Windows 下隐藏控制台窗口
                 creation_flags = 0
                 if sys.platform == 'win32':
                     creation_flags = subprocess.CREATE_NO_WINDOW
-                
                 proc = start_process(
                     cmd,
                     **build_subprocess_kwargs(
@@ -309,108 +272,65 @@ class PythonExecutor(BaseExecutor):
                         creationflags=creation_flags,
                     ),
                 )
-                
-                # 启动输出线程
-                # F-04: daemon=True——子进程退出后若孙进程仍持有管道写端，
-                # readline 会阻塞到孙进程退出；非 daemon 线程会让解释器
-                # 退出时 threading._shutdown 无限等待（窗口已关、进程不退）。
-                # daemon 线程在极端场景最多丢失日志尾部（进程即将退出，可接受）。
-                t_out = threading.Thread(
-                    target=_stream_pipe,
-                    args=(proc.stdout, f_out, sys.stdout),
-                    daemon=True,
-                )
-                t_err = threading.Thread(
-                    target=_stream_pipe,
-                    args=(proc.stderr, f_err, sys.stderr),
-                    daemon=True,
-                )
+                capture = OutputCapture(proc, f_out, f_err, sys.stdout, sys.stderr, _decode_line)
+                # reader 启动前移交关闭权；已在途的日志写入可在 execute 返回后安全关闭。
+                setup_logs.pop_all()
+                completed = False
                 try:
-                    t_out.start()
-                    t_err.start()
-                except Exception:
-                    self.kill_process_tree(proc)
-                    self._cleanup_process_resources(proc, t_out, t_err)
-                    proc = None
-                    raise
-                
-                # 等待完成（支持取消中断 + 超时）
-                # MA1: 改用 BaseExecutor.wait_with_cancel 统一等待语义
-                try:
+                    capture.start()
                     if cancel_event:
                         normal, cancelled = self.wait_with_cancel(
                             proc, timeout or 0, cancel_event, check_interval=0.5
                         )
                         if cancelled:
-                            self.kill_process_tree(proc)
-                            self._cleanup_process_resources(proc, t_out, t_err)
-                            end_time = datetime.now()
-                            return ExecutorResult(
-                                success=False,
-                                exit_code=-1,
-                                start_time=start_time,
-                                end_time=end_time,
-                                stdout_path=str(stdout_path),
-                                stderr_path=str(stderr_path),
-                                error_message="用户取消",
-                                extra=build_cancelled_extra(),
-                            )
-                        if not normal:
-                            # 超时：与原 subprocess.TimeoutExpired 路径行为一致
+                            error_message = "用户取消"
+                            extra = build_cancelled_extra()
+                        elif not normal:
                             raise subprocess.TimeoutExpired(cmd=str(script_path), timeout=timeout)
+                        else:
+                            completed = True
                     else:
                         if timeout and timeout > 0:
                             proc.wait(timeout=timeout)
                         else:
                             # timeout=0 沿用历史语义"不限制"
                             proc.wait()
+                        completed = True
+                    if completed:
+                        exit_code = proc.returncode
+                        success = exit_code == 0
                 except subprocess.TimeoutExpired:
-                    self.kill_process_tree(proc)
-                    self._cleanup_process_resources(proc, t_out, t_err)
-                    end_time = datetime.now()
-                    return ExecutorResult(
-                        success=False,
-                        exit_code=-1,
-                        start_time=start_time,
-                        end_time=end_time,
-                        stdout_path=str(stdout_path),
-                        stderr_path=str(stderr_path),
-                        error_message=f"执行超时 ({timeout}秒)"
-                    )
-                
-                t_out.join(timeout=10)
-                t_err.join(timeout=10)
-            
-            end_time = datetime.now()
-            exit_code = proc.returncode
-            
-            return ExecutorResult(
-                success=(exit_code == 0),
-                exit_code=exit_code,
-                start_time=start_time,
-                end_time=end_time,
-                stdout_path=str(stdout_path),
-                stderr_path=str(stderr_path),
-                error_message=None
-                if exit_code == 0
-                else (
+                    error_message = f"执行超时 ({timeout}秒)"
+                except Exception as exc:
+                    error_message = str(exc)
+                finally:
+                    # 部分线程启动失败/等待异常也必须在日志关闭前完成分离。
+                    if not completed:
+                        self._cleanup_process_resources(proc, capture)
+                    capture_extra = capture.finish(self.STREAM_JOIN_TIMEOUT_SECONDS)
+
+            if not success and error_message is None:
+                stderr_excerpt = _read_stderr_excerpt(stderr_path)
+                error_message = (
                     f"退出码: {exit_code}\n{stderr_excerpt}"
-                    if (stderr_excerpt := _read_stderr_excerpt(stderr_path))
-                    else f"退出码: {exit_code}"
+                    if stderr_excerpt else f"退出码: {exit_code}"
                 )
-            )
-            
-        except Exception as e:
-            if proc is not None and proc.poll() is None:
-                self.kill_process_tree(proc)
-                self._cleanup_process_resources(proc, t_out, t_err)
-            end_time = datetime.now()
-            return ExecutorResult(
-                success=False,
-                exit_code=-1,
-                start_time=start_time,
-                end_time=end_time,
-                stdout_path=str(stdout_path) if stdout_path and stdout_path.exists() else None,
-                stderr_path=str(stderr_path) if stderr_path and stderr_path.exists() else None,
-                error_message=str(e)
-            )
+        except Exception as exc:
+            success = False
+            exit_code = -1
+            error_message = str(exc)
+
+        if capture_extra:
+            note = capture_extra["note"]
+            error_message = f"{error_message}\n{note}" if error_message else note
+            extra.update(capture_extra)
+        return ExecutorResult(
+            success=success,
+            exit_code=exit_code,
+            start_time=start_time,
+            end_time=datetime.now(),
+            stdout_path=str(stdout_path) if stdout_path.exists() else None,
+            stderr_path=str(stderr_path) if stderr_path.exists() else None,
+            error_message=error_message,
+            extra=extra,
+        )

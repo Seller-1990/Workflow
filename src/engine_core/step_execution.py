@@ -94,11 +94,13 @@ def begin_step_execution(
     eng = _engine_module()
     step_log_dir = log_dir / f"step_{step.order:02d}_{step.uid}"
     step_log_dir.mkdir(parents=True, exist_ok=True)
-    step_log = eng.create_step_log(
-        run_history_id=run_history_id,
-        step_id=step.id,
-        order=step.order,
-    )
+    from database_step_log_creation import step_log_operation
+    with step_log_operation(run_history_id, step.id):
+        step_log = eng.create_step_log(
+            run_history_id=run_history_id,
+            step_id=step.id,
+            order=step.order,
+        )
     return step_log.id, step_log_dir
 
 
@@ -138,7 +140,14 @@ def cancelled_step_result(
         exit_code=exec_result.exit_code if exec_result.exit_code not in (None, 0) else -1,
         start_time=exec_result.start_time,
         end_time=exec_result.end_time,
-        error_message="用户取消",
+        error_message=append_policy_risk_note(
+            "用户取消" + (
+                f"；{exec_result.error_message.strip()}"
+                if exec_result.error_message and exec_result.error_message.strip() != "用户取消"
+                else ""
+            ),
+            exec_result.extra,
+        ),
         log_dir=str(step_log_dir) if step_log_dir else None,
     )
 
@@ -242,6 +251,11 @@ def execute_step_attempt(
                 exit_code=exec_result.exit_code,
                 start_time=exec_result.start_time,
                 end_time=exec_result.end_time,
+                error_message=(
+                    append_policy_risk_note(exec_result.error_message, exec_result.extra)
+                    if engine._is_non_retryable_executor_result(exec_result)
+                    else None
+                ),
                 log_dir=str(step_log_dir),
             )
             engine._finish_step(step, step_log_id, result, exec_result, signal_policy)
@@ -575,49 +589,4 @@ def execute_parallel_steps(
     return results
 
 
-def finish_step(
-    engine: WorkflowEngine,
-    step: Step,
-    step_log_id: int,
-    result: StepResult,
-    exec_result: ExecutorResult = None,
-    signal_policy: Optional[RunSignalPolicy] = None,
-):
-    """完成步骤处理"""
-    eng = _engine_module()
-    signal_policy = signal_policy or eng.RunSignalPolicy()
-    # 更新步骤日志
-    update_data = {
-        "status": result.status,
-        "exit_code": result.exit_code,
-        "end_time": result.end_time or datetime.now(),
-        "error_message": result.error_message
-    }
-
-    if exec_result:
-        update_data["stdout_path"] = exec_result.stdout_path
-        update_data["stderr_path"] = exec_result.stderr_path
-    elif result.log_dir:
-        # M2 修复：cancelled / failure 路径下若 exec_result 为 None，
-        # 仍从 result.log_dir 推导出 stdout/stderr 路径，避免历史日志丢失
-        from os.path import join, isfile
-        stdout_guess = join(str(result.log_dir), "stdout.txt")
-        stderr_guess = join(str(result.log_dir), "stderr.txt")
-        if isfile(stdout_guess):
-            update_data["stdout_path"] = stdout_guess
-        if isfile(stderr_guess):
-            update_data["stderr_path"] = stderr_guess
-
-    eng.update_step_log(step_log_id, **update_data)
-
-    # 发送信号
-    status_text = {
-        "success": "成功",
-        "skipped": "已跳过",
-        "cancelled": "已取消",
-    }.get(result.status, "失败")
-    duration_text = eng.format_duration_short(result.duration_seconds)
-    suffix = f" · 耗时 {duration_text}" if duration_text else ""
-    engine._emit_log(f"步骤 [{step.order}] {step.name} {status_text}{suffix}")
-    if signal_policy.emit_step_signals:
-        engine.step_finished.emit(step.id, step.name, result.status, result.duration_seconds)
+from engine_core.step_finalization import finish_step
