@@ -95,7 +95,7 @@ jobs:
           python tools/audit_risky_calls.py
           python tools/audit_broad_except.py
           python tools/module_hotspot_report.py --top 30 --baseline quality/module_hotspot_baseline.json --fail-on-regression --max-lines 1000
-          python -m pytest tests/test_docs_guardrails.py tests/test_ci_workflow_guards.py -q
+          python -m pytest tests/test_spec_runtime_tmpdir.py tests/test_docs_guardrails.py tests/test_ci_workflow_guards.py -q
           python tools/run_tests.py --collect-only
 
       - name: Compile sources
@@ -123,6 +123,12 @@ jobs:
           $exe = Get-ChildItem -Path dist -Filter *.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $exe) {
             throw "No executable produced in dist"
+          }
+          # runtime-tmpdir 必须是运行期展开的字面量；若被构建期展开，exe 里只剩构建机绝对路径。
+          $bytes = [System.IO.File]::ReadAllBytes($exe.FullName)
+          $binaryText = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)
+          if ($binaryText -notmatch "%LOCALAPPDATA%") {
+            throw "runtime-tmpdir literal %LOCALAPPDATA% is missing from $($exe.Name)"
           }
           "artifact_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
           "artifact_name=${{ steps.build_meta.outputs.artifact_name }}" >> $env:GITHUB_OUTPUT

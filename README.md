@@ -1,6 +1,12 @@
 # 工作流管理系统 (Workflow Manager)
 
-基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、批处理、子工作流等任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：7.0.1。
+基于 Python + PySide6 的桌面端工作流编排工具，将 Python 脚本、批处理、子工作流等任务串联成自动化工作流，提供可视化管理、阶段分组、DAG 依赖、运行日志追踪、失败重试和安全脱敏的钉钉通知。当前发布版本：7.0.2。
+
+## 7.0.2 更新日志
+
+- **修复 7.0.1 打包版启动失败**：Windows 三个 spec 原来在构建期用 `os.environ["LOCALAPPDATA"]` 求值，把 CI 构建机的用户目录（`C:\Users\runneradmin\...`）写死进单文件 exe；终端用户机器不存在该路径，引导器创建目录失败，启动即报 `LOADER: failed to create runtime-tmpdir path ... CreateDirectory: 系统找不到指定的路径`。现改为保留 `%LOCALAPPDATA%\工作流管理\pyi-tmp` 字面量，由 PyInstaller 引导器在运行期按当前用户展开并递归创建目录树，同时保留"运行文件放应用数据目录、不受系统清理临时目录影响"的原设计。
+- **回归防护**：新增 `tests/test_spec_runtime_tmpdir.py` 守卫测试，禁止 `runtime_tmpdir` 在构建期展开成绝对路径或构建机路径。
+- **验证**：本地全量 985 passed、1 skipped、2 条既有 SQLAlchemy `Query.get` warnings，80.86s；静态门 broad/risky/hotspot 0 回归，requirements/compile 通过；本地重建 `dist/工作流管理_7.0.2_slim2.exe` 后 `--self-check` exit 0，运行时解压到 `%LOCALAPPDATA%\工作流管理\pyi-tmp\_MEIxxxxx`，exe 内已无 `runneradmin` 等构建机路径。CI Package 打包与原生验收仍以发布运行结果为准。
 
 ## 7.0.1 更新日志
 

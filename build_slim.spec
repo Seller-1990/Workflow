@@ -7,7 +7,6 @@
 
 import runpy
 import sys
-import os
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 
@@ -118,9 +117,11 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=os.path.join(
-        os.environ.get("LOCALAPPDATA", str(Path.home())), "工作流管理", "pyi-tmp"
-    ),
+    # 保留未展开的 %LOCALAPPDATA%，由 PyInstaller 引导器在运行时展开并按需创建整条目录树。
+    # 若在构建期用 os.environ 求值，构建机的用户目录（CI 为 C:\Users\runneradmin）会被写死进
+    # 单文件 exe；终端用户机器上该目录不存在，启动即报
+    # "LOADER: failed to create runtime-tmpdir path ...! CreateDirectory: 系统找不到指定的路径"。
+    runtime_tmpdir=r"%LOCALAPPDATA%\工作流管理\pyi-tmp",
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
